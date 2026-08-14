@@ -1,5 +1,5 @@
 {
-  "originHash" : "a89f15c8917c69baa61d735aebe94d657281ac2cd56f20025c83a6956b56bdb3",
+  "originHash" : "ee17c4e350dfd666841f5165991c19d16cc86282655b7228abd367675e17f44d",
   "pins" : [
     {
       "identity" : "aecaudiostream",
@@ -33,8 +33,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/sparkle-project/Sparkle",
       "state" : {
-        "revision" : "0a4caaf7a81eea2cece651ef4b17331fa0634dff",
-        "version" : "2.6.0"
+        "revision" : "79bc9e872948e47877e76f194cb0c8e0412b0b90",
+        "version" : "2.9.5"
       }
     },
     {

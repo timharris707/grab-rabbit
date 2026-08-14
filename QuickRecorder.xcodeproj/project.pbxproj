@@ -582,7 +582,7 @@
 			repositoryURL = "https://github.com/sparkle-project/Sparkle";
 			requirement = {
 				kind = upToNextMajorVersion;
-				minimumVersion = 2.6.0;
+				minimumVersion = 2.9.5;
 			};
 		};
 		184506CC2C69213400AFDA45 /* XCRemoteSwiftPackageReference "MatrixColorSelector" */ = {

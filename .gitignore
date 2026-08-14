@@ -89,3 +89,6 @@ fastlane/test_output
 
 iOSInjectionProject/
 .DS_Store
+
+# Untracked ClickAI session handoff
+.claude/handoff.md

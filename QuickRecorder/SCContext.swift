@@ -38,6 +38,7 @@ class SCContext {
     static var filePath: String!
     static var filePath1: String!
     static var filePath2: String!
+    static var outputJob: RecordingOutputJob?
     static var audioFile: AVAudioFile?
     static var audioFile2: AVAudioFile?
     static var vW: AVAssetWriter!
@@ -221,15 +222,29 @@ class SCContext {
         return nil
     }
     
-    static func getFilePath(capture: Bool = false) -> String {
-        let dateFormatter = DateFormatter()
-        dateFormatter.dateFormat = "y-MM-dd HH.mm.ss"
-        return ud.string(forKey: "saveDirectory")! + (capture ? "/Capturing at ".local : "/Recording at ".local) + dateFormatter.string(from: Date())
+    static func reserveOutputJob(
+        capture: Bool = false,
+        layout: RecordingOutputJob.Layout,
+        date: Date = Date()
+    ) throws -> RecordingOutputJob {
+        guard let saveDirectory = ud.string(forKey: "saveDirectory") else {
+            throw RecordingOutputReservationError.invalidDirectory(URL(fileURLWithPath: ""))
+        }
+        return try RecordingOutputJob.reserve(
+            in: URL(fileURLWithPath: saveDirectory, isDirectory: true),
+            prefix: capture ? "Capturing at ".local : "Recording at ".local,
+            date: date,
+            layout: layout
+        )
     }
     
-    static func updateAudioSettings(format: String = ud.string(forKey: "audioFormat") ?? "", rate: Int = 48000) -> [String : Any] {
+    static func updateAudioSettings(
+        format: String = ud.string(forKey: "audioFormat") ?? "",
+        rate: Int = 48000,
+        qualityKbps: Int? = nil
+    ) -> [String : Any] {
         var audioSettings: [String : Any] = [AVSampleRateKey : rate, AVNumberOfChannelsKey : 2] // reset audioSettings
-        var bitRate = ud.integer(forKey: "audioQuality") * 1000
+        var bitRate = (qualityKbps ?? ud.integer(forKey: "audioQuality")) * 1000
         if rate < 44100 { bitRate = min(64000, bitRate / 2) }
         switch format {
         case AudioFormat.mp3.rawValue: fallthrough
@@ -328,8 +343,11 @@ class SCContext {
     }
     
     static func getRecordingSize() -> String {
+        guard let activeOutputPath = outputJob?.inputURL.path ?? filePath else {
+            return "Unknown".local
+        }
         do {
-            let fileAttr = try fd.attributesOfItem(atPath: filePath)
+            let fileAttr = try fd.attributesOfItem(atPath: activeOutputPath)
             let byteFormat = ByteCountFormatter()
             byteFormat.allowedUnits = [.useMB]
             byteFormat.countStyle = .file
@@ -368,6 +386,10 @@ class SCContext {
     }
     
     static func stopRecording() {
+        let finishedJob = outputJob
+        let recordsMicrophone = finishedJob?.recordsMicrophone ?? ud.bool(forKey: "recordMic")
+        let shouldRemuxVideo = finishedJob?.kind == .videoRemux
+        var directVideoResult: Result<URL, RecordingExportError>?
         if ud.bool(forKey: "preventSleep") { SleepPreventer.shared.allowSleep() }
         autoStop = 0
         lastPTS = nil
@@ -382,7 +404,7 @@ class SCContext {
         
         if stream != nil { stream.stopCapture() }
         stream = nil
-        if ud.bool(forKey: "recordMic") {
+        if recordsMicrophone {
             micInput.markAsFinished()
             AudioRecorder.shared.stop()
             audioEngine.inputNode.removeTap(onBus: 0)
@@ -390,6 +412,8 @@ class SCContext {
             //DispatchQueue.global().async { try? audioEngine.inputNode.setVoiceProcessingEnabled(false) }
             if ud.bool(forKey: "enableAEC") { try? AECEngine.stopAudioUnit() }
         }
+        audioFile = nil // close audio file
+        audioFile2 = nil // close audio file2
         if streamType != .systemaudio {
             let dispatchGroup = DispatchGroup()
             dispatchGroup.enter()
@@ -399,10 +423,14 @@ class SCContext {
                 if vW.status != .completed {
                     print("Video writing failed with status: \(vW.status), error: \(String(describing: vW.error))")
                     let err = vW.error?.localizedDescription ?? "Unknow Error"
+                    if let finishedJob {
+                        let cleanupError = finishedJob.discardOutputs(reason: .failed(stage: .first, message: err))
+                        directVideoResult = .failure(cleanupError)
+                    }
                     showNotification(title: "Failed to save file".local, body: "\(err)", id: "quickrecorder.error.\(UUID().uuidString)")
                 } else {
-                    if ud.bool(forKey: "recordMic") && ud.bool(forKey: "recordWinSound") && ud.bool(forKey: "remuxAudio") {
-                        mixAudioTracks(videoURL: filePath.url) { result in
+                    if shouldRemuxVideo, let finishedJob {
+                        mixAudioTracks(job: finishedJob) { result in
                             switch result {
                             case .success(let url):
                                 print("Exported video to \(String(describing: url.path))")
@@ -418,15 +446,78 @@ class SCContext {
                                 }
                             case .failure(let error):
                                 print("Failed to export video: \(error.localizedDescription)")
+                                showNotification(
+                                    title: "Failed to save file".local,
+                                    body: error.localizedDescription,
+                                    id: "quickrecorder.error.\(UUID().uuidString)"
+                                )
                             }
+                        }
+                    } else if let finishedJob {
+                        directVideoResult = finishedJob.finishSingleOutput()
+                        if case .failure(let error) = directVideoResult {
+                            showNotification(
+                                title: "Failed to save file".local,
+                                body: error.localizedDescription,
+                                id: "quickrecorder.error.\(UUID().uuidString)"
+                            )
                         }
                     }
                 }
                 dispatchGroup.leave()
             }
             dispatchGroup.wait()
-        } else {
-            if ud.bool(forKey: "recordMic") { vW.finishWriting {} }
+        } else if recordsMicrophone {
+            if let finishedJob,
+               case .package(let automaticallyExports) = finishedJob.kind,
+               let packageWriter = vW {
+                _ = finishedJob.beginPostprocessing()
+                packageWriter.finishWriting {
+                    let writerResult: Result<Void, RecordingExportError>
+                    switch packageWriter.status {
+                    case .completed:
+                        writerResult = .success(())
+                    case .cancelled:
+                        writerResult = .failure(.cancelled(stage: .first))
+                    default:
+                        writerResult = .failure(.failed(
+                            stage: .first,
+                            message: packageWriter.error?.localizedDescription
+                                ?? "Audio package writer ended with status \(packageWriter.status.rawValue)."
+                        ))
+                    }
+                    _ = finishedJob.finishPackageAfterWriter(writerResult) { result in
+                        switch result {
+                        case .success(let fileURL):
+                            DispatchQueue.main.async {
+                                finishCompletedAudioPackage(
+                                    fileURL,
+                                    automaticallyExports: automaticallyExports,
+                                    audioQualityKbps: finishedJob.audioQualityKbps
+                                )
+                            }
+                        case .failure(let error):
+                            showNotification(
+                                title: "Failed to save file".local,
+                                body: error.localizedDescription,
+                                id: "quickrecorder.error.\(UUID().uuidString)"
+                            )
+                        }
+                    }
+                }
+            } else if let finishedJob, case .package = finishedJob.kind {
+                let error = finishedJob.discardOutputs(reason: .preparation(
+                    stage: .first,
+                    message: "The audio package writer is unavailable."
+                ))
+                showNotification(
+                    title: "Failed to save file".local,
+                    body: error.localizedDescription,
+                    id: "quickrecorder.error.\(UUID().uuidString)"
+                )
+            } else {
+                vW?.finishWriting {}
+            }
         }
         
         DispatchQueue.main.async {
@@ -439,51 +530,75 @@ class SCContext {
             }
         }
         
-        audioFile = nil // close audio file
-        audioFile2 = nil // close audio file2
         if streamType == .systemaudio {
-            if ud.string(forKey: "audioFormat") == AudioFormat.mp3.rawValue && !ud.bool(forKey: "recordMic") {
-                Task {
-                    let outPutUrl = (String(filePath.dropLast(4)) + ".mp3").url
+            guard let finishedJob else {
+                showNotification(
+                    title: "Failed to save file".local,
+                    body: "The recording output job is unavailable.",
+                    id: "quickrecorder.error.\(UUID().uuidString)"
+                )
+                streamType = nil
+                return
+            }
+            switch finishedJob.kind {
+            case .conversion:
+                _ = finishedJob.beginPostprocessing()
+                Task { [finishedJob] in
                     do {
-                        try await m4a2mp3(inputUrl: filePath1.url, outputUrl: outPutUrl)
-                        try? fd.removeItem(atPath: filePath1)
+                        try await m4a2mp3(
+                            inputUrl: finishedJob.inputURL,
+                            outputUrl: finishedJob.stagedOutputURL,
+                            qualityKbps: finishedJob.audioQualityKbps
+                        )
+                        let result = finishedJob.finishExport(.success(()))
+                        guard case .success(let outPutUrl) = result else {
+                            if case .failure(let error) = result { throw error }
+                            return
+                        }
                         if !ud.bool(forKey: "showPreview") {
                             let title = "Recording Completed".local
-                            let body = String(format: "File saved to: %@".local, outPutUrl.path.removingPercentEncoding!)
+                            let decodedPath = outPutUrl.path.removingPercentEncoding ?? outPutUrl.path
+                            let body = String(format: "File saved to: %@".local, decodedPath)
                             let id = "quickrecorder.completed.\(UUID().uuidString)"
                             showNotification(title: title, body: body, id: id)
                         } else {
                             DispatchQueue.main.async { showPreview(path: outPutUrl.path, image: NSImage(named: "audioIcon")) }
                         }
                     } catch {
-                        showNotification(title: "Failed to save file".local, body: "\(error.localizedDescription)", id: "quickrecorder.error.\(UUID().uuidString)")
+                        let exportError: RecordingExportError
+                        if let typedError = error as? RecordingExportError {
+                            exportError = typedError
+                        } else if error is CancellationError {
+                            exportError = .cancelled(stage: .conversion)
+                        } else {
+                            exportError = .failed(stage: .conversion, message: error.localizedDescription)
+                        }
+                        let cleanupError = finishedJob.discardOutputs(reason: exportError)
+                        showNotification(title: "Failed to save file".local, body: cleanupError.localizedDescription, id: "quickrecorder.error.\(UUID().uuidString)")
                     }
                 }
-            } else {
-                if ud.bool(forKey: "remuxAudio") && ud.bool(forKey: "recordMic") {
-                    let fileURL = filePath.url
-                    let document = try? qmaPackageHandle.load(from: fileURL)
-                    if let document = document {
-                        let audioPlayerManager = AudioPlayerManager()
-                        audioPlayerManager.loadAudioFiles(format: document.info.format, package: fileURL, encoder: document.info.encoder, saveMP3: document.info.exportMP3)
-                        audioPlayerManager.sysVol = document.info.sysVol
-                        audioPlayerManager.micVol = document.info.micVol
-                        let exportMP3 = document.info.exportMP3
-                        let format = exportMP3 ? "mp3" : document.info.format
-                        let saveURL = fileURL.deletingPathExtension().appendingPathExtension(format)
-                        audioPlayerManager.saveFile(saveURL, saveAsMP3: exportMP3)
-                    }
-                } else {
+            case .package:
+                break // The package writer callback owns terminalization and any automatic export.
+            case .single:
+                switch finishedJob.finishSingleOutput() {
+                case .success(let outputURL):
                     if !ud.bool(forKey: "showPreview") {
                         let title = "Recording Completed".local
-                        let body = String(format: "File saved to: %@".local, filePath)
+                        let body = String(format: "File saved to: %@".local, outputURL.path)
                         let id = "quickrecorder.completed.\(UUID().uuidString)"
                         showNotification(title: title, body: body, id: id)
                     } else {
-                        showPreview(path: filePath, image: NSImage(named: "qmaIcon"))
+                        showPreview(path: outputURL.path, image: NSImage(named: "qmaIcon"))
                     }
+                case .failure(let error):
+                    showNotification(title: "Failed to save file".local, body: error.localizedDescription, id: "quickrecorder.error.\(UUID().uuidString)")
                 }
+            case .videoRemux:
+                let error = finishedJob.discardOutputs(reason: .preparation(
+                    stage: .first,
+                    message: "A video-remux job reached audio-only finalization."
+                ))
+                showNotification(title: "Failed to save file".local, body: error.localizedDescription, id: "quickrecorder.error.\(UUID().uuidString)")
             }
         }
         
@@ -495,26 +610,89 @@ class SCContext {
         AppDelegate.shared.presenterType = "OFF"
         updateStatusBar()
         
-        if !(ud.bool(forKey: "recordMic") && ud.bool(forKey: "recordWinSound") && ud.bool(forKey: "remuxAudio")) && streamType != .systemaudio {
-            if let vW = vW {
-                if vW.status != .completed {
-                    streamType = nil
-                    return
-                }
+        if !shouldRemuxVideo && streamType != .systemaudio {
+            guard case .success(let outputURL) = directVideoResult else {
+                streamType = nil
+                if let finishedJob, outputJob === finishedJob { outputJob = nil }
+                return
             }
             if !ud.bool(forKey: "showPreview") {
                 let title = "Recording Completed".local
-                let body = String(format: "File saved to: %@".local, filePath)
+                let body = String(format: "File saved to: %@".local, outputURL.path)
                 let id = "quickrecorder.completed.\(UUID().uuidString)"
                 showNotification(title: title, body: body, id: id)
             } else {
-                showPreview(path: filePath)
+                showPreview(path: outputURL.path)
             }
             trimVideo()
         }
         
         streamType = nil
         firstFrame = nil
+        if let finishedJob, outputJob === finishedJob { outputJob = nil }
+    }
+
+    private static func finishCompletedAudioPackage(
+        _ fileURL: URL,
+        automaticallyExports: Bool,
+        audioQualityKbps: Int?
+    ) {
+        if automaticallyExports {
+            let document = try? qmaPackageHandle.load(from: fileURL)
+            guard let document else {
+                showNotification(
+                    title: "Failed to save file".local,
+                    body: "The recorded audio package could not be opened.",
+                    id: "quickrecorder.error.\(UUID().uuidString)"
+                )
+                return
+            }
+            let audioPlayerManager = AudioPlayerManager()
+            audioPlayerManager.loadAudioFiles(
+                format: document.info.format,
+                package: fileURL,
+                encoder: document.info.encoder,
+                saveMP3: document.info.exportMP3
+            )
+            audioPlayerManager.sysVol = document.info.sysVol
+            audioPlayerManager.micVol = document.info.micVol
+            let exportMP3 = document.info.exportMP3
+            let layout: RecordingOutputJob.Layout = exportMP3
+                ? .conversion(
+                    inputExtension: document.info.format,
+                    finalExtension: "mp3",
+                    audioQualityKbps: audioQualityKbps
+                )
+                : .single(
+                    fileExtension: document.info.format,
+                    audioQualityKbps: audioQualityKbps
+                )
+            do {
+                let exportJob = try RecordingOutputJob.reserve(
+                    in: fileURL.deletingLastPathComponent(),
+                    preferredStem: fileURL.deletingPathExtension().lastPathComponent,
+                    layout: layout
+                )
+                audioPlayerManager.saveFile(
+                    exportJob.finalURL,
+                    saveAsMP3: exportMP3,
+                    recordingJob: exportJob
+                )
+            } catch {
+                showNotification(
+                    title: "Failed to save file".local,
+                    body: error.localizedDescription,
+                    id: "quickrecorder.error.\(UUID().uuidString)"
+                )
+            }
+        } else if !ud.bool(forKey: "showPreview") {
+            let title = "Recording Completed".local
+            let body = String(format: "File saved to: %@".local, fileURL.path)
+            let id = "quickrecorder.completed.\(UUID().uuidString)"
+            showNotification(title: title, body: body, id: id)
+        } else {
+            showPreview(path: fileURL.path, image: NSImage(named: "qmaIcon"))
+        }
     }
     
     static func showPreview(path: String, image: NSImage? = nil) {
@@ -532,13 +710,13 @@ class SCContext {
         }
     }
     
-    static func m4a2mp3(inputUrl: URL, outputUrl: URL) async throws {
+    static func m4a2mp3(inputUrl: URL, outputUrl: URL, qualityKbps: Int? = nil) async throws {
         let progress = Progress()
         let lameEncoder = try SwiftLameEncoder(
             sourceUrl: inputUrl,
             configuration: .init(
                 sampleRate: .custom(48000),
-                bitrateMode: .constant(Int32(ud.integer(forKey: "audioQuality"))),
+                bitrateMode: .constant(Int32(qualityKbps ?? ud.integer(forKey: "audioQuality"))),
                 quality: .nearBest
             ),
             destinationUrl: outputUrl,
@@ -752,25 +930,39 @@ class SCContext {
         }
     }
     
-    static func mixAudioTracks(videoURL: URL, completion: @escaping (Result<URL, Error>) -> Void) {
+    static func mixAudioTracks(job: RecordingOutputJob, completion: @escaping (Result<URL, RecordingExportError>) -> Void) {
         showNotification(title: "Still Processing".local, body: "Mixing audio track...".local, id: "quickrecorder.processing.\(UUID().uuidString)")
+        guard job.beginPostprocessing() else {
+            _ = job.finishExport(
+                .failure(.preparation(stage: .first, message: "The recording job is already terminal.")),
+                deliveringTo: completion
+            )
+            return
+        }
+        let finishTerminal: (Result<Void, RecordingExportError>) -> Void = { result in
+            _ = job.finishExport(result, deliveringTo: completion)
+        }
         
-        let asset = AVAsset(url: videoURL)
-        let audioOutputURL = videoURL.deletingPathExtension()
-        let outputURL = audioOutputURL.deletingPathExtension()
+        let asset = AVAsset(url: job.inputURL)
+        guard let audioOutputURL = job.intermediateURLs.first else {
+            finishTerminal(.failure(.preparation(stage: .first, message: "Missing audio intermediate URL.")))
+            return
+        }
         let audioOnlyComposition = AVMutableComposition()
         
-        let fileEnding = ud.string(forKey: "videoFormat") ?? ""
-        var fileType: AVFileType?
+        let fileEnding = job.finalURL.pathExtension
+        let fileType: AVFileType
         switch fileEnding {
         case VideoFormat.mov.rawValue: fileType = AVFileType.mov
         case VideoFormat.mp4.rawValue: fileType = AVFileType.mp4
-        default: assertionFailure("loaded unknown video format".local)
+        default:
+            finishTerminal(.failure(.preparation(stage: .first, message: "Unsupported video format: \(fileEnding)")))
+            return
         }
         
         let audioTracks = asset.tracks(withMediaType: .audio)
         guard audioTracks.count > 1 else {
-            completion(.failure(NSError(domain: "AudioTrackError", code: -1, userInfo: [NSLocalizedDescriptionKey: "Not enough audio tracks found."])))
+            finishTerminal(.failure(.preparation(stage: .first, message: "Not enough audio tracks found.")))
             return
         }
         
@@ -779,7 +971,7 @@ class SCContext {
                 do {
                     try compositionAudioTrack.insertTimeRange(CMTimeRange(start: .zero, duration: asset.duration), of: audioTrack, at: .zero)
                 } catch {
-                    completion(.failure(NSError(domain: "AudioTrackInsertionError", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to insert audio track: \(error.localizedDescription)"])))
+                    finishTerminal(.failure(.preparation(stage: .first, message: "Failed to insert audio track: \(error.localizedDescription)")))
                     return
                 }
             }
@@ -793,22 +985,14 @@ class SCContext {
         }
         
         guard let audioExportSession = AVAssetExportSession(asset: audioOnlyComposition, presetName: AVAssetExportPresetHighestQuality) else {
-            completion(.failure(NSError(domain: "AudioExportSessionError", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to create audio export session."])))
+            finishTerminal(.failure(.preparation(stage: .first, message: "Failed to create audio export session.")))
             return
         }
         audioExportSession.outputURL = audioOutputURL
-        audioExportSession.outputFileType = fileType ?? .mp4
+        audioExportSession.outputFileType = fileType
         audioExportSession.audioMix = audioMix
         
         audioExportSession.exportAsynchronously {
-            /*var exportStatus: AVAssetExportSession.Status = .unknown
-            
-            // Loop until export session is completed, failed, or cancelled
-            while exportStatus != .completed && exportStatus != .failed && exportStatus != .cancelled {
-                exportStatus = audioExportSession.status
-                Thread.sleep(forTimeInterval: 0.1)
-            }*/
-            
             switch audioExportSession.status {
             case .completed:
                 let audioAsset = AVAsset(url: audioOutputURL)
@@ -816,20 +1000,20 @@ class SCContext {
                 
                 guard let videoTrack = asset.tracks(withMediaType: .video).first,
                       let compositionVideoTrack = composition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid) else {
-                    completion(.failure(NSError(domain: "VideoTrackError", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to get video track."])))
+                    finishTerminal(.failure(.preparation(stage: .second, message: "Failed to get video track.")))
                     return
                 }
                 
                 do {
                     try compositionVideoTrack.insertTimeRange(CMTimeRange(start: .zero, duration: asset.duration), of: videoTrack, at: .zero)
                 } catch {
-                    completion(.failure(NSError(domain: "VideoTrackInsertionError", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to insert video track: \(error.localizedDescription)"])))
+                    finishTerminal(.failure(.preparation(stage: .second, message: "Failed to insert video track: \(error.localizedDescription)")))
                     return
                 }
                 
                 let audioTracks = audioAsset.tracks(withMediaType: .audio)
                 guard audioTracks.count >= 1 else {
-                    completion(.failure(NSError(domain: "AudioTrackError", code: -1, userInfo: [NSLocalizedDescriptionKey: "Not enough audio tracks found."])))
+                    finishTerminal(.failure(.preparation(stage: .second, message: "Not enough audio tracks found.")))
                     return
                 }
                 
@@ -838,42 +1022,52 @@ class SCContext {
                         do {
                             try compositionAudioTrack.insertTimeRange(CMTimeRange(start: .zero, duration: asset.duration), of: audioTrack, at: .zero)
                         } catch {
-                            completion(.failure(NSError(domain: "AudioTrackInsertionError", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to insert audio track: \(error.localizedDescription)"])))
+                            finishTerminal(.failure(.preparation(stage: .second, message: "Failed to insert audio track: \(error.localizedDescription)")))
                             return
                         }
                     }
                 }
                 
                 guard let exportSession = AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetPassthrough) else {
-                    completion(.failure(NSError(domain: "ExportSessionError", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to create export session."])))
+                    finishTerminal(.failure(.preparation(stage: .second, message: "Failed to create export session.")))
                     return
                 }
                 
-                exportSession.outputURL = outputURL
-                exportSession.outputFileType = fileType ?? .mp4
+                exportSession.outputURL = job.stagedOutputURL
+                exportSession.outputFileType = fileType
                 exportSession.audioMix = audioMix
+                exportSession.shouldOptimizeForNetworkUse = true
                 
                 exportSession.exportAsynchronously {
                     switch exportSession.status {
                     case .completed:
-                        let  fileManager = fd
-                        try? fileManager.removeItem(atPath: filePath)
-                        try? fileManager.removeItem(atPath: audioOutputURL.path)
-                        completion(.success(outputURL))
+                        finishTerminal(.success(()))
                     case .failed:
-                        completion(.failure(exportSession.error ?? NSError(domain: "ExportError", code: -1, userInfo: [NSLocalizedDescriptionKey: "Export failed for an unknown reason."])))
+                        finishTerminal(.failure(.failed(
+                            stage: .second,
+                            message: exportSession.error?.localizedDescription ?? "Export failed for an unknown reason."
+                        )))
                     case .cancelled:
-                        completion(.failure(NSError(domain: "ExportCancelled", code: -1, userInfo: [NSLocalizedDescriptionKey: "Export was cancelled."])))
+                        finishTerminal(.failure(.cancelled(stage: .second)))
                     default:
-                        break
+                        finishTerminal(.failure(.failed(
+                            stage: .second,
+                            message: "Export ended with unexpected status \(exportSession.status.rawValue)."
+                        )))
                     }
                 }
             case .failed:
-                completion(.failure(audioExportSession.error ?? NSError(domain: "ExportError", code: -1, userInfo: [NSLocalizedDescriptionKey: "Export failed for an unknown reason."])))
+                finishTerminal(.failure(.failed(
+                    stage: .first,
+                    message: audioExportSession.error?.localizedDescription ?? "Export failed for an unknown reason."
+                )))
             case .cancelled:
-                completion(.failure(NSError(domain: "ExportCancelled", code: -1, userInfo: [NSLocalizedDescriptionKey: "Export was cancelled."])))
+                finishTerminal(.failure(.cancelled(stage: .first)))
             default:
-                break
+                finishTerminal(.failure(.failed(
+                    stage: .first,
+                    message: "Export ended with unexpected status \(audioExportSession.status.rawValue)."
+                )))
             }
         }
     }

@@ -100,8 +100,11 @@ them.
 - **Verification executor**: each lane runs its specified checks; the primary
   integrator re-runs the binding's required verification before merge.
 - **Merge flow**: each implementation uses a non-draft pull request carrying
-  `Closes #<issue>`. Checks and tests must be green and the CodeRabbit review
-  triaged before the primary integrator merges sequentially. CodeRabbit
-  auto-reviews new pull requests; if it is silent, comment `@coderabbitai review`,
-  escalating once to `@coderabbitai full review`. Fix real findings; skip nits
-  only with a stated reason on the pull request.
+  `Closes #<issue>`. Checks and tests must be green. When a CodeRabbit review
+  appears, it must be triaged before the primary integrator merges sequentially.
+  CodeRabbit auto-reviews new pull requests; if it is silent, comment
+  `@coderabbitai review`, escalating once to `@coderabbitai full review`. Fix real
+  findings; skip nits only with a stated reason on the pull request. If both
+  triggers remain silent, record both trigger comments and the resulting silent
+  outcome on the pull request; only then may the integrator merge without a
+  CodeRabbit review.

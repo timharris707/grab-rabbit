@@ -7,6 +7,10 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		270000000000000000000001 /* PermissionFlowSourceTripwireTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 270000000000000000000002 /* PermissionFlowSourceTripwireTests.swift */; };
+		27000000000000000000000D /* ScreenRecordingPermissionCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 27000000000000000000000C /* ScreenRecordingPermissionCoordinator.swift */; };
+		27000000000000000000000E /* ScreenRecordingPermissionCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 27000000000000000000000C /* ScreenRecordingPermissionCoordinator.swift */; };
+		270000000000000000000010 /* ScreenRecordingPermissionCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 27000000000000000000000F /* ScreenRecordingPermissionCoordinatorTests.swift */; };
 		181724052BE3BEA600F5F539 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 181724042BE3BEA600F5F539 /* Sparkle */; };
 		1821F2E82CF4B226004A2EC0 /* ContentViewNew.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1821F2E72CF4B226004A2EC0 /* ContentViewNew.swift */; };
 		184506CE2C69213400AFDA45 /* MatrixColorSelector in Frameworks */ = {isa = PBXBuildFile; productRef = 184506CD2C69213400AFDA45 /* MatrixColorSelector */; };
@@ -46,6 +50,10 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		270000000000000000000002 /* PermissionFlowSourceTripwireTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PermissionFlowSourceTripwireTests.swift; sourceTree = "<group>"; };
+		270000000000000000000003 /* QuickRecorderTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = QuickRecorderTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		27000000000000000000000C /* ScreenRecordingPermissionCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenRecordingPermissionCoordinator.swift; sourceTree = "<group>"; };
+		27000000000000000000000F /* ScreenRecordingPermissionCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenRecordingPermissionCoordinatorTests.swift; sourceTree = "<group>"; };
 		1821F2E72CF4B226004A2EC0 /* ContentViewNew.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentViewNew.swift; sourceTree = "<group>"; };
 		184CAEC62BDCCC2300D61D57 /* AVContext.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AVContext.swift; sourceTree = "<group>"; };
 		184CAEC82BDDEC6800D61D57 /* AppBlockSelector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppBlockSelector.swift; sourceTree = "<group>"; };
@@ -83,6 +91,13 @@
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
+		270000000000000000000004 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		18D3BDE42BCE5DC1006CFFC0 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -123,6 +138,7 @@
 			isa = PBXGroup;
 			children = (
 				18D3BDE92BCE5DC1006CFFC0 /* QuickRecorder */,
+				270000000000000000000005 /* QuickRecorderTests */,
 				18D3BDE82BCE5DC1006CFFC0 /* Products */,
 				181724062BE3BF2000F5F539 /* Frameworks */,
 			);
@@ -132,6 +148,7 @@
 			isa = PBXGroup;
 			children = (
 				18D3BDE72BCE5DC1006CFFC0 /* QuickRecorder.app */,
+				270000000000000000000003 /* QuickRecorderTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -141,6 +158,7 @@
 			children = (
 				189BD5F62BDFDF200056D06C /* Info.plist */,
 				18D3BDEA2BCE5DC1006CFFC0 /* QuickRecorderApp.swift */,
+				27000000000000000000000C /* ScreenRecordingPermissionCoordinator.swift */,
 				18FEBDA92BCF8200003F09BC /* RecordEngine.swift */,
 				18D3BE032BCEC847006CFFC0 /* SCContext.swift */,
 				184CAEC62BDCCC2300D61D57 /* AVContext.swift */,
@@ -152,6 +170,15 @@
 				18D3BDF02BCE5DC2006CFFC0 /* Preview Content */,
 			);
 			path = QuickRecorder;
+			sourceTree = "<group>";
+		};
+		270000000000000000000005 /* QuickRecorderTests */ = {
+			isa = PBXGroup;
+			children = (
+				270000000000000000000002 /* PermissionFlowSourceTripwireTests.swift */,
+				27000000000000000000000F /* ScreenRecordingPermissionCoordinatorTests.swift */,
+			);
+			path = QuickRecorderTests;
 			sourceTree = "<group>";
 		};
 		18D3BDF02BCE5DC2006CFFC0 /* Preview Content */ = {
@@ -189,6 +216,25 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		270000000000000000000006 /* QuickRecorderTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 27000000000000000000000B /* Build configuration list for PBXNativeTarget "QuickRecorderTests" */;
+			buildPhases = (
+				270000000000000000000008 /* Sources */,
+				270000000000000000000004 /* Frameworks */,
+				270000000000000000000007 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = QuickRecorderTests;
+			packageProductDependencies = (
+			);
+			productName = QuickRecorderTests;
+			productReference = 270000000000000000000003 /* QuickRecorderTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 		18D3BDE62BCE5DC1006CFFC0 /* QuickRecorder */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = 18D3BDF62BCE5DC2006CFFC0 /* Build configuration list for PBXNativeTarget "QuickRecorder" */;
@@ -224,6 +270,9 @@
 				LastSwiftUpdateCheck = 1510;
 				LastUpgradeCheck = 1600;
 				TargetAttributes = {
+					270000000000000000000006 = {
+						CreatedOnToolsVersion = 26.0;
+					};
 					18D3BDE62BCE5DC1006CFFC0 = {
 						CreatedOnToolsVersion = 15.1;
 					};
@@ -250,11 +299,19 @@
 			projectRoot = "";
 			targets = (
 				18D3BDE62BCE5DC1006CFFC0 /* QuickRecorder */,
+				270000000000000000000006 /* QuickRecorderTests */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
+		270000000000000000000007 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		18D3BDE52BCE5DC1006CFFC0 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -295,6 +352,16 @@
 /* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		270000000000000000000008 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				270000000000000000000001 /* PermissionFlowSourceTripwireTests.swift in Sources */,
+				27000000000000000000000E /* ScreenRecordingPermissionCoordinator.swift in Sources */,
+				270000000000000000000010 /* ScreenRecordingPermissionCoordinatorTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		18D3BDE32BCE5DC1006CFFC0 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -318,6 +385,7 @@
 				18A551FA2D0749C3008FC5F6 /* WindowAccessor.swift in Sources */,
 				18A551FB2D0749C3008FC5F6 /* WindowHighlighter.swift in Sources */,
 				18D3BE042BCEC847006CFFC0 /* SCContext.swift in Sources */,
+				27000000000000000000000D /* ScreenRecordingPermissionCoordinator.swift in Sources */,
 				18775C202BE21F38008333EF /* iDeviceSelector.swift in Sources */,
 				18D3BDED2BCE5DC1006CFFC0 /* ContentView.swift in Sources */,
 				18D3BE012BCEB1BF006CFFC0 /* AppSelector.swift in Sources */,
@@ -343,6 +411,28 @@
 /* End PBXVariantGroup section */
 
 /* Begin XCBuildConfiguration section */
+		270000000000000000000009 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 12.3;
+				PRODUCT_BUNDLE_IDENTIFIER = com.timharris.grabrabbit.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		27000000000000000000000A /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 12.3;
+				PRODUCT_BUNDLE_IDENTIFIER = com.timharris.grabrabbit.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
 		18D3BDF42BCE5DC2006CFFC0 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -486,9 +576,9 @@
 				INFOPLIST_FILE = QuickRecorder/Info.plist;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
 				INFOPLIST_KEY_LSUIElement = YES;
-				INFOPLIST_KEY_NSCameraUsageDescription = "QuickRecorder needs this permission to record your camera and mobile device.";
+				INFOPLIST_KEY_NSCameraUsageDescription = "Allow camera access to record a camera or mobile device.";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "Copyright © 2024 lihaoyun6. All rights reserved.";
-				INFOPLIST_KEY_NSMicrophoneUsageDescription = "QuickRecorder needs this permission to record your voice.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Allow microphone access to record the selected audio.";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
@@ -524,9 +614,9 @@
 				INFOPLIST_FILE = QuickRecorder/Info.plist;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
 				INFOPLIST_KEY_LSUIElement = YES;
-				INFOPLIST_KEY_NSCameraUsageDescription = "QuickRecorder needs this permission to record your camera and mobile device.";
+				INFOPLIST_KEY_NSCameraUsageDescription = "Allow camera access to record a camera or mobile device.";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "Copyright © 2024 lihaoyun6. All rights reserved.";
-				INFOPLIST_KEY_NSMicrophoneUsageDescription = "QuickRecorder needs this permission to record your voice.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Allow microphone access to record the selected audio.";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
@@ -544,6 +634,15 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		27000000000000000000000B /* Build configuration list for PBXNativeTarget "QuickRecorderTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				270000000000000000000009 /* Debug */,
+				27000000000000000000000A /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 		18D3BDE22BCE5DC1006CFFC0 /* Build configuration list for PBXProject "QuickRecorder" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (

@@ -21,6 +21,7 @@ struct ContentViewNew: View {
     @AppStorage("micDevice") private var micDevice: String = "default"
     @AppStorage("showOnDock") private var showOnDock: Bool = true
     @AppStorage("showMenubar") private var showMenubar: Bool = false
+    @ObservedObject private var contentReadiness = captureReadiness
 
     var appDelegate = AppDelegate.shared
     
@@ -34,12 +35,21 @@ struct ContentViewNew: View {
             }.opacity(0.5)
             VStack {
                 HStack {
+                    if contentReadiness.isRecoveryActionAvailable {
+                        Button(action: {
+                            SCContext.recoverScreenRecordingAccess()
+                        }, label: {
+                            SelectorView(title: "Screen Recording Access", symbol: "lock.open").cornerRadius(8)
+                        }).buttonStyle(.plain)
+                        Divider().frame(height: 70)
+                    }
                     Button(action: {
                         closeMainWindow()
                         appDelegate.createNewWindow(view: ScreenSelector(), title: "Screen Selector".local)
                     }, label: {
                         SelectorView(title: "Screen".local, symbol: "tv.inset.filled").cornerRadius(8)
                     }).buttonStyle(.plain)
+                        .disabled(!contentReadiness.isReady)
                     Divider().frame(height: 70)
                     Button(action: {
                         closeMainWindow()
@@ -60,6 +70,7 @@ struct ContentViewNew: View {
                     }, label: {
                         SelectorView(title: "Screen Area".local, symbol: "viewfinder").cornerRadius(8)
                     }).buttonStyle(.plain)
+                        .disabled(!contentReadiness.isReady)
                     Divider().frame(height: 70)
                     Button(action: {
                         closeMainWindow()
@@ -68,6 +79,7 @@ struct ContentViewNew: View {
                         SelectorView(title: "Application".local, symbol: "app", overlayer: "App")
                             .cornerRadius(8)
                     }).buttonStyle(.plain)
+                        .disabled(!contentReadiness.isReady)
                     Divider().frame(height: 70)
                     Button(action: {
                         closeMainWindow()
@@ -75,6 +87,7 @@ struct ContentViewNew: View {
                     }, label: {
                         SelectorView(title: "Window".local, symbol: "macwindow").cornerRadius(8)
                     }).buttonStyle(.plain)
+                        .disabled(!contentReadiness.isReady)
                 }
                 HStack(spacing: 27) {
                     VStack { Divider().frame(width: 100) }
@@ -94,6 +107,7 @@ struct ContentViewNew: View {
                         }, label: {
                             SelectorView(title: "System Audio".local, symbol: "waveform").cornerRadius(8)
                         }).buttonStyle(.plain)
+                            .disabled(!contentReadiness.isReady)
                         Button {} label: {
                             HStack(spacing: -2) {
                                 Button {

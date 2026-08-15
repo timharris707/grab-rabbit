@@ -20,6 +20,22 @@ let isMacOS12 = ProcessInfo.processInfo.operatingSystemVersion.majorVersion == 1
 let isMacOS14 = ProcessInfo.processInfo.operatingSystemVersion.majorVersion == 14
 let isMacOS15 = ProcessInfo.processInfo.operatingSystemVersion.majorVersion == 15
 var scPerm = false
+final class CaptureReadiness: ObservableObject {
+    @Published private(set) var isReady = false
+    @Published private(set) var isRecoveryActionAvailable = false
+
+    func update(_ isReady: Bool) {
+        self.isReady = isReady
+        if isReady {
+            isRecoveryActionAvailable = false
+        }
+    }
+
+    func updateRecoveryActionAvailability(_ isAvailable: Bool) {
+        isRecoveryActionAvailable = isAvailable
+    }
+}
+let captureReadiness = CaptureReadiness()
 let fd = FileManager.default
 let ud = UserDefaults.standard
 var statusBarItem: NSStatusItem!
@@ -199,7 +215,18 @@ class AppDelegate: NSObject, NSApplicationDelegate, SCStreamDelegate, SCStreamOu
     }
     
     func applicationWillFinishLaunching(_ notification: Notification) {
-        scPerm = SCContext.updateAvailableContentSync() != nil
+        scPerm = CGPreflightScreenCaptureAccess()
+        captureReadiness.update(false)
+        ScreenRecordingStartupPolicy().start(
+            preflightAuthorized: scPerm,
+            refresh: {
+                captureReadiness.updateRecoveryActionAvailability(false)
+                SCContext.refreshAvailableContent { _ in }
+            },
+            makeRecoveryActionReachable: {
+                captureReadiness.updateRecoveryActionAvailability(true)
+            }
+        )
         
         let process = NSWorkspace.shared.runningApplications.filter({ $0.bundleIdentifier == "com.lihaoyun6.QuickRecorder" })
         if process.count > 1 {

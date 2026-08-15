@@ -7,27 +7,6 @@
 
 import SwiftUI
 
-func isChineseNewYear() -> Bool {
-    let currentDate = Date()
-    let chineseCalendar = Calendar(identifier: .chinese)
-    let currentComponents = chineseCalendar.dateComponents([.month, .day], from: currentDate)
-    if currentComponents.month == 12 {
-        guard let nextDate = chineseCalendar.date(byAdding: .day, value: 1, to: currentDate),
-              let nextComponents = chineseCalendar.dateComponents([.month], from: nextDate).month else {
-            return false
-        }
-        if nextComponents == 1 { return true }
-    }
-    if currentComponents.month == 1 && currentComponents.day == 1 { return true }
-    return false
-}
-
-func isAllowChineseNewYear() -> Bool {
-    let allwoedRegions: Set<String> = ["CN", "HK", "MO", "TW", "SG", "MY", "ID", "KR", "VN", "PH"]
-    let currentRegionCode = Locale.current.regionCode ?? ""
-    return allwoedRegions.contains(currentRegionCode)
-}
-
 func isTodayChristmas() -> Bool {
     let calendar = Calendar.current
     let today = Date()
@@ -65,7 +44,7 @@ struct SurpriseView: NSViewRepresentable {
         emitterLayer.frame = CGRect(x: 0, y: 0, width: view.frame.width, height: view.frame.height)
         emitterLayer.emitterShape = .line
         emitterLayer.emitterPosition = CGPoint(x: width / 2, y: height + 50)
-        emitterLayer.emitterSize = CGSize(width: width, height: 40) // 横向扩展整个屏幕
+        emitterLayer.emitterSize = CGSize(width: width, height: 40) // Span the full width.
         
         emitterLayer.emitterMode = .surface
         emitterLayer.renderMode = .oldestLast
@@ -95,6 +74,6 @@ struct SurpriseView: NSViewRepresentable {
     }
     
     func updateNSView(_ nsView: NSView, context: Context) {
-        // 在需要时更新视图
+        // The emitter does not require view updates.
     }
 }

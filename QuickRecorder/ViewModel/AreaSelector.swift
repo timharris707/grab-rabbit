@@ -460,11 +460,11 @@ class ScreenshotOverlayView: NSView {
         } else {
             if dragIng {
                 dragIng = true
-                // 计算移动偏移量
+                // Calculate the drag offset.
                 let deltaX = currentLocation.x - initialLocation.x
                 let deltaY = currentLocation.y - initialLocation.y
 
-                // 更新矩形位置
+                // Update the selection position.
                 let x = self.selectionRect?.origin.x
                 let y = self.selectionRect?.origin.y
                 let w = self.selectionRect?.size.width
@@ -474,7 +474,7 @@ class ScreenshotOverlayView: NSView {
                 initialLocation = currentLocation
             } else {
                 //dragIng = false
-                // 创建新矩形
+                // Create a new selection.
                 guard let maxFrame = maxFrame else { return }
                 let origin = NSPoint(x: max(maxFrame.origin.x, min(initialLocation.x, currentLocation.x)), y: max(maxFrame.origin.y, min(initialLocation.y, currentLocation.y)))
                 var maxH = abs(currentLocation.y - initialLocation.y)

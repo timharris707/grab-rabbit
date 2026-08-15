@@ -2,7 +2,7 @@
 <p align="center">
 <img src="./QuickRecorder/Assets.xcassets/AppIcon.appiconset/icon_128x128@2x.png" width="200" height="200" />
 <h1 align="center">QuickRecorder</h1>
-<h3 align="center">A lightweight and high-performance screen recorder for macOS<br><a href="./README_zh.md">[中文版本]</a><br><a href="https://lihaoyun6.github.io/quickrecorder/">[Landing Page]</a>
+<h3 align="center">A lightweight and high-performance screen recorder for macOS</h3>
 </p>
 
 ## Screenshot
@@ -41,9 +41,6 @@ brew install lihaoyun6/tap/quickrecorder
 
 **3. How to independently control the volume of system sound and sound from microphone in other video editor?**
 > QuickRecorder will merge the audio input from the microphone to the main audio track after recording by default. If you need to edit the video, you can turn off the `Record Microphone to Main Track` option in the settings panel. After turning off, the system sound and sound from microphone will be recorded into two audio tracks and can be edited independently.  
-
-## Donate
-<img src="./img/donate.png" width="350"/>
 
 ## Thanks
 [Azayaka](https://github.com/Mnpn/Azayaka) @Mnpn

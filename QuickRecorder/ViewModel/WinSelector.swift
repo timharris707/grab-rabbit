@@ -343,7 +343,7 @@ class WindowSelectorViewModel: NSObject, ObservableObject, SCStreamDelegate, SCS
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { self.isReady = true }
                     }
                 } catch {
-                    print("Get windowshot error：\(error)")
+                    print("Get windowshot error: \(error)")
                 }
             }
         }

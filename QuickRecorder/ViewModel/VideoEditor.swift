@@ -82,7 +82,7 @@ class RecorderPlayerModel: NSObject, ObservableObject {
                                     let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 1, repeats: false)
                                     let request = UNNotificationRequest(identifier: "quickrecorder.completed.\(UUID().uuidString)", content: content, trigger: trigger)
                                     UNUserNotificationCenter.current().add(request) { error in
-                                        if let error = error { print("Notification failed to send：\(error.localizedDescription)") }
+                                        if let error = error { print("Notification failed to send: \(error.localizedDescription)") }
                                     }
                                 }
                             }
@@ -101,10 +101,10 @@ class RecorderPlayerModel: NSObject, ObservableObject {
     }
     
     func cleanup() {
-        // 移除所有观察者
+        // Remove the player observer.
         playerItem.removeObserver(self, forKeyPath: #keyPath(AVPlayerItem.status))
         playerView.player?.pause()
-        playerView.player = nil // 移除 player 对象
+        playerView.player = nil
     }
 }
 

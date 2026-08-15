@@ -41,7 +41,7 @@ extension AppDelegate {
     }
     
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
-        /* 保留后续以作他用
+        /* Reserved for future camera-frame processing.
         if !SCContext.isPaused && ud.string(forKey: "recordCam") != "" {
             if sampleBuffer.isValid { SCContext.isCameraReady = true }
             if sampleBuffer.imageBuffer != nil { SCContext.frameCache = sampleBuffer }
@@ -148,7 +148,7 @@ class AVOutputClass: NSObject, AVCaptureFileOutputRecordingDelegate, AVCaptureVi
         let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 1, repeats: false)
         let request = UNNotificationRequest(identifier: "quickrecorder.completed.\(UUID().uuidString)", content: content, trigger: trigger)
         UNUserNotificationCenter.current().add(request) { error in
-            if let error = error { print("Notification failed to send：\(error.localizedDescription)") }
+            if let error = error { print("Notification failed to send: \(error.localizedDescription)") }
         }
     }
 }

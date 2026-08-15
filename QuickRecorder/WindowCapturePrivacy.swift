@@ -41,6 +41,11 @@ struct WindowCaptureOutputProfile: Equatable {
 enum WindowCapturePrivacyError: Error {
     case unsupportedPixelFormat(OSType)
     case unavailableBaseAddress
+    case pixelBufferPoolCreationFailed(CVReturn)
+    case pixelBufferAllocationFailed(CVReturn)
+    case pixelBufferLockFailed(CVReturn)
+    case formatDescriptionCreationFailed(OSStatus)
+    case sampleBufferCreationFailed(OSStatus)
 }
 
 enum WindowCapturePrivacy {
@@ -203,6 +208,117 @@ final class WindowCaptureFrameSanitizer {
     func sanitize(_ sampleBuffer: CMSampleBuffer) throws {
         guard let pixelBuffer = sampleBuffer.imageBuffer else { return }
         try WindowCapturePrivacy.sanitize(pixelBuffer, mode: mode, matte: matte)
+    }
+}
+
+final class WindowCaptureSampleCopier {
+    private struct PoolShape: Equatable {
+        let width: Int
+        let height: Int
+        let pixelFormat: OSType
+    }
+
+    private var pool: CVPixelBufferPool?
+    private var poolShape: PoolShape?
+
+    func copy(_ sampleBuffer: CMSampleBuffer) throws -> CMSampleBuffer {
+        guard let sourceBuffer = sampleBuffer.imageBuffer else { return sampleBuffer }
+        let shape = PoolShape(
+            width: CVPixelBufferGetWidth(sourceBuffer),
+            height: CVPixelBufferGetHeight(sourceBuffer),
+            pixelFormat: CVPixelBufferGetPixelFormatType(sourceBuffer)
+        )
+        guard shape.pixelFormat == kCVPixelFormatType_32BGRA else {
+            throw WindowCapturePrivacyError.unsupportedPixelFormat(shape.pixelFormat)
+        }
+        if poolShape != shape { try createPool(for: shape) }
+
+        var destinationBuffer: CVPixelBuffer?
+        let allocationStatus = CVPixelBufferPoolCreatePixelBuffer(
+            kCFAllocatorDefault,
+            pool!,
+            &destinationBuffer
+        )
+        guard allocationStatus == kCVReturnSuccess, let destinationBuffer else {
+            throw WindowCapturePrivacyError.pixelBufferAllocationFailed(allocationStatus)
+        }
+        try copyPixels(from: sourceBuffer, to: destinationBuffer)
+        CVBufferPropagateAttachments(sourceBuffer, destinationBuffer)
+
+        var formatDescription: CMVideoFormatDescription?
+        let formatStatus = CMVideoFormatDescriptionCreateForImageBuffer(
+            allocator: kCFAllocatorDefault,
+            imageBuffer: destinationBuffer,
+            formatDescriptionOut: &formatDescription
+        )
+        guard formatStatus == noErr, let formatDescription else {
+            throw WindowCapturePrivacyError.formatDescriptionCreationFailed(formatStatus)
+        }
+        var timing = CMSampleTimingInfo(
+            duration: CMSampleBufferGetDuration(sampleBuffer),
+            presentationTimeStamp: CMSampleBufferGetPresentationTimeStamp(sampleBuffer),
+            decodeTimeStamp: CMSampleBufferGetDecodeTimeStamp(sampleBuffer)
+        )
+        var copiedSample: CMSampleBuffer?
+        let sampleStatus = CMSampleBufferCreateReadyWithImageBuffer(
+            allocator: kCFAllocatorDefault,
+            imageBuffer: destinationBuffer,
+            formatDescription: formatDescription,
+            sampleTiming: &timing,
+            sampleBufferOut: &copiedSample
+        )
+        guard sampleStatus == noErr, let copiedSample else {
+            throw WindowCapturePrivacyError.sampleBufferCreationFailed(sampleStatus)
+        }
+        return copiedSample
+    }
+
+    private func createPool(for shape: PoolShape) throws {
+        var newPool: CVPixelBufferPool?
+        let status = CVPixelBufferPoolCreate(
+            kCFAllocatorDefault,
+            [kCVPixelBufferPoolMinimumBufferCountKey as String: 3] as CFDictionary,
+            [
+                kCVPixelBufferPixelFormatTypeKey as String: shape.pixelFormat,
+                kCVPixelBufferWidthKey as String: shape.width,
+                kCVPixelBufferHeightKey as String: shape.height,
+                kCVPixelBufferIOSurfacePropertiesKey as String: [:],
+            ] as CFDictionary,
+            &newPool
+        )
+        guard status == kCVReturnSuccess, let newPool else {
+            throw WindowCapturePrivacyError.pixelBufferPoolCreationFailed(status)
+        }
+        pool = newPool
+        poolShape = shape
+    }
+
+    private func copyPixels(from source: CVPixelBuffer, to destination: CVPixelBuffer) throws {
+        let sourceLock = CVPixelBufferLockBaseAddress(source, .readOnly)
+        guard sourceLock == kCVReturnSuccess else {
+            throw WindowCapturePrivacyError.pixelBufferLockFailed(sourceLock)
+        }
+        defer { CVPixelBufferUnlockBaseAddress(source, .readOnly) }
+
+        let destinationLock = CVPixelBufferLockBaseAddress(destination, [])
+        guard destinationLock == kCVReturnSuccess else {
+            throw WindowCapturePrivacyError.pixelBufferLockFailed(destinationLock)
+        }
+        defer { CVPixelBufferUnlockBaseAddress(destination, []) }
+
+        guard let sourceBase = CVPixelBufferGetBaseAddress(source),
+              let destinationBase = CVPixelBufferGetBaseAddress(destination) else {
+            throw WindowCapturePrivacyError.unavailableBaseAddress
+        }
+        let sourceBytesPerRow = CVPixelBufferGetBytesPerRow(source)
+        let destinationBytesPerRow = CVPixelBufferGetBytesPerRow(destination)
+        let copiedBytesPerRow = CVPixelBufferGetWidth(source) * 4
+        for row in 0..<CVPixelBufferGetHeight(source) {
+            destinationBase.advanced(by: row * destinationBytesPerRow).copyMemory(
+                from: sourceBase.advanced(by: row * sourceBytesPerRow),
+                byteCount: copiedBytesPerRow
+            )
+        }
     }
 }
 
@@ -587,6 +703,8 @@ final class CaptureOutputSession {
     private var isCameraReady = false
     private var saveFrameRequested = false
     private var firstFrame: CMSampleBuffer?
+    private let windowSampleCopier: WindowCaptureSampleCopier?
+    private var hasStartedWriterSession = false
     private var standaloneAudioFileStorage: AVAudioFile?
     private var standaloneAudioAppender: ((CMSampleBuffer) throws -> Void)?
     private var standaloneAudioReleaseHandler: ((AVAudioFile) -> Void)?
@@ -623,6 +741,7 @@ final class CaptureOutputSession {
         self.microphoneInput = microphoneInput
         standaloneAudioFileStorage = standaloneAudioFile
         self.configurationOwner = configurationOwner
+        windowSampleCopier = configurationOwner.windowSanitizer == nil ? nil : WindowCaptureSampleCopier()
         self.sampleQueue = sampleQueue
         self.isAudioOnly = isAudioOnly
         self.standaloneAudioAppender = standaloneAudioAppender
@@ -692,30 +811,37 @@ final class CaptureOutputSession {
                     return (.ignored, false)
                 }
                 var adjustedSample = sampleBuffer
-                do {
-                    try configurationOwner.windowSanitizer?.sanitize(adjustedSample)
-                } catch {
-                    diagnostics.recordProcessingFailure()
-                    return (.failed, false)
-                }
+                var isWindowSamplePrepared = false
                 if saveFrameRequested {
-                    saveFrameRequested = false
+                    do {
+                        adjustedSample = try prepareWindowSample(adjustedSample)
+                        isWindowSamplePrepared = true
+                    } catch {
+                        diagnostics.recordProcessingFailure()
+                        return (.failed, false)
+                    }
                     saveFrameHandler?(adjustedSample)
+                    saveFrameRequested = false
                 }
                 guard !isPaused else { return (.ignored, false) }
+                var adjustedTimeOffset = timeOffset
+                var consumesResumePending = false
                 if isResumePending {
-                    isResumePending = false
                     guard let lastPTS else { return (.ignored, false) }
                     var pts = CMSampleBufferGetPresentationTimeStamp(adjustedSample)
-                    if timeOffset.flags.contains(.valid) { pts = CMTimeSubtract(pts, timeOffset) }
+                    if adjustedTimeOffset.flags.contains(.valid) {
+                        pts = CMTimeSubtract(pts, adjustedTimeOffset)
+                    }
                     if lastPTS.flags.contains(.valid) {
                         let offset = CMTimeSubtract(pts, lastPTS)
-                        timeOffset = timeOffset == .zero ? offset : CMTimeAdd(timeOffset, offset)
+                        adjustedTimeOffset = adjustedTimeOffset == .zero
+                            ? offset
+                            : CMTimeAdd(adjustedTimeOffset, offset)
                     }
+                    consumesResumePending = true
                 }
-                startWriterIfNeeded(sampleBuffer: adjustedSample, now: now)
-                if timeOffset > .zero {
-                    adjustedSample = Self.adjustTime(sample: adjustedSample, by: timeOffset) ?? adjustedSample
+                if adjustedTimeOffset > .zero {
+                    adjustedSample = Self.adjustTime(sample: adjustedSample, by: adjustedTimeOffset) ?? adjustedSample
                 }
                 var pts = CMSampleBufferGetPresentationTimeStamp(adjustedSample)
                 let duration = CMSampleBufferGetDuration(adjustedSample)
@@ -724,9 +850,6 @@ final class CaptureOutputSession {
                     diagnostics.recordPTSRejected()
                     return (.ignored, false)
                 }
-                framePTS.append(pts)
-                if framePTS.count > 20 { framePTS.removeFirst(framePTS.count - 20) }
-                lastPTS = pts
 
                 var needsPresenterReady = false
                 if let presenterOverlayX {
@@ -745,13 +868,32 @@ final class CaptureOutputSession {
                     diagnostics.recordWriterNotReady()
                     return (.ignored, needsPresenterReady)
                 }
+                do {
+                    if !isWindowSamplePrepared {
+                        adjustedSample = try prepareWindowSample(adjustedSample)
+                    }
+                } catch {
+                    diagnostics.recordProcessingFailure()
+                    return (.failed, needsPresenterReady)
+                }
+                startWriterSessionIfNeeded(sampleBuffer: adjustedSample)
+                let appended = videoInput.append(adjustedSample)
+                diagnostics.recordAppend(succeeded: appended)
+                guard appended else { return (.appendFailed, needsPresenterReady) }
+
+                if consumesResumePending {
+                    timeOffset = adjustedTimeOffset
+                    isResumePending = false
+                }
+                framePTS.append(pts)
+                if framePTS.count > 20 { framePTS.removeFirst(framePTS.count - 20) }
+                lastPTS = pts
+                if startTime == nil { startTime = now }
                 if firstFrame == nil {
                     firstFrame = adjustedSample
                     firstFrameHandler?(adjustedSample)
                 }
-                let appended = videoInput.append(adjustedSample)
-                diagnostics.recordAppend(succeeded: appended)
-                return (appended ? .appended : .appendFailed, needsPresenterReady)
+                return (.appended, needsPresenterReady)
 
             case .audio:
                 guard !isPaused else { return (.ignored, false) }
@@ -767,9 +909,10 @@ final class CaptureOutputSession {
                     }
                 }
                 if isAudioOnly {
-                    startWriterIfNeeded(sampleBuffer: adjustedSample, now: now)
+                    startWriterSessionIfNeeded(sampleBuffer: adjustedSample)
                     do {
                         try standaloneAudioAppender?(adjustedSample)
+                        if startTime == nil { startTime = now }
                         return (.appended, false)
                     } catch {
                         return (.failed, false)
@@ -884,12 +1027,18 @@ final class CaptureOutputSession {
         diagnostics.emitOnce(writerStatus: writer?.status.rawValue ?? -1)
     }
 
-    private func startWriterIfNeeded(sampleBuffer: CMSampleBuffer, now: Date) {
-        guard startTime == nil else { return }
+    private func prepareWindowSample(_ sampleBuffer: CMSampleBuffer) throws -> CMSampleBuffer {
+        let copiedSample = try windowSampleCopier?.copy(sampleBuffer) ?? sampleBuffer
+        try configurationOwner.windowSanitizer?.sanitize(copiedSample)
+        return copiedSample
+    }
+
+    private func startWriterSessionIfNeeded(sampleBuffer: CMSampleBuffer) {
+        guard !hasStartedWriterSession else { return }
         if let writer, writer.status == .writing {
             writer.startSession(atSourceTime: CMSampleBufferGetPresentationTimeStamp(sampleBuffer))
         }
-        startTime = now
+        hasStartedWriterSession = true
     }
 
     private static func adjustTime(sample: CMSampleBuffer, by offset: CMTime) -> CMSampleBuffer? {

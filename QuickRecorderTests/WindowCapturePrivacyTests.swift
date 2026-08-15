@@ -270,6 +270,218 @@ final class WindowCapturePrivacyTests: XCTestCase {
         XCTAssertTrue(adapter.handleStop(from: stream))
     }
 
+    func testVideoAdmissionCommitsTimelineOnlyAfterAppendSucceeds() throws {
+        let stream = NSObject()
+        let sink = TestVideoDestination()
+        let store = CaptureOutputSessionStore()
+        var firstFrames = 0
+        let session = makeCaptureSession(
+            stream: stream,
+            mode: .transparent,
+            sink: sink,
+            firstFrameHandler: { _ in firstFrames += 1 }
+        )
+        let core = core(for: store)
+        let firstPTS = CMTime.zero
+        let secondPTS = CMTime(value: 1, timescale: 30)
+
+        XCTAssertTrue(store.install(session))
+
+        sink.isReadyForMoreMediaData = false
+        XCTAssertEqual(
+            core.handleSample(
+                from: stream,
+                sampleBuffer: try makeSampleBuffer(
+                    imageBuffer: makeRoundedWindow(over: sentinels[0]),
+                    presentationTime: firstPTS
+                ),
+                kind: .screen(isComplete: true, presenterOverlayX: nil)
+            ),
+            .ignored
+        )
+        XCTAssertNil(session.stateSnapshot().startTime)
+        XCTAssertNil(session.stateSnapshot().lastPTS)
+        XCTAssertEqual(session.stateSnapshot().frameCount, 0)
+        XCTAssertNil(session.capturedFirstFrame())
+        XCTAssertEqual(firstFrames, 0)
+
+        sink.isReadyForMoreMediaData = true
+        sink.appendResult = false
+        XCTAssertEqual(
+            core.handleSample(
+                from: stream,
+                sampleBuffer: try makeSampleBuffer(
+                    imageBuffer: makeRoundedWindow(over: sentinels[0]),
+                    presentationTime: firstPTS
+                ),
+                kind: .screen(isComplete: true, presenterOverlayX: nil)
+            ),
+            .appendFailed
+        )
+        XCTAssertNil(session.stateSnapshot().startTime)
+        XCTAssertNil(session.stateSnapshot().lastPTS)
+        XCTAssertEqual(session.stateSnapshot().frameCount, 0)
+        XCTAssertNil(session.capturedFirstFrame())
+        XCTAssertEqual(firstFrames, 0)
+
+        sink.appendResult = true
+        XCTAssertEqual(
+            core.handleSample(
+                from: stream,
+                sampleBuffer: try makeSampleBuffer(
+                    imageBuffer: makeRoundedWindow(over: sentinels[0]),
+                    presentationTime: firstPTS
+                ),
+                kind: .screen(isComplete: true, presenterOverlayX: nil)
+            ),
+            .appended,
+            "an unready PTS must remain eligible for redelivery"
+        )
+        let firstCommittedState = session.stateSnapshot()
+        XCTAssertNotNil(firstCommittedState.startTime)
+        XCTAssertEqual(firstCommittedState.lastPTS, CMTime(value: 1, timescale: 30))
+        XCTAssertEqual(firstCommittedState.frameCount, 1)
+        XCTAssertNotNil(session.capturedFirstFrame())
+        XCTAssertEqual(firstFrames, 1)
+
+        sink.appendResult = false
+        XCTAssertEqual(
+            core.handleSample(
+                from: stream,
+                sampleBuffer: try makeSampleBuffer(
+                    imageBuffer: makeRoundedWindow(over: sentinels[1]),
+                    presentationTime: secondPTS
+                ),
+                kind: .screen(isComplete: true, presenterOverlayX: nil)
+            ),
+            .appendFailed
+        )
+        let failedState = session.stateSnapshot()
+        XCTAssertEqual(failedState.startTime, firstCommittedState.startTime)
+        XCTAssertEqual(failedState.lastPTS, firstCommittedState.lastPTS)
+        XCTAssertEqual(failedState.frameCount, firstCommittedState.frameCount)
+        XCTAssertEqual(firstFrames, 1)
+
+        sink.appendResult = true
+        XCTAssertEqual(
+            core.handleSample(
+                from: stream,
+                sampleBuffer: try makeSampleBuffer(
+                    imageBuffer: makeRoundedWindow(over: sentinels[1]),
+                    presentationTime: secondPTS
+                ),
+                kind: .screen(isComplete: true, presenterOverlayX: nil)
+            ),
+            .appended,
+            "a failed append PTS must remain eligible for redelivery"
+        )
+        XCTAssertEqual(session.stateSnapshot().lastPTS, CMTime(value: 2, timescale: 30))
+        XCTAssertEqual(session.stateSnapshot().frameCount, 2)
+        XCTAssertEqual(sink.appendCount, 4)
+        XCTAssertEqual(firstFrames, 1)
+    }
+
+    func testProductionTransparentPathCopiesIOSurfaceFramesBeforeProResEncoding() throws {
+        let profile = WindowCapturePrivacy.outputProfile(
+            mode: .transparent,
+            compatibilityFileType: .mov,
+            compatibilityCodec: .proRes4444
+        )
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("window-production-path-\(UUID().uuidString)")
+            .appendingPathExtension(profile.fileExtension)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let writer = try AVAssetWriter(outputURL: url, fileType: profile.fileType)
+        let input = AVAssetWriterInput(
+            mediaType: .video,
+            outputSettings: WindowCapturePrivacy.videoSettings(
+                profile: profile,
+                width: width,
+                height: height,
+                compressionProperties: [AVVideoExpectedSourceFrameRateKey: 30]
+            )
+        )
+        input.expectsMediaDataInRealTime = true
+        XCTAssertTrue(writer.canAdd(input))
+        writer.add(input)
+        XCTAssertTrue(writer.startWriting(), writer.error?.localizedDescription ?? "writer did not start")
+
+        let stream = NSObject()
+        let store = CaptureOutputSessionStore()
+        let session = CaptureOutputSession(
+            stream: stream,
+            outputJob: nil,
+            writer: writer,
+            videoInput: input,
+            systemAudioInput: nil,
+            standaloneAudioFile: nil,
+            configurationOwner: CaptureConfigurationOwner(windowMode: .transparent, fallbackBackgroundColor: nil),
+            sampleQueue: DispatchQueue(label: "WindowCapturePrivacyTests.production-writer"),
+            isAudioOnly: false
+        )
+        let core = core(for: store)
+        XCTAssertTrue(store.install(session))
+
+        for index in 0..<6 {
+            let sentinel = sentinels[index % sentinels.count]
+            let sourceBuffer = try makeRoundedWindow(over: sentinel)
+            XCTAssertNotNil(CVPixelBufferGetIOSurface(sourceBuffer))
+            XCTAssertTrue(waitUntilReady(input, timeout: 2), "writer remained backpressured before frame \(index)")
+            XCTAssertEqual(
+                core.handleSample(
+                    from: stream,
+                    sampleBuffer: try makeSampleBuffer(
+                        imageBuffer: sourceBuffer,
+                        presentationTime: CMTime(value: Int64(index), timescale: 30)
+                    ),
+                    kind: .screen(isComplete: true, presenterOverlayX: nil)
+                ),
+                .appended
+            )
+            XCTAssertGreaterThan(
+                try inspectExterior(of: sourceBuffer, mode: .transparent, sentinel: sentinel).sentinelPixels,
+                0,
+                "the production path must not mutate a ScreenCaptureKit-owned IOSurface"
+            )
+        }
+
+        input.markAsFinished()
+        let finished = expectation(description: "finish production-path ProRes 4444")
+        writer.finishWriting { finished.fulfill() }
+        wait(for: [finished], timeout: 10)
+        XCTAssertEqual(writer.status, .completed, writer.error?.localizedDescription ?? "writer failed")
+
+        let asset = AVURLAsset(url: url)
+        XCTAssertGreaterThan(asset.duration, CMTime(value: 3, timescale: 30))
+        let track = try XCTUnwrap(asset.tracks(withMediaType: .video).first)
+        let reader = try AVAssetReader(asset: asset)
+        let output = AVAssetReaderTrackOutput(
+            track: track,
+            outputSettings: [
+                kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+            ]
+        )
+        XCTAssertTrue(reader.canAdd(output))
+        reader.add(output)
+        XCTAssertTrue(reader.startReading(), reader.error?.localizedDescription ?? "reader did not start")
+
+        var decodedFrames = 0
+        var previousPTS = CMTime.invalid
+        while let decodedSample = output.copyNextSampleBuffer() {
+            let pts = CMSampleBufferGetPresentationTimeStamp(decodedSample)
+            if previousPTS.isValid { XCTAssertGreaterThan(pts, previousPTS) }
+            previousPTS = pts
+            if decodedFrames == 0 {
+                let decodedBuffer = try XCTUnwrap(decodedSample.imageBuffer)
+                XCTAssertEqual(try exteriorCornerAlphas(of: decodedBuffer), [0, 0, 0, 0])
+            }
+            decodedFrames += 1
+        }
+        XCTAssertEqual(reader.status, .completed, reader.error?.localizedDescription ?? "reader failed")
+        XCTAssertGreaterThanOrEqual(decodedFrames, 3)
+    }
+
     func testProductionStopUsesGuaranteedSameStoreReleaseForEveryFinalizationExit() throws {
         let contextSource = try projectSource("QuickRecorder/SCContext.swift")
 
@@ -431,7 +643,10 @@ final class WindowCapturePrivacyTests: XCTestCase {
         )
         XCTAssertEqual(sinkA.appendCount, 0)
         XCTAssertEqual(sinkB.appendCount, 1)
-        let sanitized = try inspectExterior(of: currentBBuffer, mode: .opaque, sentinel: sentinels[1])
+        let unchangedB = try inspectExterior(of: currentBBuffer, mode: .transparent, sentinel: sentinels[1])
+        XCTAssertGreaterThan(unchangedB.sentinelPixels, 0, "B must copy rather than mutate its source IOSurface")
+        let sanitizedBuffer = try XCTUnwrap(sinkB.lastSampleBuffer?.imageBuffer)
+        let sanitized = try inspectExterior(of: sanitizedBuffer, mode: .opaque, sentinel: sentinels[1])
         XCTAssertEqual(sanitized.sentinelPixels, 0)
         XCTAssertEqual(sanitized.invalidPixels, 0)
     }
@@ -1741,6 +1956,30 @@ final class WindowCapturePrivacyTests: XCTestCase {
         return buffer
     }
 
+    private func waitUntilReady(_ input: AVAssetWriterInput, timeout: TimeInterval) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !input.isReadyForMoreMediaData, Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.002))
+        }
+        return input.isReadyForMoreMediaData
+    }
+
+    private func exteriorCornerAlphas(of buffer: CVPixelBuffer) throws -> [UInt8] {
+        CVPixelBufferLockBaseAddress(buffer, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
+        guard let baseAddress = CVPixelBufferGetBaseAddress(buffer) else {
+            throw WindowCapturePrivacyError.unavailableBaseAddress
+        }
+        let bufferWidth = CVPixelBufferGetWidth(buffer)
+        let bufferHeight = CVPixelBufferGetHeight(buffer)
+        let bytesPerRow = CVPixelBufferGetBytesPerRow(buffer)
+        return [(0, 0), (bufferWidth - 1, 0), (0, bufferHeight - 1), (bufferWidth - 1, bufferHeight - 1)].map { x, y in
+            baseAddress
+                .advanced(by: y * bytesPerRow + x * 4)
+                .assumingMemoryBound(to: UInt8.self)[3]
+        }
+    }
+
     private func makeCaptureSession(
         stream: AnyObject,
         mode: WindowCaptureMode,
@@ -1926,9 +2165,11 @@ private final class TestVideoDestination: CaptureVideoSampleDestination {
     var isReadyForMoreMediaData = true
     var appendResult = true
     private(set) var appendCount = 0
+    private(set) var lastSampleBuffer: CMSampleBuffer?
 
     func append(_ sampleBuffer: CMSampleBuffer) -> Bool {
         appendCount += 1
+        if appendResult { lastSampleBuffer = sampleBuffer }
         return appendResult
     }
 }

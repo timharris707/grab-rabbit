@@ -196,6 +196,7 @@
 				18D3BDE32BCE5DC1006CFFC0 /* Sources */,
 				18D3BDE42BCE5DC1006CFFC0 /* Frameworks */,
 				18D3BDE52BCE5DC1006CFFC0 /* Resources */,
+				15E000000000000000000001 /* Prune Non-English Localizations */,
 			);
 			buildRules = (
 			);
@@ -266,6 +267,32 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		15E000000000000000000001 /* Prune Non-English Localizations */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/scripts/prune-localizations.sh",
+				"$(TARGET_BUILD_DIR)/$(WRAPPER_NAME)/Contents/Frameworks/Sparkle.framework",
+				"$(TARGET_BUILD_DIR)/$(WRAPPER_NAME)/Contents/Resources/KeyboardShortcuts_KeyboardShortcuts.bundle",
+			);
+			name = "Prune Non-English Localizations";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(TARGET_TEMP_DIR)/localizations-pruned.stamp",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/bash;
+			shellScript = "\"$SRCROOT/scripts/prune-localizations.sh\" \"$TARGET_BUILD_DIR/$WRAPPER_NAME\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		18D3BDE32BCE5DC1006CFFC0 /* Sources */ = {
@@ -454,6 +481,7 @@
 				"DEVELOPMENT_TEAM[sdk=macosx*]" = L4T783637F;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = QuickRecorder/Info.plist;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
@@ -491,6 +519,7 @@
 				"DEVELOPMENT_TEAM[sdk=macosx*]" = L4T783637F;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = QuickRecorder/Info.plist;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";

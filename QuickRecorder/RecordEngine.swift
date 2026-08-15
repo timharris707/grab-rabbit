@@ -619,7 +619,11 @@ extension AppDelegate {
                     )
                 }
             } catch {
-                print("Error: \(error.localizedDescription)")
+                SCContext.showNotification(
+                    title: "Failed to save file".local,
+                    body: error.localizedDescription,
+                    id: "quickrecorder.error.\(UUID().uuidString)"
+                )
             }
         }
         if SCContext.isPaused { return }

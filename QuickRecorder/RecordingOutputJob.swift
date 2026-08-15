@@ -493,12 +493,13 @@ final class RecordingOutputJob {
     }
 
     private static func createExclusiveFile(at url: URL) throws -> Bool {
-        let descriptor = url.path.withCString { path in
-            Darwin.open(path, O_WRONLY | O_CREAT | O_EXCL, S_IRUSR | S_IWUSR)
+        let (descriptor, openErrno): (Int32, Int32) = url.path.withCString { path in
+            let result = Darwin.open(path, O_WRONLY | O_CREAT | O_EXCL, S_IRUSR | S_IWUSR)
+            return (result, errno)
         }
         guard descriptor >= 0 else {
-            if errno == EEXIST { return false }
-            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+            if openErrno == EEXIST { return false }
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(openErrno))
         }
         guard Darwin.close(descriptor) == 0 else {
             throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))

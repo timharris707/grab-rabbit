@@ -19,6 +19,7 @@ final class RecordingOutputIsolationTests: XCTestCase {
 
     func testDelayedJobCannotDeleteNextRecording() throws {
         let first = try makeRemuxJob()
+        let firstIntermediateURL = try XCTUnwrap(first.intermediateURLs.first)
         materialize(first.inputURL, contents: "first input")
         let exporter = DelayedTwoStageExporter()
         var terminalResult: Result<URL, RecordingExportError>?
@@ -39,7 +40,7 @@ final class RecordingOutputIsolationTests: XCTestCase {
         exporter.completeFirst(.success(()))
         XCTAssertNil(terminalResult)
         XCTAssertEqual(first.lifecycle, .postprocessing)
-        XCTAssertTrue(FileManager.default.fileExists(atPath: first.intermediateURLs[0].path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: firstIntermediateURL.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: second.inputURL.path))
         exporter.completeSecond(.success(()))
         let result = try XCTUnwrap(terminalResult)
@@ -49,7 +50,7 @@ final class RecordingOutputIsolationTests: XCTestCase {
         XCTAssertEqual(second.lifecycle, .recording)
         XCTAssertEqual(terminalCount, 1)
         XCTAssertFalse(FileManager.default.fileExists(atPath: first.inputURL.path))
-        XCTAssertFalse(FileManager.default.fileExists(atPath: first.intermediateURLs[0].path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: firstIntermediateURL.path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: first.reservationURL.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: first.finalURL.path))
         XCTAssertEqual(try Data(contentsOf: first.finalURL), Data("second-stage output".utf8))
@@ -100,6 +101,26 @@ final class RecordingOutputIsolationTests: XCTestCase {
             XCTAssertFalse(FileManager.default.fileExists(atPath: job.finalURL.path))
             XCTAssertFalse(FileManager.default.fileExists(atPath: job.reservationURL.path))
         }
+    }
+
+    func testDelayedExporterReportsMissingIntermediateURL() throws {
+        let job = try RecordingOutputJob.reserve(
+            in: temporaryDirectory,
+            prefix: "Recording at ",
+            date: frozenDate,
+            layout: .single(fileExtension: "mp4")
+        )
+        let exporter = DelayedTwoStageExporter()
+        var terminalResult: Result<URL, RecordingExportError>?
+
+        exporter.export(job) { terminalResult = $0 }
+        exporter.completeFirst(.success(()))
+
+        guard case .failure(.failed(stage: .first, let message)) = terminalResult else {
+            return XCTFail("A missing intermediate URL must remain a typed first-stage failure.")
+        }
+        XCTAssertEqual(message, "The delayed export job has no intermediate URL.")
+        XCTAssertEqual(job.lifecycle, .terminal)
     }
 
     func testSameSecondOutputsAreDistinct() throws {
@@ -191,17 +212,28 @@ final class RecordingOutputIsolationTests: XCTestCase {
     }
 
     func testFinalizationKindIsImmutableAfterSettingsChange() throws {
-        var remuxEnabled = true
+        let defaults = UserDefaults.standard
+        let originalRemuxAudio = defaults.object(forKey: "remuxAudio")
+        let originalAudioFormat = defaults.object(forKey: "audioFormat")
+        let originalAudioQuality = defaults.object(forKey: "audioQuality")
+        defer {
+            restoreUserDefault(originalRemuxAudio, forKey: "remuxAudio")
+            restoreUserDefault(originalAudioFormat, forKey: "audioFormat")
+            restoreUserDefault(originalAudioQuality, forKey: "audioQuality")
+        }
+
+        defaults.set(true, forKey: "remuxAudio")
         let videoJob = try RecordingOutputJob.reserve(
             in: temporaryDirectory,
             prefix: "Recording at ",
             date: frozenDate,
-            layout: makeVideoLayout(remuxEnabled: remuxEnabled)
+            layout: makeVideoLayout(remuxEnabled: defaults.bool(forKey: "remuxAudio"))
         )
-        remuxEnabled = false
+        defaults.set(false, forKey: "remuxAudio")
 
-        var audioFormat = "mp3"
-        var audioQualityKbps = 256
+        defaults.set("mp3", forKey: "audioFormat")
+        defaults.set(256, forKey: "audioQuality")
+        let audioFormat = try XCTUnwrap(defaults.string(forKey: "audioFormat"))
         let audioJob = try RecordingOutputJob.reserve(
             in: temporaryDirectory,
             prefix: "Recording at ",
@@ -210,34 +242,29 @@ final class RecordingOutputIsolationTests: XCTestCase {
                 ? .conversion(
                     inputExtension: "m4a",
                     finalExtension: "mp3",
-                    audioQualityKbps: audioQualityKbps
+                    audioQualityKbps: defaults.integer(forKey: "audioQuality")
                 )
                 : .single(fileExtension: audioFormat)
         )
-        audioFormat = "aac"
-        audioQualityKbps = 64
+        defaults.set("aac", forKey: "audioFormat")
+        defaults.set(64, forKey: "audioQuality")
 
-        XCTAssertFalse(remuxEnabled)
-        XCTAssertEqual(audioFormat, "aac")
         XCTAssertEqual(videoJob.kind, .videoRemux)
         XCTAssertEqual(audioJob.kind, .conversion)
         XCTAssertEqual(audioJob.audioQualityKbps, 256)
-        XCTAssertEqual(audioQualityKbps, 64)
         _ = videoJob.discardOutputs(reason: .cancelled(stage: .first))
         _ = audioJob.discardOutputs(reason: .cancelled(stage: .conversion))
     }
 
     func testExistingExternalOutputIsNeverClaimedOrDeleted() throws {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "y-MM-dd HH.mm.ss"
+        let preferredStem = "Recording at external-collision"
         let externalURL = temporaryDirectory
-            .appendingPathComponent("Recording at \(formatter.string(from: frozenDate)).mp4")
+            .appendingPathComponent("\(preferredStem).mp4")
         materialize(externalURL, contents: "external")
 
         let job = try RecordingOutputJob.reserve(
             in: temporaryDirectory,
-            prefix: "Recording at ",
-            date: frozenDate,
+            preferredStem: preferredStem,
             layout: .single(fileExtension: "mp4")
         )
 
@@ -247,16 +274,19 @@ final class RecordingOutputIsolationTests: XCTestCase {
     }
 
     func testDanglingSymlinkOutputNameIsSkippedAndPreserved() throws {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "y-MM-dd HH.mm.ss"
+        let preferredStem = "Recording at symlink-collision"
         let symlinkURL = temporaryDirectory
-            .appendingPathComponent("Recording at \(formatter.string(from: frozenDate)).mp4")
+            .appendingPathComponent("\(preferredStem).mp4")
         try FileManager.default.createSymbolicLink(
             at: symlinkURL,
             withDestinationURL: temporaryDirectory.appendingPathComponent("missing-target")
         )
 
-        let job = try makeRemuxJob()
+        let job = try RecordingOutputJob.reserve(
+            in: temporaryDirectory,
+            preferredStem: preferredStem,
+            layout: .videoRemux(fileExtension: "mp4")
+        )
 
         XCTAssertNotEqual(job.finalURL, symlinkURL)
         _ = job.discardOutputs(reason: .cancelled(stage: .first))
@@ -596,9 +626,10 @@ final class RecordingOutputIsolationTests: XCTestCase {
         let appSource = try projectSource("QuickRecorder/QuickRecorderApp.swift")
         let engineSource = try projectSource("QuickRecorder/RecordEngine.swift")
         let contextSource = try projectSource("QuickRecorder/SCContext.swift")
-        let initVideoSource = try XCTUnwrap(
-            engineSource.components(separatedBy: "func initVideo").last?
-                .components(separatedBy: "func startMicRecording").first
+        let initVideoSource = try sourceSlice(
+            engineSource,
+            after: "func initVideo",
+            before: "func startMicRecording"
         )
 
         XCTAssertTrue(appSource.contains("enum VideoFormat: String { case mov, mp4 }"))
@@ -614,8 +645,10 @@ final class RecordingOutputIsolationTests: XCTestCase {
 
     func testRemuxCallbacksOwnOnlyJobURLs() throws {
         let contextSource = try projectSource("QuickRecorder/SCContext.swift")
-        let remuxSource = try XCTUnwrap(
-            contextSource.components(separatedBy: "static func mixAudioTracks(job:").last
+        let remuxSource = try sourceSlice(
+            contextSource,
+            after: "static func mixAudioTracks(job:",
+            before: "\n    }\n}"
         )
 
         XCTAssertTrue(remuxSource.contains("AVAsset(url: job.inputURL)"))
@@ -623,6 +656,25 @@ final class RecordingOutputIsolationTests: XCTestCase {
         XCTAssertTrue(remuxSource.contains("exportSession.outputURL = job.stagedOutputURL"))
         XCTAssertTrue(remuxSource.contains("job.finishExport(result, deliveringTo: completion)"))
         XCTAssertFalse(remuxSource.contains("filePath"))
+    }
+
+    func testFrameReservationFailureRemainsVisible() throws {
+        let engineSource = try projectSource("QuickRecorder/RecordEngine.swift")
+        let frameSaveSource = try sourceSlice(
+            engineSource,
+            after: "if SCContext.saveFrame, let imageBuffer = sampleBuffer.imageBuffer {",
+            before: "\n        if SCContext.isPaused"
+        )
+
+        let outerCatch = try XCTUnwrap(
+            frameSaveSource.range(of: "} catch {", options: .backwards),
+            "Frame reservation failure catch is missing."
+        )
+        let outerCatchSource = frameSaveSource[outerCatch.lowerBound...]
+        XCTAssertTrue(outerCatchSource.contains("SCContext.showNotification("))
+        XCTAssertTrue(outerCatchSource.contains("title: \"Failed to save file\".local"))
+        XCTAssertTrue(outerCatchSource.contains("body: error.localizedDescription"))
+        XCTAssertFalse(outerCatchSource.contains("print(\"Error:"))
     }
 
     private func makeRemuxJob() throws -> RecordingOutputJob {
@@ -668,8 +720,48 @@ final class RecordingOutputIsolationTests: XCTestCase {
         return try String(contentsOf: projectRoot.appendingPathComponent(relativePath), encoding: .utf8)
     }
 
-    private func materialize(_ url: URL, contents: String) {
-        XCTAssertTrue(FileManager.default.createFile(atPath: url.path, contents: Data(contents.utf8)))
+    private func sourceSlice(
+        _ source: String,
+        after startMarker: String,
+        before endMarker: String,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) throws -> String {
+        let startRange = try XCTUnwrap(
+            source.range(of: startMarker),
+            "Missing source marker: \(startMarker)",
+            file: file,
+            line: line
+        )
+        let remainder = source[startRange.upperBound...]
+        let endRange = try XCTUnwrap(
+            remainder.range(of: endMarker),
+            "Missing source marker after \(startMarker): \(endMarker)",
+            file: file,
+            line: line
+        )
+        return String(remainder[..<endRange.lowerBound])
+    }
+
+    private func restoreUserDefault(_ value: Any?, forKey key: String) {
+        if let value {
+            UserDefaults.standard.set(value, forKey: key)
+        } else {
+            UserDefaults.standard.removeObject(forKey: key)
+        }
+    }
+
+    private func materialize(
+        _ url: URL,
+        contents: String,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        XCTAssertTrue(
+            FileManager.default.createFile(atPath: url.path, contents: Data(contents.utf8)),
+            file: file,
+            line: line
+        )
     }
 }
 
@@ -708,8 +800,18 @@ private final class DelayedTwoStageExporter {
         firstCompletion = { [weak self] result in
             switch result {
             case .success:
+                guard let intermediateURL = job.intermediateURLs.first else {
+                    _ = job.finishExport(
+                        .failure(.failed(
+                            stage: .first,
+                            message: "The delayed export job has no intermediate URL."
+                        )),
+                        deliveringTo: completion
+                    )
+                    return
+                }
                 do {
-                    try Data("first-stage output".utf8).write(to: job.intermediateURLs[0])
+                    try Data("first-stage output".utf8).write(to: intermediateURL)
                 } catch {
                     _ = job.finishExport(
                         .failure(.failed(

@@ -5,6 +5,7 @@ script_dir="$(cd "$(dirname "$0")" && pwd)"
 master_svg="$script_dir/source/grab-rabbit-status-template.svg"
 optical_svg="$script_dir/source/grab-rabbit-status-template-optical-1x.svg"
 pdf_renderer="$script_dir/source/render-vector-pdf.py"
+artifact_hashes="$script_dir/artifact-hashes.sha256"
 master_dir="$script_dir/master"
 export_dir="$script_dir/exports"
 preview_dir="$script_dir/previews"
@@ -16,10 +17,12 @@ png_options=(-strip -define png:exclude-chunks=date,time)
 trap 'find "$scratch_dir" -type f -delete; find "$scratch_dir" -depth -type d -empty -delete' EXIT
 
 command -v magick >/dev/null
+command -v shasum >/dev/null
 python3 -c 'import reportlab' >/dev/null
 test -f "$master_svg"
 test -f "$optical_svg"
 test -f "$pdf_renderer"
+test -f "$artifact_hashes"
 mkdir -p "$master_dir" "$export_dir" "$preview_dir"
 
 magick -background none "$master_svg" -resize 1024x1024! \
@@ -43,6 +46,11 @@ render_export '18pt@2x' 36 "$master_svg"
 render_export '22pt@2x' 44 "$master_svg"
 
 python3 "$pdf_renderer" "$master_svg" "$master_pdf"
+
+(
+  cd "$script_dir"
+  shasum -a 256 -c "$artifact_hashes"
+)
 
 make_cell() {
   local input="$1"

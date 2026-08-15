@@ -29,6 +29,7 @@ background, text, gradient, embedded raster, or chroma-derived edge.
 - Light/dark menu-bar comparison: [`previews/menu-bar-comparison.png`](previews/menu-bar-comparison.png)
 - Pixel-level inspection sheet: [`previews/pixel-inspection.png`](previews/pixel-inspection.png)
 - Deterministic derivation: [`derive-status-icon.sh`](derive-status-icon.sh)
+- Checked generated-artifact hashes: [`artifact-hashes.sha256`](artifact-hashes.sha256)
 
 | Asset | Pixels | Geometry | SHA-256 |
 |---|---:|---|---|
@@ -41,13 +42,14 @@ background, text, gradient, embedded raster, or chroma-derived edge.
 
 ## Deterministic vector derivation
 
-Run from anywhere inside the repository:
+Run the derivation and its mismatch tripwire from anywhere inside the repository:
 
 ```bash
 docs/design/visual-identity/status-item/derive-status-icon.sh
+docs/design/visual-identity/status-item/test-artifact-hash-validation.sh
 ```
 
-The script makes no API or model call. It:
+Neither command makes an API or model call. The derivation script:
 
 1. Renders the canonical SVG to the transparent 1024 PNG master.
 2. Renders 32, 36, and 44-pixel Retina PNGs directly from canonical Bézier geometry.
@@ -55,6 +57,7 @@ The script makes no API or model call. It:
 4. Converts the canonical SVG paths into a deterministic 18 × 18-point ReportLab PDF using even-odd vector fills. The PDF contains two paths and zero embedded images or fonts.
 5. Generates exact-size, nearest-neighbor inspection, and representative light/dark menu-bar previews.
 6. Strips date/time chunks from every final PNG so repeated runs remain byte-identical.
+7. Rejects the generated master PNG, vector PDF, or any documented PNG export if its SHA-256 differs from the checked package manifest.
 
 ## Reference provenance
 

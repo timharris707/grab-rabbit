@@ -18,6 +18,9 @@ required_files=(
     docs/agents/team-workflow.md
     docs/agents/openrouter-image-generation.md
     docs/release/signing.md
+    scripts/resolve-main-handoff.sh
+    scripts/verify-handoff-integrity.sh
+    scripts/test-handoff-integrity.sh
     scripts/verify-agent-memory.sh
 )
 
@@ -66,9 +69,12 @@ done
 
 required_agent_contracts=(
     'Read these sources in order:'
+    'run `scripts/resolve-main-handoff.sh` from any checkout'
+    'The returned path is the only handoff.'
     'before asking for credentials or'
     'choosing a provider route.'
     'Refresh `.claude/handoff.md` before compaction or session succession.'
+    '`scripts/verify-handoff-integrity.sh` before handing the session off.'
     'Refresh repository bindings by re-running the ClickAI setup skill;'
 )
 
@@ -203,6 +209,21 @@ if ! grep -Fq 'live frontier query' AGENTS.md; then
     fail "AGENTS.md no longer requires the handoff to use the live frontier"
 fi
 
+required_handoff_contracts=(
+    $'the primary checkout\'s `.claude/handoff.md`, untracked.'
+    '`scripts/resolve-main-handoff.sh` resolves that one path from Git worktree metadata'
+    'primary-checkout path is the sole copy.'
+    '`scripts/verify-handoff-integrity.sh`'
+    'Manual-smoke manifest: /absolute/path/to/manifest.json'
+    "binds that manifest to the lane's current commit"
+)
+
+for required_contract in "${required_handoff_contracts[@]}"; do
+    if ! grep -Fq "$required_contract" docs/agents/team-workflow.md; then
+        fail "team-workflow binding is missing the $required_contract handoff contract"
+    fi
+done
+
 if ! grep -Fq 'AGPL' docs/agents/project-baseline.md || ! grep -Fq '../../LICENSE' docs/agents/project-baseline.md; then
     fail "project baseline no longer points to the authoritative AGPL license"
 fi
@@ -220,6 +241,31 @@ required_product_contracts=(
 for required_contract in "${required_product_contracts[@]}"; do
     if ! grep -Fq "$required_contract" docs/agents/project-baseline.md; then
         fail "project baseline is missing the $required_contract product contract"
+    fi
+done
+
+required_identity_contracts=(
+    'The product name is **Grab Rabbit**.'
+    'Lens Leap app icon'
+    'Viewfinder Ears status-item companion'
+    '`dev.clickai.grabrabbit`'
+    'durable identity decisions'
+)
+
+for required_contract in "${required_identity_contracts[@]}"; do
+    if ! grep -Fq "$required_contract" docs/agents/project-baseline.md; then
+        fail "project baseline is missing the $required_contract identity decision"
+    fi
+done
+
+forbidden_baseline_status=(
+    'application rebrand work had not begun'
+    'final Grab Rabbit bundle identifier has not been selected'
+)
+
+for forbidden_status in "${forbidden_baseline_status[@]}"; do
+    if grep -Fq "$forbidden_status" docs/agents/project-baseline.md; then
+        fail "project baseline retains stale status: $forbidden_status"
     fi
 done
 

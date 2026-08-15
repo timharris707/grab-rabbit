@@ -77,10 +77,18 @@ them.
 
 ## Handoff
 
-- **Handoff location**: `.claude/handoff.md`, untracked.
+- **Handoff location**: the primary checkout's `.claude/handoff.md`, untracked.
+  `scripts/resolve-main-handoff.sh` resolves that one path from Git worktree metadata
+  when run from either the primary checkout or a linked worktree. The returned
+  primary-checkout path is the sole copy.
 - **Ignore entry**: seeded in `.gitignore`.
 - **Session-start auto-load hook**: seeded as the Codex-equivalent instruction in
   root `AGENTS.md`; no runtime settings file was present or required.
+- **Integrity gate**: before session succession, run
+  `scripts/verify-handoff-integrity.sh`. Reference an active manual-smoke artifact
+  with exactly `Manual-smoke manifest: /absolute/path/to/manifest.json`; the verifier
+  binds that manifest to the lane's current commit, canonical artifact, and approved
+  Grab Rabbit smoke identity.
 
 ## Orchestration
 

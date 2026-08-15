@@ -40,17 +40,15 @@ the acceptance scenario; tracker items own its implementation and regression tes
   different destination; creation or access failure stays visible instead of silently
   falling back elsewhere.
 
-## Product identity status
+## Product identity
 
-The full Grab Rabbit rebrand is approved, but application rebrand work had not begun
-when this baseline was last confirmed. The current project, product, and bundle
-identifier still use QuickRecorder and `com.lihaoyun6.QuickRecorder`. The ordered
-identity sources are the [rebrand decision](https://github.com/timharris707/grab-rabbit/issues/15#issuecomment-5299286699)
-and issues [#17](https://github.com/timharris707/grab-rabbit/issues/17),
-[#18](https://github.com/timharris707/grab-rabbit/issues/18),
-[#19](https://github.com/timharris707/grab-rabbit/issues/19), and
-[#20](https://github.com/timharris707/grab-rabbit/issues/20). Treat their live state
-as authoritative; this paragraph records status, not permission to skip a gate.
+The product name is **Grab Rabbit**. Tim selected the Lens Leap app icon, the refined
+Viewfinder Ears status-item companion, and production bundle identifier
+`dev.clickai.grabrabbit` through [issue #17](https://github.com/timharris707/grab-rabbit/issues/17);
+the tracked [visual-identity package](../design/visual-identity/README.md) owns the
+approved artwork and exact hashes. [Issue #18](https://github.com/timharris707/grab-rabbit/issues/18)
+owns the shipped source-identity transition and preference migration. These are
+durable identity decisions; tracker state remains authoritative for implementation.
 
 ## Durable decisions and priority rules
 
@@ -72,7 +70,7 @@ as authoritative; this paragraph records status, not permission to skip a gate.
 
 | Source | Sole responsibility |
 |---|---|
-| This baseline | Durable product purpose, origin, acceptance scenario, and identity status |
+| This baseline | Durable product purpose, origin, acceptance scenario, and identity decisions |
 | [`docs/release/signing.md`](../release/signing.md) | Release identity, signing, notarization, and TCC/runtime signing lessons |
 | [`docs/agents/team-workflow.md`](team-workflow.md) | Tracker, frontier, claim, verification, review, and merge bindings |
 | `.claude/handoff.md` | Hot pointer: transient active state, current-session results, exact next action, and expensive session-specific gotchas; durable facts remain pointers to tracked sources |

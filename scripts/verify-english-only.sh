@@ -32,7 +32,7 @@ else
     app_bundle=
 fi
 
-source_scan_output=$(ruby -ropen3 -e '
+source_scan_output=$(ruby -I "$script_directory" -renglish_only_text_scan -ropen3 -e '
 tracked_output, git_status = Open3.capture2e("git", "ls-files", "-z")
 unless git_status.success?
   warn "unable to enumerate tracked files: #{tracked_output}"
@@ -70,26 +70,18 @@ known_foreign_assets.each do |asset|
   end
 end
 
-cjk_pattern = /[\u{2E80}-\u{2EFF}\u{3000}-\u{303F}\u{3040}-\u{30FF}\u{31C0}-\u{31EF}\u{3400}-\u{4DBF}\u{4E00}-\u{9FFF}\u{AC00}-\u{D7AF}\u{F900}-\u{FAFF}]/
 tracked_files.each do |path|
   begin
-    contents = File.binread(path)
+    metadata = File.lstat(path)
+    matches = if metadata.symlink?
+                EnglishOnlyTextScan.scan_link(path, path, "tracked source link")
+              else
+                EnglishOnlyTextScan.scan_regular(path, path, "tracked file")
+              end
+    failures.concat(matches)
   rescue StandardError => error
-    warn "unable to read tracked file #{path}: #{error.message}"
+    warn error.message
     exit 2
-  end
-
-  next if contents.include?("\0")
-  text = contents.dup.force_encoding(Encoding::UTF_8)
-  unless text.valid_encoding?
-    warn "tracked non-binary file is not valid UTF-8: #{path}"
-    exit 2
-  end
-
-  text.each_line.with_index(1) do |line, line_number|
-    if line.match?(cjk_pattern)
-      failures << "#{path}:#{line_number}:#{line.chomp}"
-    end
   end
 end
 
@@ -127,18 +119,37 @@ if [[ ! -d "$app_bundle/Contents" ]]; then
     exit 2
 fi
 
-artifact_scan_output=$(ruby -rfind -e '
+artifact_scan_output=$(ruby -I "$script_directory" -renglish_only_text_scan -rfind -e '
 app_bundle = ARGV.fetch(0)
 failures = []
 known_foreign_asset_names = ["donate.png", "preview.png", "preview_dark.png"]
-cjk_pattern = /[\u{2E80}-\u{2EFF}\u{3000}-\u{303F}\u{3040}-\u{30FF}\u{31C0}-\u{31EF}\u{3400}-\u{4DBF}\u{4E00}-\u{9FFF}\u{AC00}-\u{D7AF}\u{F900}-\u{FAFF}]/
 
 begin
+  if File.lstat(app_bundle).symlink?
+    warn "app bundle must not be a symbolic link: #{app_bundle}"
+    exit 2
+  end
+  app_root = File.realpath(app_bundle)
+  app_prefix = "#{app_root}#{File::SEPARATOR}"
+
   Find.find(app_bundle) do |path|
     basename = File.basename(path)
     relative_path = path.delete_prefix("#{app_bundle}/")
+    metadata = File.lstat(path)
 
-    if File.directory?(path)
+    if metadata.symlink?
+      resolved_path = File.realpath(path)
+      unless resolved_path == app_root || resolved_path.start_with?(app_prefix)
+        warn "bundled symbolic link escapes app bundle: #{relative_path}"
+        exit 2
+      end
+      if basename == "ChineseNewYear" || known_foreign_asset_names.include?(basename)
+        failures << "known foreign-language asset: #{relative_path}"
+      end
+      next
+    end
+
+    if metadata.directory?
       if basename.end_with?(".lproj") && !["Base.lproj", "en.lproj"].include?(basename)
         failures << "disallowed bundled localization: #{relative_path}"
       end
@@ -148,30 +159,22 @@ begin
       next
     end
 
-    next unless File.file?(path)
+    unless metadata.file?
+      warn "unsupported bundled file type: #{relative_path}"
+      exit 2
+    end
     if known_foreign_asset_names.include?(basename)
       failures << "known foreign-language asset: #{relative_path}"
       next
     end
 
     begin
-      contents = File.binread(path)
-    rescue StandardError => error
-      warn "unable to read bundled file #{relative_path}: #{error.message}"
+      failures.concat(
+        EnglishOnlyTextScan.scan_regular(path, relative_path, "bundled file")
+      )
+    rescue EnglishOnlyTextScan::ScanError => error
+      warn error.message
       exit 2
-    end
-
-    next if contents.include?("\0")
-    text = contents.dup.force_encoding(Encoding::UTF_8)
-    unless text.valid_encoding?
-      warn "bundled non-binary file is not valid UTF-8: #{relative_path}"
-      exit 2
-    end
-
-    text.each_line.with_index(1) do |line, line_number|
-      if line.match?(cjk_pattern)
-        failures << "#{relative_path}:#{line_number}:#{line.chomp}"
-      end
     end
   end
 rescue StandardError => error

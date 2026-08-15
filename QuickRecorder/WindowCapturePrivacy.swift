@@ -260,7 +260,10 @@ final class ApplicationDelegateRegistry<Delegate: AnyObject>: @unchecked Sendabl
         guard let registeredDelegate else {
             throw ApplicationDelegateRegistryError.unavailable
         }
-        guard applicationDelegate == nil || applicationDelegate === registeredDelegate else {
+        guard let applicationDelegate = applicationDelegate as? Delegate else {
+            return registeredDelegate
+        }
+        guard applicationDelegate === registeredDelegate else {
             throw ApplicationDelegateRegistryError.applicationDelegateMismatch
         }
         return registeredDelegate

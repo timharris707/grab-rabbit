@@ -662,8 +662,8 @@ final class RecordingOutputIsolationTests: XCTestCase {
         let engineSource = try projectSource("QuickRecorder/RecordEngine.swift")
         let frameSaveSource = try sourceSlice(
             engineSource,
-            after: "if SCContext.saveFrame, let imageBuffer = sampleBuffer.imageBuffer {",
-            before: "\n        if SCContext.isPaused"
+            after: "private func saveCapturedFrame",
+            before: "func outputVideoEffectDidStart"
         )
 
         let outerCatch = try XCTUnwrap(

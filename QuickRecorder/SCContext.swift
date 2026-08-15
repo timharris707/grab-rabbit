@@ -25,7 +25,6 @@ class SCContext {
     static var frameCache: CMSampleBuffer?
     static var filter: SCContentFilter?
     static var isMagnifierEnabled = false
-    static var saveFrame = false
     static var isPaused = false
     static var isResume = false
     static var isSkipFrame = false
@@ -363,9 +362,20 @@ class SCContext {
         formatter.allowedUnits = [.minute, .second]
         formatter.zeroFormattingBehavior = .pad
         formatter.unitsStyle = .positional
+        if let session = AppDelegate.shared.captureOutputSessions.activeSession() {
+            return formatter.string(from: session.stateSnapshot().elapsedTime) ?? "Unknown".local
+        }
         if isPaused { return formatter.string(from: timePassed) ?? "Unknown".local }
         timePassed = Date.now.timeIntervalSince(startTime ?? Date.now)
         return formatter.string(from: timePassed) ?? "Unknown".local
+    }
+
+    static func getRecordingElapsed() -> TimeInterval {
+        if let session = AppDelegate.shared.captureOutputSessions.activeSession() {
+            return session.stateSnapshot().elapsedTime
+        }
+        if isPaused { return max(0, timePassed) }
+        return max(0, Date.now.timeIntervalSince(startTime ?? Date.now))
     }
     
     static func isCameraRunning() -> Bool {
@@ -377,6 +387,11 @@ class SCContext {
     }
     
     static func pauseRecording() {
+        if let session = AppDelegate.shared.captureOutputSessions.activeSession() {
+            isPaused = session.togglePause()
+            PopoverState.shared.isPaused = isPaused
+            return
+        }
         isPaused.toggle()
         PopoverState.shared.isPaused = isPaused
         if !isPaused {
@@ -385,8 +400,28 @@ class SCContext {
         }
     }
     
-    static func stopRecording() {
-        let finishedJob = outputJob
+    static func stopRecording(session expectedSession: CaptureOutputSession? = nil) {
+        let sessions = AppDelegate.shared.captureOutputSessions
+        if expectedSession == nil,
+           let activeStream = stream,
+           let activeSession = sessions.session(for: activeStream) {
+            _ = sessions.deactivate(activeSession) {
+                DispatchQueue.main.async { stopRecording(session: activeSession) }
+            }
+            return
+        }
+
+        let sessionToRelease = expectedSession
+        defer {
+            if let sessionToRelease { sessions.release(sessionToRelease) }
+        }
+        let finishedJob = expectedSession?.outputJob ?? outputJob
+        let finalWriter = expectedSession?.writer ?? vW
+        let finalVideoInput = (expectedSession?.videoInput as? AVAssetWriterInput) ?? vwInput
+        let finalSystemAudioInput = (expectedSession?.systemAudioInput as? AVAssetWriterInput) ?? awInput
+        let finalMicrophoneInput = (expectedSession?.microphoneInput as? AVAssetWriterInput) ?? micInput
+        let finalizesAudioOnly = expectedSession?.isAudioOnly ?? (streamType == .systemaudio)
+        if let expectedSession { firstFrame = expectedSession.capturedFirstFrame() }
         let recordsMicrophone = finishedJob?.recordsMicrophone ?? ud.bool(forKey: "recordMic")
         let shouldRemuxVideo = finishedJob?.kind == .videoRemux
         var directVideoResult: Result<URL, RecordingExportError>?
@@ -403,34 +438,41 @@ class SCContext {
         if let w = NSApp.windows.first(where:  { $0.title == "Area Overlayer".local }) { w.close() }
         
         if let activeStream = stream {
-            let sessions = AppDelegate.shared.captureOutputSessions
-            if let session = sessions.session(for: activeStream) {
-                _ = sessions.deactivate(session)
-                activeStream.stopCapture { _ in sessions.release(session) }
-            } else {
-                activeStream.stopCapture()
-            }
+            activeStream.stopCapture()
         }
         stream = nil
         if recordsMicrophone {
-            micInput.markAsFinished()
-            AudioRecorder.shared.stop()
-            audioEngine.inputNode.removeTap(onBus: 0)
-            audioEngine.stop()
-            //DispatchQueue.global().async { try? audioEngine.inputNode.setVoiceProcessingEnabled(false) }
-            if ud.bool(forKey: "enableAEC") { try? AECEngine.stopAudioUnit() }
+            finalMicrophoneInput?.markAsFinished()
+            if let expectedSession {
+                expectedSession.stopMicrophoneCapture()
+            } else {
+                AudioRecorder.shared.stop()
+                audioEngine.inputNode.removeTap(onBus: 0)
+                audioEngine.stop()
+                if ud.bool(forKey: "enableAEC") { try? AECEngine.stopAudioUnit() }
+            }
         }
         audioFile = nil // close audio file
         audioFile2 = nil // close audio file2
-        if streamType != .systemaudio {
+        if !finalizesAudioOnly {
+            guard let finalWriter, let finalVideoInput else {
+                if let finishedJob {
+                    _ = finishedJob.discardOutputs(reason: .preparation(
+                        stage: .first,
+                        message: "The recording writer is unavailable."
+                    ))
+                }
+                streamType = nil
+                return
+            }
             let dispatchGroup = DispatchGroup()
             dispatchGroup.enter()
-            vwInput.markAsFinished()
-            if #available(macOS 13, *) { awInput.markAsFinished() }
-            vW.finishWriting {
-                if vW.status != .completed {
-                    print("Video writing failed with status: \(vW.status), error: \(String(describing: vW.error))")
-                    let err = vW.error?.localizedDescription ?? "Unknow Error"
+            finalVideoInput.markAsFinished()
+            if #available(macOS 13, *) { finalSystemAudioInput?.markAsFinished() }
+            finalWriter.finishWriting {
+                if finalWriter.status != .completed {
+                    print("Video writing failed with status: \(finalWriter.status), error: \(String(describing: finalWriter.error))")
+                    let err = finalWriter.error?.localizedDescription ?? "Unknow Error"
                     if let finishedJob {
                         let cleanupError = finishedJob.discardOutputs(reason: .failed(stage: .first, message: err))
                         directVideoResult = .failure(cleanupError)
@@ -478,7 +520,7 @@ class SCContext {
         } else if recordsMicrophone {
             if let finishedJob,
                case .package(let automaticallyExports) = finishedJob.kind,
-               let packageWriter = vW {
+               let packageWriter = finalWriter {
                 _ = finishedJob.beginPostprocessing()
                 packageWriter.finishWriting {
                     let writerResult: Result<Void, RecordingExportError>
@@ -524,7 +566,7 @@ class SCContext {
                     id: "quickrecorder.error.\(UUID().uuidString)"
                 )
             } else {
-                vW?.finishWriting {}
+                finalWriter?.finishWriting {}
             }
         }
         
@@ -538,7 +580,7 @@ class SCContext {
             }
         }
         
-        if streamType == .systemaudio {
+        if finalizesAudioOnly {
             guard let finishedJob else {
                 showNotification(
                     title: "Failed to save file".local,
@@ -615,10 +657,9 @@ class SCContext {
         window = nil
         screen = nil
         startTime = nil
-        AppDelegate.shared.presenterType = "OFF"
         updateStatusBar()
         
-        if !shouldRemuxVideo && streamType != .systemaudio {
+        if !shouldRemuxVideo && !finalizesAudioOnly {
             guard case .success(let outputURL) = directVideoResult else {
                 streamType = nil
                 if let finishedJob, outputJob === finishedJob { outputJob = nil }

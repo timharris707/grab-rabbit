@@ -131,12 +131,17 @@ extension Scene {
 class AppDelegate: NSObject, NSApplicationDelegate, SCStreamDelegate, SCStreamOutput, AVCaptureVideoDataOutputSampleBufferDelegate  {
     static let shared = AppDelegate()
     var filter: SCContentFilter?
-    var isCameraReady = false
-    var isPresenterON = false
     var isResizing = false
-    var presenterType = "OFF"
-    var frameQueue = FixedLengthArray<CMTime>(maxLength: 20)
     let captureOutputSessions = CaptureOutputSessionStore()
+    lazy var captureOutputCore = CaptureOutputCore(
+        store: captureOutputSessions,
+        failureHandler: { [weak self] session in
+            self?.finishCaptureSession(session, privacyFailure: true)
+        },
+        stopHandler: { [weak self] session in
+            self?.finishCaptureSession(session, privacyFailure: false)
+        }
+    )
     
     @AppStorage("showOnDock")       var showOnDock: Bool = true
     @AppStorage("showMenubar")      var showMenubar: Bool = false
@@ -350,7 +355,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, SCStreamDelegate, SCStreamOu
             _ = self.applicationShouldHandleReopen(NSApp, hasVisibleWindows: true)
             if SCContext.stream == nil { NSApp.activate(ignoringOtherApps: true) }
         }
-        KeyboardShortcuts.onKeyDown(for: .saveFrame) { if SCContext.stream != nil { SCContext.saveFrame = true }}
+        KeyboardShortcuts.onKeyDown(for: .saveFrame) {
+            AppDelegate.shared.captureOutputSessions.activeSession()?.requestSaveFrame()
+        }
         KeyboardShortcuts.onKeyDown(for: .screenMagnifier) { if SCContext.stream != nil { SCContext.isMagnifierEnabled.toggle() }}
         KeyboardShortcuts.onKeyDown(for: .stop) { if SCContext.stream != nil { SCContext.stopRecording() }}
         KeyboardShortcuts.onKeyDown(for: .pauseResume) { if SCContext.stream != nil { SCContext.pauseRecording() }}

@@ -42,7 +42,7 @@ background, text, gradient, embedded raster, or chroma-derived edge.
 
 ## Deterministic vector derivation
 
-Run the derivation and its mismatch tripwire from anywhere inside the repository:
+Run the derivation and its mismatch tripwire from the repository root:
 
 ```bash
 docs/design/visual-identity/status-item/derive-status-icon.sh

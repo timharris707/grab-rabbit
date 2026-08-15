@@ -129,25 +129,61 @@ fi
 
 artifact_scan_output=$(ruby -rfind -e '
 app_bundle = ARGV.fetch(0)
-disallowed = []
+failures = []
+known_foreign_asset_names = ["donate.png", "preview.png", "preview_dark.png"]
+cjk_pattern = /[\u{2E80}-\u{2EFF}\u{3000}-\u{303F}\u{3040}-\u{30FF}\u{31C0}-\u{31EF}\u{3400}-\u{4DBF}\u{4E00}-\u{9FFF}\u{AC00}-\u{D7AF}\u{F900}-\u{FAFF}]/
 
 begin
   Find.find(app_bundle) do |path|
-    next unless File.directory?(path) && File.basename(path).end_with?(".lproj")
-    localization = File.basename(path)
-    next if ["Base.lproj", "en.lproj"].include?(localization)
-    disallowed << path
+    basename = File.basename(path)
+    relative_path = path.delete_prefix("#{app_bundle}/")
+
+    if File.directory?(path)
+      if basename.end_with?(".lproj") && !["Base.lproj", "en.lproj"].include?(basename)
+        failures << "disallowed bundled localization: #{relative_path}"
+      end
+      if basename == "ChineseNewYear"
+        failures << "known foreign-language asset: #{relative_path}"
+      end
+      next
+    end
+
+    next unless File.file?(path)
+    if known_foreign_asset_names.include?(basename)
+      failures << "known foreign-language asset: #{relative_path}"
+      next
+    end
+
+    begin
+      contents = File.binread(path)
+    rescue StandardError => error
+      warn "unable to read bundled file #{relative_path}: #{error.message}"
+      exit 2
+    end
+
+    next if contents.include?("\0")
+    text = contents.dup.force_encoding(Encoding::UTF_8)
+    unless text.valid_encoding?
+      warn "bundled non-binary file is not valid UTF-8: #{relative_path}"
+      exit 2
+    end
+
+    text.each_line.with_index(1) do |line, line_number|
+      if line.match?(cjk_pattern)
+        failures << "#{relative_path}:#{line_number}:#{line.chomp}"
+      end
+    end
   end
 rescue StandardError => error
   warn "unable to scan app bundle: #{error.message}"
   exit 2
 end
 
-if disallowed.empty?
+if failures.empty?
   exit 0
 end
 
-disallowed.sort.each { |path| warn "disallowed bundled localization: #{path}" }
+failures.sort.each { |failure| warn failure }
 exit 3
 ' "$app_bundle" 2>&1)
 artifact_scan_status=$?
@@ -158,7 +194,7 @@ case $artifact_scan_status in
         ;;
     3)
         printf '%s\n' "$artifact_scan_output" >&2
-        echo "English-only check failed: disallowed app-bundle localization found" >&2
+        echo "English-only check failed: disallowed app-bundle content found" >&2
         exit 1
         ;;
     *)

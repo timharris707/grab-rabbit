@@ -3,43 +3,58 @@ set -euo pipefail
 
 script_dir="$(cd "$(dirname "$0")" && pwd)"
 scratch_dir="$(mktemp -d)"
-package_dir="$scratch_dir/status-item"
-artifact_hashes="$script_dir/artifact-hashes.sha256"
 
 trap 'find "$scratch_dir" -type f -delete; find "$scratch_dir" -depth -type d -empty -delete' EXIT
 
 command -v perl >/dev/null
-test "$(wc -l < "$artifact_hashes" | tr -d ' ')" -eq 8
-for artifact in \
-  master/grab-rabbit-status-template-1024.png \
-  master/grab-rabbit-status-template.pdf \
-  exports/grab-rabbit-status-16pt.png \
-  exports/grab-rabbit-status-18pt.png \
-  exports/grab-rabbit-status-22pt.png \
-  exports/grab-rabbit-status-16pt@2x.png \
-  exports/grab-rabbit-status-18pt@2x.png \
-  exports/grab-rabbit-status-22pt@2x.png; do
-  grep -Fq "  $artifact" "$artifact_hashes"
-done
 
-cp -R "$script_dir" "$package_dir"
+copy_package() {
+  local name="$1"
+  local package_dir="$scratch_dir/$name"
+  cp -R "$script_dir" "$package_dir"
+  printf '%s\n' "$package_dir"
+}
+
+expect_failure() {
+  local name="$1"
+  local package_dir="$2"
+  local expected_output="$3"
+  local derivation_output
+
+  if derivation_output=$("$package_dir/derive-status-icon.sh" 2>&1); then
+    echo "Hash validation test failed: $name derivation succeeded" >&2
+    exit 1
+  fi
+  if ! grep -Fq "$expected_output" <<<"$derivation_output"; then
+    echo "Hash validation test failed: $name did not report $expected_output" >&2
+    exit 1
+  fi
+  echo "$name was rejected"
+}
+
+deleted_package=$(copy_package deleted-entry)
+perl -ni -e 'print unless /exports\/grab-rabbit-status-22pt\@2x[.]png$/' \
+  "$deleted_package/artifact-hashes.sha256"
+expect_failure 'Deleted manifest entry' "$deleted_package" 'Artifact hash manifest'
+
+duplicate_package=$(copy_package duplicate-entry)
+duplicate_line=$(sed -n '1p' "$duplicate_package/artifact-hashes.sha256")
+printf '%s\n' "$duplicate_line" >> "$duplicate_package/artifact-hashes.sha256"
+expect_failure 'Duplicate manifest entry' "$duplicate_package" 'Artifact hash manifest'
+
+extra_package=$(copy_package extra-entry)
+printf '%s  %s\n' \
+  '0000000000000000000000000000000000000000000000000000000000000000' \
+  'exports/undocumented.png' >> "$extra_package/artifact-hashes.sha256"
+expect_failure 'Extra manifest entry' "$extra_package" 'Artifact hash manifest'
+
+changed_source_package=$(copy_package changed-source)
 perl -0pi -e 's/M350 438/M351 438/' \
-  "$package_dir/source/grab-rabbit-status-template.svg"
-grep -Fq 'M351 438' "$package_dir/source/grab-rabbit-status-template.svg"
+  "$changed_source_package/source/grab-rabbit-status-template.svg"
+grep -Fq 'M351 438' "$changed_source_package/source/grab-rabbit-status-template.svg"
+expect_failure 'Changed source' "$changed_source_package" 'FAILED'
 
-set +e
-derivation_output=$("$package_dir/derive-status-icon.sh" 2>&1)
-derivation_status=$?
-set -e
-
-if [[ $derivation_status -eq 0 ]]; then
-  echo 'Hash validation test failed: changed source produced undocumented artifacts successfully' >&2
-  exit 1
-fi
-
-if ! grep -Fq 'FAILED' <<<"$derivation_output"; then
-  echo 'Hash validation test failed: derivation did not report an artifact hash mismatch' >&2
-  exit 1
-fi
-
-echo 'Artifact hash mismatch was rejected'
+clean_package=$(copy_package clean)
+clean_output=$("$clean_package/derive-status-icon.sh" 2>&1)
+test "$(grep -c ': OK$' <<<"$clean_output")" -eq 8
+echo 'Clean derivation validated 8/8 artifact hashes'

@@ -13,6 +13,16 @@ master_png="$master_dir/grab-rabbit-status-template-1024.png"
 master_pdf="$master_dir/grab-rabbit-status-template.pdf"
 scratch_dir="$(mktemp -d)"
 png_options=(-strip -define png:exclude-chunks=date,time)
+required_artifacts=(
+  'master/grab-rabbit-status-template-1024.png'
+  'master/grab-rabbit-status-template.pdf'
+  'exports/grab-rabbit-status-16pt.png'
+  'exports/grab-rabbit-status-18pt.png'
+  'exports/grab-rabbit-status-22pt.png'
+  'exports/grab-rabbit-status-16pt@2x.png'
+  'exports/grab-rabbit-status-18pt@2x.png'
+  'exports/grab-rabbit-status-22pt@2x.png'
+)
 
 trap 'find "$scratch_dir" -type f -delete; find "$scratch_dir" -depth -type d -empty -delete' EXIT
 
@@ -23,6 +33,26 @@ test -f "$master_svg"
 test -f "$optical_svg"
 test -f "$pdf_renderer"
 test -f "$artifact_hashes"
+
+validate_artifact_manifest() {
+  local artifact
+  if [[ $(awk 'END { print NR + 0 }' "$artifact_hashes") -ne ${#required_artifacts[@]} ]]; then
+    echo 'Artifact hash manifest must contain exactly eight canonical entries' >&2
+    return 1
+  fi
+
+  for artifact in "${required_artifacts[@]}"; do
+    if ! awk -v expected="$artifact" '
+      $2 == expected && NF == 2 && length($1) == 64 && $1 !~ /[^0-9a-f]/ { matches++ }
+      END { exit (matches == 1 ? 0 : 1) }
+    ' "$artifact_hashes"; then
+      echo "Artifact hash manifest must contain one valid entry for $artifact" >&2
+      return 1
+    fi
+  done
+}
+
+validate_artifact_manifest
 mkdir -p "$master_dir" "$export_dir" "$preview_dir"
 
 magick -background none "$master_svg" -resize 1024x1024! \

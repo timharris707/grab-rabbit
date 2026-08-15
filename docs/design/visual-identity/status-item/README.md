@@ -57,7 +57,9 @@ Neither command makes an API or model call. The derivation script:
 4. Converts the canonical SVG paths into a deterministic 18 × 18-point ReportLab PDF using even-odd vector fills. The PDF contains two paths and zero embedded images or fonts.
 5. Generates exact-size, nearest-neighbor inspection, and representative light/dark menu-bar previews.
 6. Strips date/time chunks from every final PNG so repeated runs remain byte-identical.
-7. Rejects the generated master PNG, vector PDF, or any documented PNG export if its SHA-256 differs from the checked package manifest.
+7. Requires exactly one manifest entry for each of the eight canonical generated artifacts, then rejects the master PNG, vector PDF, or any documented PNG export if its SHA-256 differs.
+
+The mismatch tripwire covers a deleted, duplicated, or extra manifest entry, changed vector source, and a clean 8/8 derivation.
 
 ## Reference provenance
 

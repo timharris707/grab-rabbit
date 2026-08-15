@@ -1,7 +1,8 @@
 # Grab Rabbit visual identity — decision package
 
 - Decision item: [#17](https://github.com/timharris707/grab-rabbit/issues/17)
-- Decision status: Tim selected **Lens Leap (Direction A)** as the visual direction.
+- Decision status: Tim selected **Lens Leap (Direction A)** for the app icon and
+  **Viewfinder Ears** as the basis for the separate menu-bar status identity.
 - Implementation status: not started; this package does not change application code or shipped assets.
 - Production caveat: the selected raster is concept artwork. Production asset work should preserve it visually while rebuilding deterministic exports and verifying every macOS icon size.
 
@@ -19,6 +20,7 @@ Files:
 - Canonical 1024 master: [`masters/selected-lens-leap.png`](masters/selected-lens-leap.png)
 - Required previews: [`previews/selected-lens-leap/`](previews/selected-lens-leap/)
 - Exact generation and attempted optical-edit prompts: [`prompts.md`](prompts.md)
+- Derived monochrome status-item package: [`status-item/`](status-item/)
 
 The canonical master and its 1024 preview are byte-identical, SHA-256
 `d3fe2e13ab745ce47dbb990ee9e42b35b17f64c2dd7084d21ab2e0399cfa1895`.
@@ -64,7 +66,7 @@ shown with nearest-neighbor enlargement so lost detail remains visible.
 |---|---|---|---|
 | A — Lens Leap | Cobalt `#164EAE`, cyan `#22D3EE`, white `#FFFFFF`; selected raster samples above | Strong at 128; readable at 32; thin limbs merge at 16 | **Selected by Tim** |
 | B — Burrow Cutout | Navy `#0B1F33`, teal `#12B8A6`, white `#FFFFFF` | Camera remains clear; rabbit collapses toward a white seated blob at 16 | Rejected; less energetic and weaker at 16 |
-| C — Viewfinder Ears | Indigo `#1E1B4B`, violet `#7C3AED`, white `#FFFFFF` | Bold ears survive, but camera/rabbit merges into a mascot-like face | Rejected; less distinctive and more character-like |
+| C — Viewfinder Ears | Indigo `#1E1B4B`, violet `#7C3AED`, white `#FFFFFF` | Bold ears survive and the camera body remains clear after monochrome simplification | Rejected as the full-color app icon; **selected by Tim as the status-item basis** |
 | D — Camcorder Sentinel | Plum `#3B163C`, magenta `#D946EF`, white `#FFFFFF` | Camcorder survives; rabbit becomes a vertical white column at 16/32 | Rejected; rabbit ambiguity |
 | E — Focus Eye | Graphite `#18202A`, mint `#34D399`, white `#FFFFFF` | Lens survives; rabbit and camera contours fuse at 16 | Rejected; weakest two-subject read |
 
@@ -73,6 +75,11 @@ visually separate from CodeRabbit trade dress. Every generation introduced some
 gradient despite the original flat-color constraint. Tim explicitly selected the
 Lens Leap rendering as shown, so its gradient is an accepted part of Direction A;
 the other outputs remain rejected exploration only.
+
+The full-color Viewfinder Ears alternative is not a second app icon. Its simplified
+one-color camera-plus-ears silhouette is preserved separately in the
+[`status-item` package](status-item/) for final approval and later template-image
+integration.
 
 ## Recommended bundle identifier
 

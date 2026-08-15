@@ -1,6 +1,6 @@
 # Grab Rabbit visual-identity generation prompts
 
-- Mode: bundled `scripts/image_gen.py` CLI through the OpenRouter OpenAI-compatible endpoint
+- App-concept mode: bundled `scripts/image_gen.py` CLI through the OpenRouter OpenAI-compatible endpoint
 - Model: `gpt-image-2`
 - Quality: `low`
 - Use case: `logo-brand`
@@ -25,6 +25,7 @@ deterministic production artwork.
 | 4 | Generate Concept 4, Camcorder Sentinel | Succeeded; rejected alternative; SHA-256 `f6949f3a6151eb98c3217dcc78bdbae07f38a760d7d1dc5b1ed46e62f2db9183` |
 | 5 | Generate Concept 5, Focus Eye | Succeeded; rejected alternative; SHA-256 `eb704e8efa881bd8bba60573bb70515378452ef5d7d90331746ce766478f6705` |
 | 6 | Edit selected Lens Leap for a 16/32 px optical master | OpenRouter returned `404 Not Found`; no output; not retried |
+| 7 | Generate Viewfinder Ears status reference through OpenRouter (`gpt-image-2`, 2048/high) | Succeeded once; raw SHA-256 `32e409950273f6b75d937fd2e475a8a4d0ec4d0274af58be7e4bc790818ab196`; transparent derivative produced locally |
 
 ## Concept 1 — Burrow Cutout
 
@@ -112,3 +113,55 @@ Color palette: preserve the exact existing blue/cyan palette, white rabbit, and 
 Constraints: change only the rabbit silhouette; keep the camera body, viewfinder bump, shutter detail, lens circle, backdrop, blue/cyan colors, gradients, lighting, and composition unchanged; exactly one camera-and-rabbit mark; no text, letters, wordmark, watermark, collage, border, badge, mockup, orange, coral, red-orange, yellow-orange, mascot face, robot motif, or circuit motif
 Avoid: restyling or replacing the approved icon; avoid thin legs, thin paws, tiny gaps, added detail, CodeRabbit-like rabbit drawing, enclosing shape, composition, orange treatment, or trade dress
 ```
+
+## High-quality Viewfinder Ears status reference
+
+Exactly one additional generation was authorized for status-item source reference.
+No retries or further model calls were made.
+
+- Route: bundled `scripts/image_gen.py` through the OpenRouter OpenAI-compatible endpoint
+- Model: `gpt-image-2`
+- Quality: `high`
+- Size: 2048 × 2048
+- Duration: 103.2 seconds
+- Raw reference: `status-item/references/grab-rabbit-viewfinder-ears-gpt-image-2-v2.png`, SHA-256 `32e409950273f6b75d937fd2e475a8a4d0ec4d0274af58be7e4bc790818ab196`
+- Chroma-removed reference: `status-item/references/grab-rabbit-viewfinder-ears-gpt-image-2-v2-transparent.png`, SHA-256 `bf3abd7280195f3b8db513abf3d516b13e298e57fc8ba2f6aaf7ad3fa0cd669c`
+
+The bundled CLI assembled this exact prompt:
+
+```text
+Use case: logo-brand
+Primary request: Create a premium master source concept for the selected Grab Rabbit Viewfinder Ears macOS menu-bar icon. Preserve the simple idea shown in the user reference: a compact rounded camera silhouette whose top forms two unmistakable rabbit ears, with a circular camera lens cut out of the body. It is a simplified monochrome companion to the approved full-color Lens Leap app icon, not a literal miniature. Refine it to the level of a first-party macOS system icon.
+Style/medium: world-class Apple-quality monochrome vector pictogram; geometrically precise smooth Bézier curves; optically balanced at 16–22 pt
+Composition/framing: one centered front-facing glyph with generous even padding and perfect bilateral balance
+Color palette: one solid matte black glyph on a perfectly flat solid #00ff00 chroma-key background
+Constraints: single camera body fused naturally with two clean rabbit ears; centered circular lens as true negative-space cutout; tiny rounded viewfinder cutout; strong silhouette; camera proportions and curve language visibly related to the approved Lens Leap app icon; every curve deliberate; background and both cutouts exactly #00ff00; no text; no watermark
+Avoid: pixelation, jagged edges, blur, fuzzy contours, shadows, gradients, texture, lighting, 3D, perspective, multiple icons, outlines, facial features, whiskers, paws, letters, mockup framing
+```
+
+Invocation route, with environment-variable names only:
+
+```bash
+OPENAI_API_KEY="$OPENROUTER_API_KEY" \
+OPENAI_BASE_URL='https://openrouter.ai/api/v1' \
+uv run --with openai python <bundled-image_gen.py> generate \
+  --model gpt-image-2 --quality high --size 2048x2048
+```
+
+The reference was then processed locally, with no model call:
+
+```bash
+uv run --with pillow python <bundled-remove_chroma_key.py> \
+  --input <raw-reference> \
+  --out <transparent-reference> \
+  --auto-key border \
+  --soft-matte \
+  --transparent-threshold 12 \
+  --opaque-threshold 220 \
+  --despill
+```
+
+The helper sampled border color `#11F715`: 3,293,017 of 4,194,304 pixels became
+fully transparent and 6,955 remained partially transparent for edge antialiasing.
+Both rasters are retained only as provenance/reference. The production template was
+redrawn as editable Bézier geometry; neither generated raster is a shippable asset.

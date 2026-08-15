@@ -2,8 +2,9 @@
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "$0")" && pwd)"
-repo_root="$(git -C "$script_dir" rev-parse --show-toplevel)"
-source_png="$repo_root/docs/design/visual-identity/masters/rejected-viewfinder-ears.png"
+master_svg="$script_dir/source/grab-rabbit-status-template.svg"
+optical_svg="$script_dir/source/grab-rabbit-status-template-optical-1x.svg"
+pdf_renderer="$script_dir/source/render-vector-pdf.py"
 master_dir="$script_dir/master"
 export_dir="$script_dir/exports"
 preview_dir="$script_dir/previews"
@@ -16,58 +17,32 @@ trap 'find "$scratch_dir" -type f -delete; find "$scratch_dir" -depth -type d -e
 
 command -v magick >/dev/null
 python3 -c 'import reportlab' >/dev/null
-test -f "$source_png"
+test -f "$master_svg"
+test -f "$optical_svg"
+test -f "$pdf_renderer"
 mkdir -p "$master_dir" "$export_dir" "$preview_dir"
 
-# Union the bright camera/rabbit artwork, then retain only the two details that
-# survive menu-bar scale: the lens and the small viewfinder cutout.
-magick "$source_png" \
-  -colorspace HSL -channel B -separate +channel \
-  -threshold 40% -type bilevel "$scratch_dir/outer-mask.png"
-magick "$scratch_dir/outer-mask.png" \
-  -fill black -stroke none \
-  -draw 'circle 512,690 563,690' \
-  -draw 'roundrectangle 225,433 301,476 20,20' \
-  "$scratch_dir/detail-mask.png"
-magick "$scratch_dir/detail-mask.png" \
-  -trim +repage -filter Lanczos -resize 896x896 \
-  -gravity center -background black -extent 1024x1024 \
-  "$scratch_dir/normalized-mask.png"
-magick "$scratch_dir/normalized-mask.png" \
-  -alpha copy -channel RGB -fill black -colorize 100 +channel \
+magick -background none "$master_svg" -resize 1024x1024! \
   "${png_options[@]}" \
   "$master_png"
 
 render_export() {
   local name="$1"
   local pixels="$2"
-  magick "$master_png" -filter Lanczos -resize "${pixels}x${pixels}!" \
+  local source="$3"
+  magick -background none "$source" -resize "${pixels}x${pixels}!" \
     "${png_options[@]}" \
     "$export_dir/grab-rabbit-status-${name}.png"
 }
 
-render_export '16pt' 16
-render_export '18pt' 18
-render_export '22pt' 22
-render_export '16pt@2x' 32
-render_export '18pt@2x' 36
-render_export '22pt@2x' 44
+render_export '16pt' 16 "$optical_svg"
+render_export '18pt' 18 "$optical_svg"
+render_export '22pt' 22 "$optical_svg"
+render_export '16pt@2x' 32 "$master_svg"
+render_export '18pt@2x' 36 "$master_svg"
+render_export '22pt@2x' 44 "$master_svg"
 
-python3 - "$master_png" "$master_pdf" <<'PY'
-import sys
-from reportlab import rl_config
-from reportlab.lib.utils import ImageReader
-from reportlab.pdfgen import canvas
-
-source, output = sys.argv[1:]
-rl_config.useA85 = 0
-pdf = canvas.Canvas(output, pagesize=(18, 18), pageCompression=1, invariant=1)
-pdf.setAuthor("Grab Rabbit")
-pdf.setTitle("Grab Rabbit status-item template")
-pdf.drawImage(ImageReader(source), 0, 0, width=18, height=18, mask="auto")
-pdf.showPage()
-pdf.save()
-PY
+python3 "$pdf_renderer" "$master_svg" "$master_pdf"
 
 make_cell() {
   local input="$1"

@@ -1,44 +1,45 @@
 # Grab Rabbit menu-bar status-item template
 
 - Decision item: [#17](https://github.com/timharris707/grab-rabbit/issues/17)
-- Family selection: Tim selected Viewfinder Ears as the basis for the separate menu-bar identity.
-- Approval status: derived template awaiting Tim's final approval; it is not installed in the application.
-- Source raster: [`../masters/rejected-viewfinder-ears.png`](../masters/rejected-viewfinder-ears.png), SHA-256 `9a21c3007fb60160eb5be8e44e41f2e7bfecdc8387a1de345a65810671ab5c4a`
+- Approved relationship: full-color Lens Leap app icon plus a simplified monochrome Viewfinder Ears status companion.
+- Package status: production-quality vector source ready for Tim's final issue sign-off; not installed in the application.
 
 ## Recommended status mark
 
 ![Template sizes on representative light and dark surfaces](previews/exact-size-strip.png)
 
-The template keeps Viewfinder Ears' strongest family cue: one compact rounded
-camera body whose top outline becomes a pair of rabbit ears. It removes the
-full-color tile, gradients, inner-ear shapes, rabbit face/body, highlight, and
-other detail that cannot survive menu-bar scale. A transparent circular lens and
-the small rounded viewfinder cutout are retained because both remain visible at
-the required sizes and make the camera read faster than a solid rabbit-eared box.
+The refined mark keeps Viewfinder Ears' core family cue: one compact rounded camera
+body whose top becomes a pair of unmistakable rabbit ears. Its right-side
+viewfinder, centered negative-space lens, horizontal body, corner language, and
+camera-first read make it a deliberate companion to Lens Leap without shrinking the
+detailed full-color app artwork into the menu bar.
 
-This is the strongest status companion to Lens Leap because the two marks share
-the same camera-plus-rabbit vocabulary without shrinking the detailed app icon or
-pretending a full-color Dock icon is a macOS template image.
+The final glyph is hand-built Bézier geometry, not an auto-traced raster. Compared
+with the 2048 reference, its ears are shorter and broader, its padding is balanced,
+and its two cutouts are sized to remain open at menu-bar scale. It contains no
+background, text, gradient, embedded raster, or chroma-derived edge.
 
 ## Deliverables
 
-- Canonical transparent PNG: [`master/grab-rabbit-status-template-1024.png`](master/grab-rabbit-status-template-1024.png), SHA-256 `d5fcad548760147f36e4182a3a0a88038061bd6170165b46156ff05cf3626086`
-- Deterministic 18-point PDF: [`master/grab-rabbit-status-template.pdf`](master/grab-rabbit-status-template.pdf), SHA-256 `4119627ea18ba1c5c26f32d165ce5e4453a106bacc9aa32dddbbba33595874d8`
+- Editable canonical SVG: [`source/grab-rabbit-status-template.svg`](source/grab-rabbit-status-template.svg), SHA-256 `288ed821699795029c55aac1a2ddde32b1792c4dc943ee97780331ae7d027f16`
+- Editable 1× optical SVG: [`source/grab-rabbit-status-template-optical-1x.svg`](source/grab-rabbit-status-template-optical-1x.svg), SHA-256 `6bf38a65534b70ed1a01e617806d6c115b56474eecf3fb1229cd6edbb2a8991e`
+- Canonical transparent PNG: [`master/grab-rabbit-status-template-1024.png`](master/grab-rabbit-status-template-1024.png), SHA-256 `0a62b877774e0d6f8a402e51486a30e1d4f360562c6b2820f2b82189dfc79cbc`
+- True-vector 18-point PDF: [`master/grab-rabbit-status-template.pdf`](master/grab-rabbit-status-template.pdf), SHA-256 `6ddf7ecccdb49db255dcef905a19a013022f890810c5f437f0ae0fd587be0d5b`
 - Exact PNG exports: [`exports/`](exports/)
-- Light/dark menu-bar previews: [`previews/menu-bar-comparison.png`](previews/menu-bar-comparison.png)
+- Light/dark menu-bar comparison: [`previews/menu-bar-comparison.png`](previews/menu-bar-comparison.png)
 - Pixel-level inspection sheet: [`previews/pixel-inspection.png`](previews/pixel-inspection.png)
-- Reproduction script: [`derive-status-icon.sh`](derive-status-icon.sh)
+- Deterministic derivation: [`derive-status-icon.sh`](derive-status-icon.sh)
 
-| Asset | Pixels | SHA-256 |
-|---|---:|---|
-| `grab-rabbit-status-16pt.png` | 16 × 16 | `1382c686c8706516c1d933996c69b77f88ea31cea0e96033c666af91fc87922a` |
-| `grab-rabbit-status-18pt.png` | 18 × 18 | `736444cc15ea72c0bfbdcba89fdddf5aa3eae608b5b169bf5e8a7e054c28cd71` |
-| `grab-rabbit-status-22pt.png` | 22 × 22 | `51179f60875f6e496fae3bb31ac8bdc5208f4293fbf978c13b800b0b6f4af8b4` |
-| `grab-rabbit-status-16pt@2x.png` | 32 × 32 | `3204eaf057d7553afd418a0711b180d3b9e78dab4afa37b6ad978369c00f8051` |
-| `grab-rabbit-status-18pt@2x.png` | 36 × 36 | `e746a92b901c5b43e221c5247b77e2536f3a5a2c8bb35428ecef570becc9d9a7` |
-| `grab-rabbit-status-22pt@2x.png` | 44 × 44 | `cabd16215a037f1e279e78091108d3693d53d4ec6fede0f3fda238f0470b1df7` |
+| Asset | Pixels | Geometry | SHA-256 |
+|---|---:|---|---|
+| `grab-rabbit-status-16pt.png` | 16 × 16 | 1× optical | `f4d92402e4f7e4ebcc089cb83422e02fb5658975356eb4d277691ab6d504434b` |
+| `grab-rabbit-status-18pt.png` | 18 × 18 | 1× optical | `eed9a32d72804a4a96fd2e321b19c51503a2b48d2c12b07e122accc41b28828f` |
+| `grab-rabbit-status-22pt.png` | 22 × 22 | 1× optical | `f2fb0912d7958806955a6d36bc857dec042be9b103ba63ecb427fd2b0f146542` |
+| `grab-rabbit-status-16pt@2x.png` | 32 × 32 | canonical | `f8e93af722f2e13b0e17b8105ee2f90e483877f967fa940394a122ce8163d9cb` |
+| `grab-rabbit-status-18pt@2x.png` | 36 × 36 | canonical | `4271076389e5cc1df1e417f517e4face4609e1ae56ebbdb153b6899a1972fab1` |
+| `grab-rabbit-status-22pt@2x.png` | 44 × 44 | canonical | `d8a7573658de80c3fda029f1d110269c750499c0e78a80b4b2173510188d027c` |
 
-## Deterministic derivation
+## Deterministic vector derivation
 
 Run from anywhere inside the repository:
 
@@ -46,33 +47,45 @@ Run from anywhere inside the repository:
 docs/design/visual-identity/status-item/derive-status-icon.sh
 ```
 
-The script performs these exact operations locally with ImageMagick and
-ReportLab; it makes no API or model call:
+The script makes no API or model call. It:
 
-1. Convert the selected Viewfinder Ears source to HSL and threshold its lightness channel at 40%, forming the union of its camera-and-rabbit artwork.
-2. Subtract the source lens circle (`512,690` through `563,690`) and rounded viewfinder rectangle (`225,433` through `301,476`, radius `20`) as transparent negative detail.
-3. Trim the source background, resize the silhouette proportionally into an 896-pixel box, and center it on a 1024 × 1024 canvas.
-4. Copy the binary mask to alpha and force every RGB pixel to black. The PNG therefore has one template color plus antialiased alpha, never a visual gradient.
-5. Downsample the canonical master with Lanczos to the six exact PNG sizes.
-6. Wrap the 1024 master in a deterministic 18 × 18-point PDF with its soft alpha mask intact.
-7. Strip date/time chunks from every final PNG so repeated runs are byte-identical.
+1. Renders the canonical SVG to the transparent 1024 PNG master.
+2. Renders 32, 36, and 44-pixel Retina PNGs directly from canonical Bézier geometry.
+3. Renders 16, 18, and 22-pixel PNGs from the 1× optical SVG. That variant preserves the outer silhouette while enlarging the lens radius from 118 to 128 units and the viewfinder from 96 × 56 to 112 × 64 units so neither cutout collapses.
+4. Converts the canonical SVG paths into a deterministic 18 × 18-point ReportLab PDF using even-odd vector fills. The PDF contains two paths and zero embedded images or fonts.
+5. Generates exact-size, nearest-neighbor inspection, and representative light/dark menu-bar previews.
+6. Strips date/time chunks from every final PNG so repeated runs remain byte-identical.
 
-Two consecutive clean derivations produced identical hashes for all 13 PNG/PDF
-artifacts.
+## Reference provenance
+
+The source concept and its locally chroma-removed derivative are retained under
+[`references/`](references/) for auditability only. They are not shippable assets:
+
+| Reference | SHA-256 |
+|---|---|
+| `grab-rabbit-viewfinder-ears-gpt-image-2-v2.png` | `32e409950273f6b75d937fd2e475a8a4d0ec4d0274af58be7e4bc790818ab196` |
+| `grab-rabbit-viewfinder-ears-gpt-image-2-v2-transparent.png` | `bf3abd7280195f3b8db513abf3d516b13e298e57fc8ba2f6aaf7ad3fa0cd669c` |
+
+Exactly one authorized `gpt-image-2` generation produced the 2048/high reference.
+The exact prompt, invocation route, 103.2-second duration, chroma-removal command,
+and pixel counts are preserved in [`../prompts.md`](../prompts.md). No additional
+generation or edit call was made during the vector rebuild.
 
 ## QA results
 
 ![Nearest-neighbor pixel inspection; top row light, bottom row dark](previews/pixel-inspection.png)
 
-- The 1024 master is grayscale plus alpha. RGB is black everywhere; alpha spans 0–255 only for transparency and edge antialiasing.
-- Visible master bounds are 896 × 893 at `(64,65)`, leaving 64 px left/right, 65 px top, and 66 px bottom padding. All four corners are fully transparent.
-- At 16, 18, 22, 32, 36, and 44 pixels the rounded camera body, paired rabbit ears, circular lens hole, and left viewfinder mark remain distinguishable. The 16/18-pixel viewfinder intentionally resolves to roughly one pixel; the Retina exports preserve its pill shape.
-- Light previews render the template near-black (`#202124`); dark previews render it near-white (`#F5F5F5`). This previews macOS template tinting without baking either color into separate product assets.
-- The one-page PDF is 18 × 18 points and contains a 1024 × 1024 grayscale image plus a 1024 × 1024 soft mask. Poppler rendered it back at 144 dpi as the expected 36 × 36 mark with no clipping or missing transparency detail.
-- No text, color tile, gradient, orange treatment, or CodeRabbit-like robot/circuit detail is present.
+- The canonical PNG and all six exports use one black RGB color plus alpha. Green-channel maximum is zero, proving the shipping candidates contain no chroma fringe.
+- Visible master bounds are 881 × 775 at `(72,126)`, leaving 72 px left, 71 px right, 126 px top, and 123 px bottom. The optical center is balanced and the ears consume less than half the visible height.
+- At 16, 18, 22, 32, 36, and 44 pixels the horizontal camera body, two separated ears, centered lens, and right-side viewfinder remain distinguishable. The 1× exports use enlarged negative detail; Retina exports preserve canonical proportions.
+- Exact-size rasters are direct vector renders, avoiding the green edge, blur, and irregular contour of raster tracing or chroma-key downscaling.
+- Light previews tint the template near-black (`#202124`); dark previews tint it near-white (`#F5F5F5`). Neither display color is baked into the template master.
+- The one-page PDF is 18 × 18 points. `pdfimages -list` reports zero raster images and `pdffonts` reports zero font resources; a PDF-to-SVG round trip contains two paths and zero image elements. Poppler rendered it at 144 dpi as a clean 36 × 36 mark.
+- Two consecutive clean derivations produce byte-identical PNG/PDF hashes.
 
 ![Representative Retina menu bars; light above, dark below](previews/menu-bar-comparison.png)
 
-Final integration must set the status asset as a macOS template image and retest it
-in the built application. Issue #18 owns installing artwork; issue #20 owns status
-behavior and controls. This package makes neither change.
+Final integration must set the status artwork as a macOS template image and retest it
+inside the built application. [Issue #18](https://github.com/timharris707/grab-rabbit/issues/18)
+owns asset installation; [issue #20](https://github.com/timharris707/grab-rabbit/issues/20)
+owns status behavior and controls. This package makes neither change.

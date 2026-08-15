@@ -19,7 +19,7 @@ Files:
 
 - Canonical 1024 master: [`masters/selected-lens-leap.png`](masters/selected-lens-leap.png)
 - Required previews: [`previews/selected-lens-leap/`](previews/selected-lens-leap/)
-- Exact generation and attempted optical-edit prompts: [`prompts.md`](prompts.md)
+- Exact generation prompts, attempted optical-edit prompt, and complete execution ledger: [`prompts.md`](prompts.md)
 - Derived monochrome status-item package: [`status-item/`](status-item/)
 
 The canonical master and its 1024 preview are byte-identical, SHA-256

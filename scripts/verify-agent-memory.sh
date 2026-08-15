@@ -82,6 +82,8 @@ required_openrouter_contracts=(
     '`OPENROUTER_API_KEY` is supplied by the environment.'
     'if [[ -n "${OPENROUTER_API_KEY:-}" ]]; then'
     'Run this check before asking Tim to create, paste, or reconfigure a key.'
+    'The setup, preparation, and runtime blocks are the complete route.'
+    'add no alternate command or invocation prose elsewhere in this'
     'Preparation is complete only when that import exits `0`.'
     'It intentionally omits'
     '`--offline` so a cold cache can download the pinned package.'
@@ -100,6 +102,14 @@ for required_contract in "${required_openrouter_contracts[@]}"; do
     fi
 done
 
+required_openrouter_setup_block='image_gen_cli="${CODEX_HOME:-$HOME/.codex}/skills/.system/imagegen/scripts/image_gen.py"'
+
+openrouter_reference=$(<docs/agents/openrouter-image-generation.md)
+
+if [[ "$openrouter_reference" != *"$required_openrouter_setup_block"* ]]; then
+    fail "OpenRouter image-generation reference is missing the exact setup block"
+fi
+
 required_openrouter_preparation_block=$(printf '%s\n' \
     'env -i \' \
     '    HOME="$HOME" \' \
@@ -107,8 +117,6 @@ required_openrouter_preparation_block=$(printf '%s\n' \
     '    TMPDIR="${TMPDIR:-/tmp}" \' \
     "    uv run --with 'openai==3.1.0' --no-env-file --no-project python -c \\" \
     "    'import openai; assert openai.__version__ == \"3.1.0\"'")
-
-openrouter_reference=$(<docs/agents/openrouter-image-generation.md)
 
 if [[ "$openrouter_reference" != *"$required_openrouter_preparation_block"* ]]; then
     fail "OpenRouter image-generation reference is missing the exact minimal preparation block"
@@ -138,6 +146,36 @@ required_openrouter_runtime_block=$(printf '%s\n' \
 
 if [[ "$openrouter_reference" != *"$required_openrouter_runtime_block"* ]]; then
     fail "OpenRouter image-generation reference is missing the exact isolated runtime block"
+fi
+
+if ! GRAB_RABBIT_SETUP_BLOCK="$required_openrouter_setup_block" \
+    GRAB_RABBIT_PREPARATION_BLOCK="$required_openrouter_preparation_block" \
+    GRAB_RABBIT_RUNTIME_BLOCK="$required_openrouter_runtime_block" \
+    ruby -e '
+reference = File.binread(ARGV.fetch(0))
+blocks = {
+  "setup" => ENV.fetch("GRAB_RABBIT_SETUP_BLOCK"),
+  "preparation" => ENV.fetch("GRAB_RABBIT_PREPARATION_BLOCK"),
+  "runtime" => ENV.fetch("GRAB_RABBIT_RUNTIME_BLOCK")
+}
+
+blocks.each do |name, block|
+  count = reference.scan(block).length
+  unless count == 1
+    warn "#{name} block count: #{count}"
+    exit 1
+  end
+  reference.sub!(block, "")
+end
+
+reserved_route_token = /(^|[^[:alnum:]_])(uv|image_gen_cli|image_gen[.]py|OPENAI_API_KEY|OPENAI_BASE_URL)([^[:alnum:]_]|$)/
+if reference.match(reserved_route_token)
+  warn "reserved route token outside canonical blocks"
+  exit 1
+end
+' docs/agents/openrouter-image-generation.md
+then
+    fail "OpenRouter image-generation reference must contain each canonical route block exactly once and no route tokens elsewhere"
 fi
 
 forbidden_openrouter_contracts=(

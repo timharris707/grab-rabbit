@@ -26,6 +26,11 @@ literal value in a command.
 Set `prompt_file` and `output_file` to the approved local input and output paths,
 then prepare the exact SDK version in a minimal environment:
 
+The setup, preparation, and runtime blocks are the complete route. Keep every
+provider mapping, dependency command, CLI path, and invocation detail inside its
+canonical block; add no alternate command or invocation prose elsewhere in this
+reference.
+
 ```bash
 image_gen_cli="${CODEX_HOME:-$HOME/.codex}/skills/.system/imagegen/scripts/image_gen.py"
 

@@ -129,7 +129,9 @@ extension Scene {
 }
 
 class AppDelegate: NSObject, NSApplicationDelegate, SCStreamDelegate, SCStreamOutput, AVCaptureVideoDataOutputSampleBufferDelegate  {
-    static let shared = AppDelegate()
+    static var shared: AppDelegate {
+        ApplicationDelegateResolver.resolve(NSApp.delegate, as: AppDelegate.self)
+    }
     var filter: SCContentFilter?
     var isResizing = false
     let captureOutputSessions = CaptureOutputSessionStore()

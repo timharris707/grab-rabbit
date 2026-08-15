@@ -231,6 +231,167 @@ enum CaptureStreamConstruction {
     }
 }
 
+enum ApplicationDelegateResolver {
+    static func resolve<Delegate: AnyObject>(
+        _ applicationDelegate: AnyObject?,
+        as delegateType: Delegate.Type
+    ) -> Delegate {
+        guard let applicationDelegate = applicationDelegate as? Delegate else {
+            preconditionFailure("The configured application delegate is unavailable.")
+        }
+        return applicationDelegate
+    }
+}
+
+enum CaptureFrameCadence {
+    static func minimumFrameInterval(frameRate: Int, audioOnly: Bool) -> CMTime {
+        if audioOnly { return CMTime(value: 1, timescale: CMTimeScale.max) }
+        if frameRate >= 60 { return .zero }
+        return CMTime(value: 1, timescale: CMTimeScale(max(1, frameRate)))
+    }
+}
+
+struct CaptureDiagnosticsSnapshot: Equatable {
+    let screenCallbacks: Int
+    let audioCallbacks: Int
+    let invalidCallbacks: Int
+    let completeFrames: Int
+    let incompleteFrames: Int
+    let imageFrames: Int
+    let imageMissing: Int
+    let ptsRejected: Int
+    let presenterGateRejected: Int
+    let writerNotReady: Int
+    let appendSucceeded: Int
+    let appendFailed: Int
+    let processingFailed: Int
+    let writerStatus: Int
+
+    var logLine: String {
+        "[CaptureDiagnostics] screen_callbacks=\(screenCallbacks)"
+            + " audio_callbacks=\(audioCallbacks)"
+            + " invalid_callbacks=\(invalidCallbacks)"
+            + " complete_frames=\(completeFrames)"
+            + " incomplete_frames=\(incompleteFrames)"
+            + " image_frames=\(imageFrames)"
+            + " image_missing=\(imageMissing)"
+            + " pts_rejected=\(ptsRejected)"
+            + " presenter_gate_rejected=\(presenterGateRejected)"
+            + " writer_not_ready=\(writerNotReady)"
+            + " append_succeeded=\(appendSucceeded)"
+            + " append_failed=\(appendFailed)"
+            + " processing_failed=\(processingFailed)"
+            + " writer_status=\(writerStatus)"
+    }
+}
+
+final class CaptureDiagnostics {
+    static let environmentKey = "GRAB_RABBIT_CAPTURE_DIAGNOSTICS"
+
+    private let lock = NSLock()
+    private let enabled: Bool
+    private let emitter: (String) -> Void
+    private var hasEmitted = false
+    private var screenCallbacks = 0
+    private var audioCallbacks = 0
+    private var invalidCallbacks = 0
+    private var completeFrames = 0
+    private var incompleteFrames = 0
+    private var imageFrames = 0
+    private var imageMissing = 0
+    private var ptsRejected = 0
+    private var presenterGateRejected = 0
+    private var writerNotReady = 0
+    private var appendSucceeded = 0
+    private var appendFailed = 0
+    private var processingFailed = 0
+
+    init(enabled: Bool, emitter: @escaping (String) -> Void = { print($0) }) {
+        self.enabled = enabled
+        self.emitter = emitter
+    }
+
+    static func environmentConfigured(
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        emitter: @escaping (String) -> Void = { print($0) }
+    ) -> CaptureDiagnostics {
+        CaptureDiagnostics(enabled: environment[environmentKey] == "1", emitter: emitter)
+    }
+
+    func recordScreenCallback(isValid: Bool, isComplete: Bool, hasImage: Bool) {
+        guard enabled else { return }
+        lock.withLock {
+            screenCallbacks += 1
+            invalidCallbacks += isValid ? 0 : 1
+            completeFrames += isComplete ? 1 : 0
+            incompleteFrames += isComplete ? 0 : 1
+            imageFrames += hasImage ? 1 : 0
+            imageMissing += hasImage ? 0 : 1
+        }
+    }
+
+    func recordAudioCallback(isValid: Bool) {
+        guard enabled else { return }
+        lock.withLock {
+            audioCallbacks += 1
+            invalidCallbacks += isValid ? 0 : 1
+        }
+    }
+
+    func recordPTSRejected() {
+        guard enabled else { return }
+        lock.withLock { ptsRejected += 1 }
+    }
+
+    func recordPresenterGateRejected() {
+        guard enabled else { return }
+        lock.withLock { presenterGateRejected += 1 }
+    }
+
+    func recordWriterNotReady() {
+        guard enabled else { return }
+        lock.withLock { writerNotReady += 1 }
+    }
+
+    func recordAppend(succeeded: Bool) {
+        guard enabled else { return }
+        lock.withLock {
+            appendSucceeded += succeeded ? 1 : 0
+            appendFailed += succeeded ? 0 : 1
+        }
+    }
+
+    func recordProcessingFailure() {
+        guard enabled else { return }
+        lock.withLock { processingFailed += 1 }
+    }
+
+    func emitOnce(writerStatus: Int) {
+        guard enabled else { return }
+        let line = lock.withLock { () -> String? in
+            guard !hasEmitted else { return nil }
+            hasEmitted = true
+            return CaptureDiagnosticsSnapshot(
+                screenCallbacks: screenCallbacks,
+                audioCallbacks: audioCallbacks,
+                invalidCallbacks: invalidCallbacks,
+                completeFrames: completeFrames,
+                incompleteFrames: incompleteFrames,
+                imageFrames: imageFrames,
+                imageMissing: imageMissing,
+                ptsRejected: ptsRejected,
+                presenterGateRejected: presenterGateRejected,
+                writerNotReady: writerNotReady,
+                appendSucceeded: appendSucceeded,
+                appendFailed: appendFailed,
+                processingFailed: processingFailed,
+                writerStatus: writerStatus
+            ).logLine
+        }
+        if let line { emitter(line) }
+    }
+}
+
 final class CapturePreparationOwner {
     private let lock = NSLock()
     private var cleanup: ((Error) -> Void)?
@@ -388,6 +549,7 @@ final class CaptureOutputSession {
     private var standaloneAudioReleaseHandler: ((AVAudioFile) -> Void)?
     private let saveFrameHandler: ((CMSampleBuffer) -> Void)?
     private let firstFrameHandler: ((CMSampleBuffer) -> Void)?
+    private let diagnostics: CaptureDiagnostics
     private var microphoneStopHandler: (() -> Void)?
 
     init(
@@ -406,6 +568,7 @@ final class CaptureOutputSession {
         standaloneAudioReleaseHandler: ((AVAudioFile) -> Void)? = nil,
         saveFrameHandler: ((CMSampleBuffer) -> Void)? = nil,
         firstFrameHandler: ((CMSampleBuffer) -> Void)? = nil,
+        diagnostics: CaptureDiagnostics = .environmentConfigured(),
         microphoneStopHandler: (() -> Void)? = nil
     ) {
         self.id = id
@@ -423,6 +586,7 @@ final class CaptureOutputSession {
         self.standaloneAudioReleaseHandler = standaloneAudioReleaseHandler
         self.saveFrameHandler = saveFrameHandler
         self.firstFrameHandler = firstFrameHandler
+        self.diagnostics = diagnostics
         self.microphoneStopHandler = microphoneStopHandler
     }
 
@@ -467,6 +631,16 @@ final class CaptureOutputSession {
         now: Date = Date()
     ) -> (result: CaptureSampleResult, needsPresenterReady: Bool) {
         callbackLock.withLock {
+            switch kind {
+            case .screen(let isComplete, _):
+                diagnostics.recordScreenCallback(
+                    isValid: sampleBuffer.isValid,
+                    isComplete: isComplete,
+                    hasImage: sampleBuffer.imageBuffer != nil
+                )
+            case .audio:
+                diagnostics.recordAudioCallback(isValid: sampleBuffer.isValid)
+            }
             guard sampleBuffer.isValid else { return (.ignored, false) }
 
             switch kind {
@@ -478,6 +652,7 @@ final class CaptureOutputSession {
                 do {
                     try configurationOwner.windowSanitizer?.sanitize(adjustedSample)
                 } catch {
+                    diagnostics.recordProcessingFailure()
                     return (.failed, false)
                 }
                 if saveFrameRequested {
@@ -502,7 +677,10 @@ final class CaptureOutputSession {
                 var pts = CMSampleBufferGetPresentationTimeStamp(adjustedSample)
                 let duration = CMSampleBufferGetDuration(adjustedSample)
                 if duration > .zero { pts = CMTimeAdd(pts, duration) }
-                guard !framePTS.contains(where: { $0 >= pts }) else { return (.ignored, false) }
+                guard !framePTS.contains(where: { $0 >= pts }) else {
+                    diagnostics.recordPTSRejected()
+                    return (.ignored, false)
+                }
                 framePTS.append(pts)
                 if framePTS.count > 20 { framePTS.removeFirst(framePTS.count - 20) }
                 lastPTS = pts
@@ -516,15 +694,21 @@ final class CaptureOutputSession {
                         needsPresenterReady = true
                     }
                 }
-                guard !isPresenterOn || isCameraReady else { return (.ignored, needsPresenterReady) }
+                guard !isPresenterOn || isCameraReady else {
+                    diagnostics.recordPresenterGateRejected()
+                    return (.ignored, needsPresenterReady)
+                }
                 guard let videoInput, videoInput.isReadyForMoreMediaData else {
+                    diagnostics.recordWriterNotReady()
                     return (.ignored, needsPresenterReady)
                 }
                 if firstFrame == nil {
                     firstFrame = adjustedSample
                     firstFrameHandler?(adjustedSample)
                 }
-                return (videoInput.append(adjustedSample) ? .appended : .appendFailed, needsPresenterReady)
+                let appended = videoInput.append(adjustedSample)
+                diagnostics.recordAppend(succeeded: appended)
+                return (appended ? .appended : .appendFailed, needsPresenterReady)
 
             case .audio:
                 guard !isPaused else { return (.ignored, false) }
@@ -651,6 +835,10 @@ final class CaptureOutputSession {
 
     func capturedFirstFrame() -> CMSampleBuffer? {
         callbackLock.withLock { firstFrame }
+    }
+
+    func emitDiagnosticsOnce() {
+        diagnostics.emitOnce(writerStatus: writer?.status.rawValue ?? -1)
     }
 
     private func startWriterIfNeeded(sampleBuffer: CMSampleBuffer, now: Date) {
@@ -842,6 +1030,7 @@ final class CaptureOutputCore {
         if outcome.needsPresenterReady { presenterReadyHandler(lease.session) }
         if outcome.result == .failed {
             _ = store.deactivate(lease.session) { [failureHandler] in
+                lease.session.emitDiagnosticsOnce()
                 lease.session.releaseStandaloneAudioResources()
                 failureHandler(lease.session)
             }
@@ -862,6 +1051,7 @@ final class CaptureOutputCore {
             defer { lease.release() }
             afterLeaseAcquired()
             return store.deactivateOrConfirmDraining(lease.session, from: stream) { [stopHandler] in
+                lease.session.emitDiagnosticsOnce()
                 lease.session.releaseStandaloneAudioResources()
                 stopHandler(lease.session)
             }
@@ -873,6 +1063,7 @@ final class CaptureOutputCore {
         onDrained: @escaping SessionHandler
     ) -> Bool {
         store.deactivate(session) {
+            session.emitDiagnosticsOnce()
             session.releaseStandaloneAudioResources()
             onDrained(session)
         }

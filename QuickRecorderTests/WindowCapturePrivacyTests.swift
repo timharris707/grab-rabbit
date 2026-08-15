@@ -52,6 +52,185 @@ final class WindowCapturePrivacyTests: XCTestCase {
         XCTAssertEqual(retinaResolution.height, 2080)
     }
 
+    func testAppDelegateSharedResolvesTheSwiftUIApplicationDelegateWithoutConstructingAnother() throws {
+        let appSource = try projectSource("QuickRecorder/QuickRecorderApp.swift")
+        let contextSource = try projectSource("QuickRecorder/SCContext.swift")
+        let realDelegate = TestCaptureDelegate()
+        let decoyDelegate = TestCaptureDelegate()
+        let resolved = ApplicationDelegateResolver.resolve(realDelegate, as: TestCaptureDelegate.self)
+        let streamA = NSObject()
+        let streamB = NSObject()
+        let sessionA = makeCaptureSession(stream: streamA, mode: .transparent, sink: TestVideoDestination())
+        let sessionB = makeCaptureSession(stream: streamB, mode: .opaque, sink: TestVideoDestination())
+
+        XCTAssertTrue(resolved === realDelegate)
+        XCTAssertFalse(resolved === decoyDelegate)
+        XCTAssertTrue(resolved.store.install(sessionA))
+        XCTAssertTrue(resolved.adapter.handleStop(from: streamA))
+        XCTAssertTrue(resolved.store.install(sessionB), "restart must use the same store released by Stop")
+
+        XCTAssertTrue(appSource.contains("@NSApplicationDelegateAdaptor(AppDelegate.self)"))
+        XCTAssertFalse(appSource.contains("static let shared = AppDelegate()"))
+        XCTAssertTrue(appSource.contains("ApplicationDelegateResolver.resolve(NSApp.delegate"))
+        XCTAssertTrue(contextSource.contains("let sessions = AppDelegate.shared.captureOutputSessions"))
+        XCTAssertTrue(contextSource.contains("AppDelegate.shared.captureStreamCallbackAdapter.handleStop"))
+    }
+
+    func testMaximumRateFrameIntervalIsValidAndThirtyFPSRemainsOneThirtieth() throws {
+        let engineSource = try projectSource("QuickRecorder/RecordEngine.swift")
+        let sixtyFPSInterval = CaptureFrameCadence.minimumFrameInterval(frameRate: 60, audioOnly: false)
+        let thirtyFPSInterval = CaptureFrameCadence.minimumFrameInterval(frameRate: 30, audioOnly: false)
+        let audioInterval = CaptureFrameCadence.minimumFrameInterval(frameRate: 60, audioOnly: true)
+
+        XCTAssertTrue(sixtyFPSInterval.isValid)
+        XCTAssertEqual(sixtyFPSInterval, .zero)
+        XCTAssertTrue(thirtyFPSInterval.isValid)
+        XCTAssertEqual(thirtyFPSInterval.value, 1)
+        XCTAssertEqual(thirtyFPSInterval.timescale, 30)
+        XCTAssertTrue(audioInterval.isValid)
+        XCTAssertNotEqual(audioInterval.timescale, 0)
+        XCTAssertTrue(engineSource.contains("CaptureFrameCadence.minimumFrameInterval("))
+    }
+
+    func testCaptureDiagnosticsAreExplicitlyEnvironmentGatedAndAggregateOnly() throws {
+        let privacySource = try projectSource("QuickRecorder/WindowCapturePrivacy.swift")
+        var disabledLines = [String]()
+        let disabledDiagnostics = CaptureDiagnostics.environmentConfigured(
+            environment: [:],
+            emitter: { disabledLines.append($0) }
+        )
+        disabledDiagnostics.recordScreenCallback(isValid: true, isComplete: true, hasImage: true)
+        disabledDiagnostics.emitOnce(writerStatus: 1)
+        XCTAssertTrue(disabledLines.isEmpty)
+
+        var enabledLines = [String]()
+        let enabledDiagnostics = CaptureDiagnostics.environmentConfigured(
+            environment: [CaptureDiagnostics.environmentKey: "1"],
+            emitter: { enabledLines.append($0) }
+        )
+        let stream = NSObject()
+        let sink = TestVideoDestination()
+        let store = CaptureOutputSessionStore()
+        let session = makeCaptureSession(
+            stream: stream,
+            mode: .transparent,
+            sink: sink,
+            diagnostics: enabledDiagnostics
+        )
+        let core = CaptureOutputCore(
+            store: store,
+            failureHandler: { _ in XCTFail("sample processing should not fail") },
+            stopHandler: { stoppedSession in store.release(stoppedSession) }
+        )
+        let adapter = CaptureStreamCallbackAdapter(core: core)
+
+        XCTAssertTrue(store.install(session))
+        XCTAssertEqual(
+            adapter.handleSample(
+                from: stream,
+                sampleBuffer: try presenterSample(index: 0),
+                kind: .screen(isComplete: false, presenterOverlayX: nil)
+            ),
+            .ignored
+        )
+        for index in 1...3 {
+            XCTAssertEqual(
+                adapter.handleSample(
+                    from: stream,
+                    sampleBuffer: try presenterSample(index: index),
+                    kind: .screen(isComplete: true, presenterOverlayX: nil)
+                ),
+                .appended
+            )
+        }
+        XCTAssertEqual(
+            adapter.handleSample(
+                from: stream,
+                sampleBuffer: try presenterSample(index: 3),
+                kind: .screen(isComplete: true, presenterOverlayX: nil)
+            ),
+            .ignored
+        )
+        sink.isReadyForMoreMediaData = false
+        XCTAssertEqual(
+            adapter.handleSample(
+                from: stream,
+                sampleBuffer: try presenterSample(index: 4),
+                kind: .screen(isComplete: true, presenterOverlayX: nil)
+            ),
+            .ignored
+        )
+        sink.isReadyForMoreMediaData = true
+        sink.appendResult = false
+        XCTAssertEqual(
+            adapter.handleSample(
+                from: stream,
+                sampleBuffer: try presenterSample(index: 5),
+                kind: .screen(isComplete: true, presenterOverlayX: nil)
+            ),
+            .appendFailed
+        )
+        sink.appendResult = true
+        XCTAssertNotNil(core.handlePresenterStarted(from: stream))
+        XCTAssertEqual(
+            adapter.handleSample(
+                from: stream,
+                sampleBuffer: try presenterSample(index: 6),
+                kind: .screen(isComplete: true, presenterOverlayX: 0)
+            ),
+            .ignored
+        )
+        XCTAssertTrue(adapter.handleStop(from: stream))
+        XCTAssertFalse(adapter.handleStop(from: stream))
+
+        XCTAssertEqual(enabledLines.count, 1)
+        let line = try XCTUnwrap(enabledLines.first)
+        XCTAssertTrue(line.contains("screen_callbacks=8"))
+        XCTAssertTrue(line.contains("complete_frames=7"))
+        XCTAssertTrue(line.contains("incomplete_frames=1"))
+        XCTAssertTrue(line.contains("image_frames=8"))
+        XCTAssertTrue(line.contains("pts_rejected=1"))
+        XCTAssertTrue(line.contains("presenter_gate_rejected=1"))
+        XCTAssertTrue(line.contains("writer_not_ready=1"))
+        XCTAssertTrue(line.contains("append_succeeded=3"))
+        XCTAssertTrue(line.contains("append_failed=1"))
+        XCTAssertTrue(line.contains("writer_status=-1"))
+
+        XCTAssertTrue(privacySource.contains("GRAB_RABBIT_CAPTURE_DIAGNOSTICS"))
+        XCTAssertTrue(privacySource.contains("CaptureDiagnostics"))
+        XCTAssertFalse(privacySource.contains("capturedPixels"))
+        XCTAssertFalse(privacySource.contains("windowTitle"))
+        XCTAssertFalse(privacySource.contains("audioContent"))
+    }
+
+    func testProductionAdapterAppendsMoreThanTwentyIncreasingCompleteFrames() throws {
+        let stream = NSObject()
+        let sink = TestVideoDestination()
+        let store = CaptureOutputSessionStore()
+        let session = makeCaptureSession(stream: stream, mode: .transparent, sink: sink)
+        let core = CaptureOutputCore(
+            store: store,
+            failureHandler: { _ in XCTFail("sample processing should not fail") },
+            stopHandler: { stoppedSession in store.release(stoppedSession) }
+        )
+        let adapter = CaptureStreamCallbackAdapter(core: core)
+
+        XCTAssertTrue(store.install(session))
+        for index in 0..<25 {
+            XCTAssertEqual(
+                adapter.handleSample(
+                    from: stream,
+                    sampleBuffer: try presenterSample(index: index),
+                    kind: .screen(isComplete: true, presenterOverlayX: nil)
+                ),
+                .appended
+            )
+        }
+        XCTAssertEqual(sink.appendCount, 25)
+        XCTAssertGreaterThan(sink.appendCount, 1)
+        XCTAssertTrue(adapter.handleStop(from: stream))
+    }
+
     func testTransparentAndOpaqueOutputProfilesAreExplicit() {
         let transparent = WindowCapturePrivacy.outputProfile(
             mode: .transparent,
@@ -1480,7 +1659,8 @@ final class WindowCapturePrivacyTests: XCTestCase {
         microphoneInput: (any CaptureVideoSampleDestination)? = nil,
         isAudioOnly: Bool = false,
         saveFrameHandler: ((CMSampleBuffer) -> Void)? = nil,
-        firstFrameHandler: ((CMSampleBuffer) -> Void)? = nil
+        firstFrameHandler: ((CMSampleBuffer) -> Void)? = nil,
+        diagnostics: CaptureDiagnostics = CaptureDiagnostics(enabled: false)
     ) -> CaptureOutputSession {
         CaptureOutputSession(
             stream: stream,
@@ -1494,7 +1674,8 @@ final class WindowCapturePrivacyTests: XCTestCase {
             sampleQueue: DispatchQueue(label: "WindowCapturePrivacyTests.\(mode.rawValue)"),
             isAudioOnly: isAudioOnly,
             saveFrameHandler: saveFrameHandler,
-            firstFrameHandler: firstFrameHandler
+            firstFrameHandler: firstFrameHandler,
+            diagnostics: diagnostics
         )
     }
 
@@ -1654,11 +1835,12 @@ final class WindowCapturePrivacyTests: XCTestCase {
 
 private final class TestVideoDestination: CaptureVideoSampleDestination {
     var isReadyForMoreMediaData = true
+    var appendResult = true
     private(set) var appendCount = 0
 
     func append(_ sampleBuffer: CMSampleBuffer) -> Bool {
         appendCount += 1
-        return true
+        return appendResult
     }
 }
 
@@ -1700,6 +1882,24 @@ private final class WeakReference<Object: AnyObject> {
 
 private enum InjectedCaptureSetupError: Error {
     case addOutputFailed
+}
+
+private final class TestCaptureDelegate {
+    let store: CaptureOutputSessionStore
+    let core: CaptureOutputCore
+    let adapter: CaptureStreamCallbackAdapter
+
+    init() {
+        let store = CaptureOutputSessionStore()
+        let core = CaptureOutputCore(
+            store: store,
+            failureHandler: { _ in },
+            stopHandler: { store.release($0) }
+        )
+        self.store = store
+        self.core = core
+        adapter = CaptureStreamCallbackAdapter(core: core)
+    }
 }
 
 private final class ManualActionScheduler {

@@ -49,7 +49,7 @@ class CameraNSView: NSView {
     }
         
     required init?(coder decoder: NSCoder) {
-        // 如果您的类型不是一个可选类型，您可以将其设置为一个默认值
+        // Decoder-created overlays default to the camera stream.
         self.type = .camera
         super.init(coder: decoder)
         wantsLayer = true

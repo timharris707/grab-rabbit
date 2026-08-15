@@ -76,16 +76,16 @@ class SCContext {
                 default:
                     print("Error: failed to fetch available content: ".local, error.localizedDescription)
                 }
-                completion(nil) // 在错误情况下返回 nil
+                completion(nil) // Return nil when fetching content fails.
                 return
             }
 
             availableContent = content
             if let displays = content?.displays, !displays.isEmpty {
-                completion(content) // 返回成功获取的 content
+                completion(content) // Return the fetched content.
             } else {
                 print("There needs to be at least one display connected!".local)
-                completion(nil) // 如果没有显示器连接，则返回 nil
+                completion(nil) // Return nil when no display is connected.
             }
         }
     }
@@ -558,7 +558,7 @@ class SCContext {
         var deviceID = AudioObjectID(0)
         var propertySize = UInt32(MemoryLayout.size(ofValue: deviceID))
         
-        // 获取默认音频输入设备
+        // Get the default audio input device.
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioHardwarePropertyDefaultInputDevice,
             mScope: kAudioObjectPropertyScopeGlobal,
@@ -579,25 +579,25 @@ class SCContext {
             return nil
         }
         
-        // 获取通道数
+        // Get the channel count.
         address = AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyStreamConfiguration,
             mScope: kAudioDevicePropertyScopeInput,
             mElement: kAudioObjectPropertyElementMain
         )
         
-        // 查询流配置信息
+        // Query the stream configuration.
         var streamConfig: UnsafeMutableAudioBufferListPointer?
         propertySize = 0
         
-        // 先获取属性大小
+        // Get the property size first.
         let sizeStatus = AudioObjectGetPropertyDataSize(deviceID, &address, 0, nil, &propertySize)
         guard sizeStatus == noErr else {
             print("Failed to get size for stream configuration")
             return nil
         }
         
-        // 分配内存以存储音频流配置
+        // Allocate memory for the audio stream configuration.
         let bufferList = UnsafeMutablePointer<AudioBufferList>.allocate(capacity: Int(propertySize))
         defer { bufferList.deallocate() }
         
@@ -609,7 +609,7 @@ class SCContext {
         
         streamConfig = UnsafeMutableAudioBufferListPointer(bufferList)
         
-        // 计算通道总数
+        // Calculate the total channel count.
         var totalChannels = 0
         for buffer in streamConfig! {
             totalChannels += Int(buffer.mNumberChannels)
@@ -634,7 +634,7 @@ class SCContext {
         var deviceID = AudioObjectID(0)
         var propertySize = UInt32(MemoryLayout.size(ofValue: deviceID))
         
-        // 获取默认音频输入设备
+        // Get the default audio input device.
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioHardwarePropertyDefaultInputDevice,
             mScope: kAudioObjectPropertyScopeGlobal,
@@ -655,7 +655,7 @@ class SCContext {
             return nil
         }
         
-        // 获取采样率
+        // Get the sample rate.
         var sampleRate: Double = 0
         propertySize = UInt32(MemoryLayout.size(ofValue: sampleRate))
         
@@ -707,7 +707,7 @@ class SCContext {
         let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 1, repeats: false)
         let request = UNNotificationRequest(identifier: id, content: content, trigger: trigger)
         UNUserNotificationCenter.current().add(request) { error in
-            if let error = error { print("Notification failed to send：\(error.localizedDescription)") }
+            if let error = error { print("Notification failed to send: \(error.localizedDescription)") }
         }
     }
     

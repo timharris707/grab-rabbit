@@ -30,9 +30,6 @@ struct ContentViewNew: View {
                 if isTodayChristmas() && isAllowChristmas() {
                     let images = ["snowflake1", "snowflake2", "snowflake3", "christmasTree1", "christmasTree2"]
                     SurpriseView(snowflakes: images, width: 520, height: 200, velocity: 16, lifetime: 30, alphaSpeed: -0.05)
-                } else if isChineseNewYear() && isAllowChineseNewYear() {
-                    let images = ["fuzi1", "fuzi2", "fuzi3", "hongbao1", "hongbao2", "hongbao3", "bianpao1", "bianpao2", "bianpao3"]
-                    SurpriseView(snowflakes: images, width: 520, height: 200, velocity: 16, lifetime: 30, alphaSpeed: -0.05)
                 }
             }.opacity(0.5)
             VStack {

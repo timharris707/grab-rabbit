@@ -212,7 +212,7 @@ class ScreenSelectorViewModel: NSObject, ObservableObject, SCStreamDelegate, SCS
                         self.streams.append(stream)
                     }
                 } catch {
-                    print("Get screenshot error：\(error)")
+                    print("Get screenshot error: \(error)")
                 }
             }
         }

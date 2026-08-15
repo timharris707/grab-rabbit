@@ -408,10 +408,7 @@ class SCContext {
             }
         }
 
-        let sessionToRelease = expectedSession
-        defer {
-            if let sessionToRelease { sessions.release(sessionToRelease) }
-        }
+        let stopBody: () -> Void = {
         let finishedJob = expectedSession?.outputJob ?? outputJob
         let finalWriter = expectedSession?.writer ?? vW
         let finalVideoInput = (expectedSession?.videoInput as? AVAssetWriterInput) ?? vwInput
@@ -676,6 +673,14 @@ class SCContext {
         streamType = nil
         firstFrame = nil
         if let finishedJob, outputJob === finishedJob { outputJob = nil }
+        }
+
+        if let expectedSession {
+            let finalizer = CaptureSessionFinalizationCoordinator(store: sessions)
+            finalizer.finalize(expectedSession) { stopBody() }
+        } else {
+            stopBody()
+        }
     }
 
     private static func finishCompletedAudioPackage(

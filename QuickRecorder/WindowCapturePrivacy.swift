@@ -442,6 +442,22 @@ final class CapturePreparationFailureCoordinator {
     }
 }
 
+final class CaptureSessionFinalizationCoordinator {
+    private let store: CaptureOutputSessionStore
+
+    init(store: CaptureOutputSessionStore) {
+        self.store = store
+    }
+
+    func finalize<Result>(
+        _ session: CaptureOutputSession,
+        _ body: () throws -> Result
+    ) rethrows -> Result {
+        defer { store.release(session) }
+        return try body()
+    }
+}
+
 enum CapturePreparationResourceSnapshot {
     static func clear<Resource: AnyObject>(
         _ capturedResource: Resource?,

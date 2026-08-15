@@ -231,6 +231,56 @@ final class WindowCapturePrivacyTests: XCTestCase {
         XCTAssertTrue(adapter.handleStop(from: stream))
     }
 
+    func testProductionStopUsesGuaranteedSameStoreReleaseForEveryFinalizationExit() throws {
+        let contextSource = try projectSource("QuickRecorder/SCContext.swift")
+
+        for variant in FinalizationExitVariant.allCases {
+            let store = CaptureOutputSessionStore()
+            let sessionA = makeCaptureSession(
+                stream: NSObject(),
+                mode: .transparent,
+                sink: TestVideoDestination()
+            )
+            let sessionB = UUID()
+            let finalizer = CaptureSessionFinalizationCoordinator(store: store)
+
+            XCTAssertTrue(store.install(sessionA))
+            XCTAssertTrue(store.deactivate(sessionA))
+            XCTAssertFalse(store.reserve(sessionB), "B must remain blocked before A finalization")
+
+            switch variant {
+            case .completed:
+                let result = finalizer.finalize(sessionA) {
+                    XCTAssertFalse(store.reserve(sessionB), "B must remain blocked inside A finalization")
+                    return "completed"
+                }
+                XCTAssertEqual(result, "completed")
+            case .earlyReturn:
+                let result = finalizer.finalize(sessionA) {
+                    XCTAssertFalse(store.reserve(sessionB), "B must remain blocked before an early return")
+                    return "early"
+                }
+                XCTAssertEqual(result, "early")
+            case .thrown:
+                XCTAssertThrowsError(
+                    try finalizer.finalize(sessionA) {
+                        XCTAssertFalse(store.reserve(sessionB), "B must remain blocked before a thrown exit")
+                        throw FinalizationProbeError.injected
+                    }
+                )
+            }
+
+            XCTAssertTrue(store.reserve(sessionB), "B may reserve after every A finalization exit")
+            store.cancelReservation(sessionB)
+        }
+
+        XCTAssertTrue(contextSource.contains("CaptureSessionFinalizationCoordinator(store: sessions)"))
+        XCTAssertTrue(contextSource.contains("finalizer.finalize(expectedSession)"))
+        XCTAssertFalse(
+            contextSource.contains("if let sessionToRelease { sessions.release(sessionToRelease) }")
+        )
+    }
+
     func testTransparentAndOpaqueOutputProfilesAreExplicit() {
         let transparent = WindowCapturePrivacy.outputProfile(
             mode: .transparent,
@@ -1882,6 +1932,16 @@ private final class WeakReference<Object: AnyObject> {
 
 private enum InjectedCaptureSetupError: Error {
     case addOutputFailed
+}
+
+private enum FinalizationExitVariant: CaseIterable {
+    case completed
+    case earlyReturn
+    case thrown
+}
+
+private enum FinalizationProbeError: Error {
+    case injected
 }
 
 private final class TestCaptureDelegate {

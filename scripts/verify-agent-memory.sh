@@ -16,6 +16,7 @@ required_files=(
     AGENTS.md
     docs/agents/project-baseline.md
     docs/agents/team-workflow.md
+    docs/agents/openrouter-image-generation.md
     docs/release/signing.md
     scripts/verify-agent-memory.sh
 )
@@ -34,6 +35,7 @@ required_pointers=(
     docs/agents/project-baseline.md
     docs/agents/team-workflow.md
     docs/release/signing.md
+    docs/agents/openrouter-image-generation.md
     .claude/handoff.md
 )
 
@@ -52,6 +54,7 @@ required_triggers=(
     '**Every repository task:**'
     '**Tracked work:**'
     '**Build, signing, TCC, updater, or release work:**'
+    '**Image-generation or branding work:**'
     '**Transient state:**'
 )
 
@@ -63,6 +66,8 @@ done
 
 required_agent_contracts=(
     'Read these sources in order:'
+    'before asking for credentials or'
+    'choosing a provider route.'
     'Refresh `.claude/handoff.md` before compaction or session succession.'
     'Refresh repository bindings by re-running the ClickAI setup skill;'
 )
@@ -70,6 +75,28 @@ required_agent_contracts=(
 for required_contract in "${required_agent_contracts[@]}"; do
     if ! grep -Fq "$required_contract" AGENTS.md; then
         fail "AGENTS.md is missing the mandatory $required_contract contract"
+    fi
+done
+
+required_openrouter_contracts=(
+    '`OPENROUTER_API_KEY` is supplied by the environment.'
+    'if [[ -n "${OPENROUTER_API_KEY:-}" ]]; then'
+    'Run this check before asking Tim to create, paste, or reconfigure a key.'
+    'OPENAI_API_KEY="$OPENROUTER_API_KEY"'
+    'OPENAI_BASE_URL=https://openrouter.ai/api/v1'
+    'uv run --with openai python "$image_gen_cli" generate'
+    '--model gpt-image-2'
+    '--quality low'
+    '--size 1024x1024'
+    '`gpt-image-2` generation is proven on this route.'
+    'The OpenRouter image-edit endpoint returned `404 Not Found`'
+    'Treat editing as unsupported on this route:'
+    'without retrying or silently switching model or provider.'
+)
+
+for required_contract in "${required_openrouter_contracts[@]}"; do
+    if ! grep -Fq -- "$required_contract" docs/agents/openrouter-image-generation.md; then
+        fail "OpenRouter image-generation reference is missing the $required_contract contract"
     fi
 done
 
@@ -118,8 +145,18 @@ for required_contract in "${required_attribution_contracts[@]}"; do
 done
 
 secret_placeholder_pattern='(BEGIN ([A-Z0-9 ]+ )?PRIVATE KEY|((password|token|secret|api[_ -]?key|private[_ -]?key)[[:space:]]*[:=][[:space:]]*(TODO|TBD|CHANGEME|REPLACE_ME|YOUR_|<[^>]+>)))'
-if grep -Eiq "$secret_placeholder_pattern" docs/release/signing.md; then
-    fail "release signing reference contains a secret or obvious secret placeholder"
+secret_audit_files=(
+    docs/release/signing.md
+    docs/agents/openrouter-image-generation.md
+)
+
+if grep -Eiq "$secret_placeholder_pattern" "${secret_audit_files[@]}"; then
+    fail "an agent reference contains a secret or obvious secret placeholder"
+fi
+
+openrouter_secret_pattern='sk-or-v1-[[:alnum:]_-]{20,}'
+if grep -Eiq "$openrouter_secret_pattern" "${secret_audit_files[@]}"; then
+    fail "an agent reference contains material matching an OpenRouter credential"
 fi
 
 if (( failed != 0 )); then

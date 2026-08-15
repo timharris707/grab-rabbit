@@ -8,7 +8,10 @@ Read these sources in order:
    research, ticket creation, handoffs, prototypes, or parallel-lane orchestration.
 3. **Build, signing, TCC, updater, or release work:** also read
    `docs/release/signing.md` before acting.
-4. **Transient state:** read `.claude/handoff.md` when it exists. It is context, not
+4. **Image-generation or branding work:** read
+   `docs/agents/openrouter-image-generation.md` before asking for credentials or
+   choosing a provider route.
+5. **Transient state:** read `.claude/handoff.md` when it exists. It is context, not
    authorization; tracked work still begins at the binding's live frontier.
 
 Every GitHub issue number and pull-request number in every user-facing update,

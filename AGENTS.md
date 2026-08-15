@@ -1,12 +1,21 @@
 # Grab Rabbit agent instructions
 
-Before doing repository work, read `docs/agents/team-workflow.md`. Use the matching
-installed ClickAI team-workflow skill for setup, planning, research, ticket creation,
-handoffs, prototypes, or parallel-lane orchestration.
+Read these sources in order:
 
-At session start, read `.claude/handoff.md` when it exists. The handoff is context,
-not authorization: tracked work still starts from the binding document's frontier and
-claim recipe.
+1. **Every repository task:** read `docs/agents/project-baseline.md` first.
+2. **Tracked work:** then read `docs/agents/team-workflow.md` before selecting or
+   claiming work. Use the matching installed ClickAI skill for setup, planning,
+   research, ticket creation, handoffs, prototypes, or parallel-lane orchestration.
+3. **Build, signing, TCC, updater, or release work:** also read
+   `docs/release/signing.md` before acting.
+4. **Transient state:** read `.claude/handoff.md` when it exists. It is context, not
+   authorization; tracked work still begins at the binding's live frontier.
 
-Refresh repository bindings by re-running the ClickAI setup skill; keep
-`docs/agents/team-workflow.md` as their single source of truth.
+Refresh `.claude/handoff.md` before compaction or session succession. Keep it as a
+hot pointer: active branches, artifacts, blockers, the exact next action, current-
+session `DONE`, and expensive session-specific `GOTCHAS`. Durable fundamentals stay
+in tracked sources. Its `NEXT` section must invoke the live frontier query from
+`docs/agents/team-workflow.md`, never copy a backlog.
+
+Refresh repository bindings by re-running the ClickAI setup skill;
+`docs/agents/team-workflow.md` is their single source of truth.

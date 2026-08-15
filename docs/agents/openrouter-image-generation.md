@@ -17,27 +17,50 @@ fi
 ```
 
 Run this check before asking Tim to create, paste, or reconfigure a key. Keep the
-credential in the environment: never print it, write it to a tracked file, or put a
+credential in process memory: receive it through the environment and use the
+unexported runtime copy below. Never print it, write it to a tracked file, or put a
 literal value in a command.
 
-## Proven generation invocation
+## Pinned two-stage generation invocation
 
 Set `prompt_file` and `output_file` to the approved local input and output paths,
-then use the bundled CLI through OpenRouter's OpenAI-compatible endpoint:
+then prepare the exact SDK version with all provider credentials removed:
 
 ```bash
 image_gen_cli="${CODEX_HOME:-$HOME/.codex}/skills/.system/imagegen/scripts/image_gen.py"
 
-OPENAI_API_KEY="$OPENROUTER_API_KEY" \
-OPENAI_BASE_URL=https://openrouter.ai/api/v1 \
-uv run --with openai python "$image_gen_cli" generate \
-    --model gpt-image-2 \
-    --prompt-file "$prompt_file" \
-    --quality low \
-    --size 1024x1024 \
-    --no-augment \
-    --out "$output_file"
+env -u OPENROUTER_API_KEY \
+    -u OPENAI_API_KEY \
+    -u OPENAI_BASE_URL \
+    uv run --with 'openai==3.1.0' --no-env-file --no-project python -c \
+    'import openai; assert openai.__version__ == "3.1.0"'
 ```
+
+Preparation is complete only when that import exits `0`. It is the only stage that
+may resolve or download a package, and it runs without provider credentials. Then
+run the bundled CLI offline, with the key held in a non-exported subshell variable:
+
+```bash
+(
+    openrouter_key=${OPENROUTER_API_KEY:?OPENROUTER_API_KEY is missing}
+    export -n openrouter_key
+
+    env -u OPENROUTER_API_KEY \
+        OPENAI_API_KEY="$openrouter_key" \
+        OPENAI_BASE_URL=https://openrouter.ai/api/v1 \
+        uv run --offline --with 'openai==3.1.0' --no-env-file --no-project \
+        python "$image_gen_cli" generate \
+        --model gpt-image-2 \
+        --prompt-file "$prompt_file" \
+        --quality low \
+        --size 1024x1024 \
+        --no-augment \
+        --out "$output_file"
+)
+```
+
+If the offline run reports that the pinned package is unavailable, stop and repeat
+the credential-free preparation stage; keep the runtime stage offline.
 
 `gpt-image-2` generation is proven on this route. The visual-identity run used one
 call per concept; its prompts and output hashes are in the tracked

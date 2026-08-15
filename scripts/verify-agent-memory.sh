@@ -82,12 +82,22 @@ required_openrouter_contracts=(
     '`OPENROUTER_API_KEY` is supplied by the environment.'
     'if [[ -n "${OPENROUTER_API_KEY:-}" ]]; then'
     'Run this check before asking Tim to create, paste, or reconfigure a key.'
-    'OPENAI_API_KEY="$OPENROUTER_API_KEY"'
+    'env -u OPENROUTER_API_KEY \'
+    '-u OPENAI_API_KEY \'
+    '-u OPENAI_BASE_URL \'
+    "uv run --with 'openai==3.1.0' --no-env-file --no-project python -c"
+    "'import openai; assert openai.__version__ == \"3.1.0\"'"
+    'Preparation is complete only when that import exits `0`.'
+    'openrouter_key=${OPENROUTER_API_KEY:?OPENROUTER_API_KEY is missing}'
+    'export -n openrouter_key'
+    'OPENAI_API_KEY="$openrouter_key"'
     'OPENAI_BASE_URL=https://openrouter.ai/api/v1'
-    'uv run --with openai python "$image_gen_cli" generate'
+    "uv run --offline --with 'openai==3.1.0' --no-env-file --no-project"
+    'python "$image_gen_cli" generate'
     '--model gpt-image-2'
     '--quality low'
     '--size 1024x1024'
+    'keep the runtime stage offline.'
     '`gpt-image-2` generation is proven on this route.'
     'The OpenRouter image-edit endpoint returned `404 Not Found`'
     'Treat editing as unsupported on this route:'
@@ -97,6 +107,17 @@ required_openrouter_contracts=(
 for required_contract in "${required_openrouter_contracts[@]}"; do
     if ! grep -Fq -- "$required_contract" docs/agents/openrouter-image-generation.md; then
         fail "OpenRouter image-generation reference is missing the $required_contract contract"
+    fi
+done
+
+forbidden_openrouter_contracts=(
+    'OPENAI_API_KEY="$OPENROUTER_API_KEY"'
+    'uv run --with openai python'
+)
+
+for forbidden_contract in "${forbidden_openrouter_contracts[@]}"; do
+    if grep -Fq -- "$forbidden_contract" docs/agents/openrouter-image-generation.md; then
+        fail "OpenRouter image-generation reference retains unsafe route $forbidden_contract"
     fi
 done
 

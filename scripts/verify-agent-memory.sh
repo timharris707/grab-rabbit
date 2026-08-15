@@ -82,21 +82,11 @@ required_openrouter_contracts=(
     '`OPENROUTER_API_KEY` is supplied by the environment.'
     'if [[ -n "${OPENROUTER_API_KEY:-}" ]]; then'
     'Run this check before asking Tim to create, paste, or reconfigure a key.'
-    'env -u OPENROUTER_API_KEY \'
-    '-u OPENAI_API_KEY \'
-    '-u OPENAI_BASE_URL \'
-    "uv run --with 'openai==3.1.0' --no-env-file --no-project python -c"
-    "'import openai; assert openai.__version__ == \"3.1.0\"'"
     'Preparation is complete only when that import exits `0`.'
-    'openrouter_key=${OPENROUTER_API_KEY:?OPENROUTER_API_KEY is missing}'
-    'export -n openrouter_key'
-    'OPENAI_API_KEY="$openrouter_key"'
-    'OPENAI_BASE_URL=https://openrouter.ai/api/v1'
-    "uv run --offline --with 'openai==3.1.0' --no-env-file --no-project"
-    'python "$image_gen_cli" generate'
-    '--model gpt-image-2'
-    '--quality low'
-    '--size 1024x1024'
+    'It intentionally omits'
+    '`--offline` so a cold cache can download the pinned package.'
+    'its allowlist excludes provider credentials, headers, organization or'
+    'project selection, proxy settings, and all other inherited variables.'
     'keep the runtime stage offline.'
     '`gpt-image-2` generation is proven on this route.'
     'The OpenRouter image-edit endpoint returned `404 Not Found`'
@@ -110,8 +100,50 @@ for required_contract in "${required_openrouter_contracts[@]}"; do
     fi
 done
 
+required_openrouter_preparation_block=$(printf '%s\n' \
+    'env -i \' \
+    '    HOME="$HOME" \' \
+    '    PATH="$PATH" \' \
+    '    TMPDIR="${TMPDIR:-/tmp}" \' \
+    "    uv run --with 'openai==3.1.0' --no-env-file --no-project python -c \\" \
+    "    'import openai; assert openai.__version__ == \"3.1.0\"'")
+
+openrouter_reference=$(<docs/agents/openrouter-image-generation.md)
+
+if [[ "$openrouter_reference" != *"$required_openrouter_preparation_block"* ]]; then
+    fail "OpenRouter image-generation reference is missing the exact minimal preparation block"
+fi
+
+required_openrouter_runtime_block=$(printf '%s\n' \
+    '(' \
+    '    set +a' \
+    '    unset openrouter_key' \
+    '    openrouter_key=${OPENROUTER_API_KEY:?OPENROUTER_API_KEY is missing}' \
+    '' \
+    '    env -i \' \
+    '        HOME="$HOME" \' \
+    '        PATH="$PATH" \' \
+    '        TMPDIR="${TMPDIR:-/tmp}" \' \
+    '        OPENAI_API_KEY="$openrouter_key" \' \
+    '        OPENAI_BASE_URL=https://openrouter.ai/api/v1 \' \
+    "        uv run --offline --with 'openai==3.1.0' --no-env-file --no-project \\" \
+    '        python "$image_gen_cli" generate \' \
+    '        --model gpt-image-2 \' \
+    '        --prompt-file "$prompt_file" \' \
+    '        --quality low \' \
+    '        --size 1024x1024 \' \
+    '        --no-augment \' \
+    '        --out "$output_file"' \
+    ')')
+
+if [[ "$openrouter_reference" != *"$required_openrouter_runtime_block"* ]]; then
+    fail "OpenRouter image-generation reference is missing the exact isolated runtime block"
+fi
+
 forbidden_openrouter_contracts=(
     'OPENAI_API_KEY="$OPENROUTER_API_KEY"'
+    'env -u OPENROUTER_API_KEY'
+    'export -n openrouter_key'
     'uv run --with openai python'
 )
 

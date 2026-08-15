@@ -24,28 +24,37 @@ literal value in a command.
 ## Pinned two-stage generation invocation
 
 Set `prompt_file` and `output_file` to the approved local input and output paths,
-then prepare the exact SDK version with all provider credentials removed:
+then prepare the exact SDK version in a minimal environment:
 
 ```bash
 image_gen_cli="${CODEX_HOME:-$HOME/.codex}/skills/.system/imagegen/scripts/image_gen.py"
 
-env -u OPENROUTER_API_KEY \
-    -u OPENAI_API_KEY \
-    -u OPENAI_BASE_URL \
+env -i \
+    HOME="$HOME" \
+    PATH="$PATH" \
+    TMPDIR="${TMPDIR:-/tmp}" \
     uv run --with 'openai==3.1.0' --no-env-file --no-project python -c \
     'import openai; assert openai.__version__ == "3.1.0"'
 ```
 
-Preparation is complete only when that import exits `0`. It is the only stage that
-may resolve or download a package, and it runs without provider credentials. Then
-run the bundled CLI offline, with the key held in a non-exported subshell variable:
+Preparation is complete only when that import exits `0`. It intentionally omits
+`--offline` so a cold cache can download the pinned package. This is the only online
+stage, and its allowlist excludes provider credentials, headers, organization or
+project selection, proxy settings, and all other inherited variables.
+
+Then run the bundled CLI offline, with the key held in a non-exported subshell
+variable:
 
 ```bash
 (
+    set +a
+    unset openrouter_key
     openrouter_key=${OPENROUTER_API_KEY:?OPENROUTER_API_KEY is missing}
-    export -n openrouter_key
 
-    env -u OPENROUTER_API_KEY \
+    env -i \
+        HOME="$HOME" \
+        PATH="$PATH" \
+        TMPDIR="${TMPDIR:-/tmp}" \
         OPENAI_API_KEY="$openrouter_key" \
         OPENAI_BASE_URL=https://openrouter.ai/api/v1 \
         uv run --offline --with 'openai==3.1.0' --no-env-file --no-project \
@@ -60,7 +69,7 @@ run the bundled CLI offline, with the key held in a non-exported subshell variab
 ```
 
 If the offline run reports that the pinned package is unavailable, stop and repeat
-the credential-free preparation stage; keep the runtime stage offline.
+the minimal-environment preparation stage; keep the runtime stage offline.
 
 `gpt-image-2` generation is proven on this route. The visual-identity run used one
 call per concept; its prompts and output hashes are in the tracked

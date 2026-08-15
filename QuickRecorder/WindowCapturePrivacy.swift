@@ -1,5 +1,6 @@
 import AVFoundation
 import CoreGraphics
+import CoreMedia
 import CoreVideo
 
 enum WindowCaptureMode: String, CaseIterable {
@@ -177,5 +178,145 @@ enum WindowCapturePrivacy {
 
     private static func composite(_ source: UInt8, over matte: UInt8, inverseAlpha: Int) -> UInt8 {
         UInt8(min(255, Int(source) + (Int(matte) * inverseAlpha + 127) / 255))
+    }
+}
+
+protocol CaptureVideoSampleDestination: AnyObject {
+    var isReadyForMoreMediaData: Bool { get }
+    @discardableResult func append(_ sampleBuffer: CMSampleBuffer) -> Bool
+}
+
+extension AVAssetWriterInput: CaptureVideoSampleDestination {}
+
+final class WindowCaptureFrameSanitizer {
+    let mode: WindowCaptureMode
+    let matte: WindowCaptureMatte
+    let backgroundColor: CGColor
+
+    init(mode: WindowCaptureMode, matte: WindowCaptureMatte) {
+        self.mode = mode
+        self.matte = matte
+        backgroundColor = WindowCapturePrivacy.backgroundColor(mode: mode, matte: matte)
+    }
+
+    func sanitize(_ sampleBuffer: CMSampleBuffer) throws {
+        guard let pixelBuffer = sampleBuffer.imageBuffer else { return }
+        try WindowCapturePrivacy.sanitize(pixelBuffer, mode: mode, matte: matte)
+    }
+}
+
+enum CaptureVideoRouteResult: Equatable {
+    case rejected
+    case notReady
+    case appended
+    case appendFailed
+}
+
+final class CaptureOutputSession {
+    let id: UUID
+    let outputJob: RecordingOutputJob?
+    let writer: AVAssetWriter?
+    let videoInput: (any CaptureVideoSampleDestination)?
+    let systemAudioInput: AVAssetWriterInput?
+    let standaloneAudioFile: AVAudioFile?
+    let windowSanitizer: WindowCaptureFrameSanitizer?
+    let configurationBackgroundColor: CGColor?
+    let sampleQueue: DispatchQueue
+    let isAudioOnly: Bool
+
+    private let streamIdentifier: ObjectIdentifier
+
+    init(
+        id: UUID = UUID(),
+        stream: AnyObject,
+        outputJob: RecordingOutputJob?,
+        writer: AVAssetWriter?,
+        videoInput: (any CaptureVideoSampleDestination)?,
+        systemAudioInput: AVAssetWriterInput?,
+        standaloneAudioFile: AVAudioFile?,
+        windowSanitizer: WindowCaptureFrameSanitizer?,
+        configurationBackgroundColor: CGColor?,
+        sampleQueue: DispatchQueue,
+        isAudioOnly: Bool
+    ) {
+        self.id = id
+        streamIdentifier = ObjectIdentifier(stream)
+        self.outputJob = outputJob
+        self.writer = writer
+        self.videoInput = videoInput
+        self.systemAudioInput = systemAudioInput
+        self.standaloneAudioFile = standaloneAudioFile
+        self.windowSanitizer = windowSanitizer
+        self.configurationBackgroundColor = configurationBackgroundColor
+        self.sampleQueue = sampleQueue
+        self.isAudioOnly = isAudioOnly
+    }
+
+    func owns(stream: AnyObject) -> Bool {
+        streamIdentifier == ObjectIdentifier(stream)
+    }
+
+    func routeVideo(
+        from stream: AnyObject,
+        sampleBuffer: CMSampleBuffer
+    ) throws -> CaptureVideoRouteResult {
+        guard owns(stream: stream) else { return .rejected }
+        guard let videoInput else { return .notReady }
+        guard videoInput.isReadyForMoreMediaData else { return .notReady }
+        try windowSanitizer?.sanitize(sampleBuffer)
+        return videoInput.append(sampleBuffer) ? .appended : .appendFailed
+    }
+}
+
+final class CaptureOutputSessionStore {
+    private let lock = NSLock()
+    private var currentSession: CaptureOutputSession?
+    private var retiredSessions = [UUID: CaptureOutputSession]()
+
+    @discardableResult
+    func install(_ session: CaptureOutputSession) -> Bool {
+        lock.withLock {
+            guard currentSession == nil else { return false }
+            currentSession = session
+            return true
+        }
+    }
+
+    func session(for stream: AnyObject) -> CaptureOutputSession? {
+        lock.withLock {
+            guard currentSession?.owns(stream: stream) == true else { return nil }
+            return currentSession
+        }
+    }
+
+    func routeVideo(
+        from stream: AnyObject,
+        sampleBuffer: CMSampleBuffer
+    ) throws -> CaptureVideoRouteResult {
+        guard let session = session(for: stream) else { return .rejected }
+        return try session.routeVideo(from: stream, sampleBuffer: sampleBuffer)
+    }
+
+    @discardableResult
+    func clear(_ session: CaptureOutputSession) -> Bool {
+        lock.withLock {
+            guard currentSession === session else { return false }
+            currentSession = nil
+            return true
+        }
+    }
+
+    @discardableResult
+    func deactivate(_ session: CaptureOutputSession) -> Bool {
+        lock.withLock {
+            guard currentSession === session else { return false }
+            retiredSessions[session.id] = session
+            currentSession = nil
+            return true
+        }
+    }
+
+    func release(_ session: CaptureOutputSession) {
+        lock.withLock { retiredSessions[session.id] = nil }
     }
 }

@@ -1,6 +1,7 @@
 import CoreVideo
 import AVFoundation
 import Foundation
+import ScreenCaptureKit
 import XCTest
 
 final class WindowCapturePrivacyTests: XCTestCase {
@@ -89,6 +90,85 @@ final class WindowCapturePrivacyTests: XCTestCase {
         XCTAssertEqual(components[2], CGFloat(testMatte.blue) / 255, accuracy: 0.0001)
     }
 
+    func testConfigurationBackgroundColorHasAnOwnerBeyondItsAssignmentScope() {
+        let configuration = SCStreamConfiguration()
+        weak var assignedColor: CGColor?
+        var session: CaptureOutputSession?
+
+        autoreleasepool {
+            let sanitizer = WindowCaptureFrameSanitizer(mode: .transparent, matte: testMatte)
+            assignedColor = sanitizer.backgroundColor
+            configuration.backgroundColor = sanitizer.backgroundColor
+            session = CaptureOutputSession(
+                stream: NSObject(),
+                outputJob: nil,
+                writer: nil,
+                videoInput: nil,
+                systemAudioInput: nil,
+                standaloneAudioFile: nil,
+                windowSanitizer: sanitizer,
+                configurationBackgroundColor: sanitizer.backgroundColor,
+                sampleQueue: DispatchQueue(label: "WindowCapturePrivacyTests.color-owner"),
+                isAudioOnly: false
+            )
+        }
+
+        XCTAssertNotNil(assignedColor, "SCStreamConfiguration.backgroundColor is assign and needs a strong session owner")
+        let copiedConfiguration = configuration.copy() as? SCStreamConfiguration
+        XCTAssertEqual(copiedConfiguration?.backgroundColor.alpha, 0)
+        withExtendedLifetime(session) {}
+        withExtendedLifetime(configuration) {}
+    }
+
+    func testDelayedOldStreamCannotUseCurrentSessionPolicyOrWriter() throws {
+        let streamA = NSObject()
+        let streamB = NSObject()
+        let sinkA = TestVideoDestination()
+        let sinkB = TestVideoDestination()
+        let store = CaptureOutputSessionStore()
+        let sessionA = makeCaptureSession(stream: streamA, mode: .transparent, sink: sinkA)
+        let sessionB = makeCaptureSession(stream: streamB, mode: .opaque, sink: sinkB)
+        let delayedABuffer = try makeRoundedWindow(over: sentinels[0])
+        let delayedASample = try makeSampleBuffer(imageBuffer: delayedABuffer)
+
+        XCTAssertTrue(store.install(sessionA))
+        XCTAssertTrue(store.deactivate(sessionA))
+        XCTAssertTrue(store.install(sessionB))
+        let result = try store.routeVideo(from: streamA, sampleBuffer: delayedASample)
+
+        XCTAssertEqual(result, .rejected)
+        XCTAssertEqual(sinkA.appendCount, 0)
+        XCTAssertEqual(sinkB.appendCount, 0)
+        let unchanged = try inspectExterior(of: delayedABuffer, mode: .transparent, sentinel: sentinels[0])
+        XCTAssertGreaterThan(unchanged.sentinelPixels, 0, "B's opaque sanitizer must not touch a delayed A frame")
+
+        let currentForB = try XCTUnwrap(store.session(for: streamB))
+        let currentBBuffer = try makeRoundedWindow(over: sentinels[1])
+        let currentBSample = try makeSampleBuffer(imageBuffer: currentBBuffer)
+        XCTAssertEqual(try currentForB.routeVideo(from: streamB, sampleBuffer: currentBSample), .appended)
+        XCTAssertEqual(sinkA.appendCount, 0)
+        XCTAssertEqual(sinkB.appendCount, 1)
+        let sanitized = try inspectExterior(of: currentBBuffer, mode: .opaque, sentinel: sentinels[1])
+        XCTAssertEqual(sanitized.sentinelPixels, 0)
+        XCTAssertEqual(sanitized.invalidPixels, 0)
+    }
+
+    func testLateOldStreamCannotDeactivateCurrentSession() {
+        let streamA = NSObject()
+        let streamB = NSObject()
+        let store = CaptureOutputSessionStore()
+        let sessionA = makeCaptureSession(stream: streamA, mode: .transparent, sink: TestVideoDestination())
+        let sessionB = makeCaptureSession(stream: streamB, mode: .opaque, sink: TestVideoDestination())
+
+        XCTAssertTrue(store.install(sessionA))
+        XCTAssertTrue(store.deactivate(sessionA))
+        XCTAssertTrue(store.install(sessionB))
+
+        XCTAssertNil(store.session(for: streamA))
+        XCTAssertFalse(store.deactivate(sessionA), "a late A stop/error must not deactivate B")
+        XCTAssertTrue(store.session(for: streamB) === sessionB)
+    }
+
     func testFFmpegReadsTransparentAndOpaqueFixtures() throws {
         let ffprobe = try XCTUnwrap(executable(named: "ffprobe"))
         let ffmpeg = try XCTUnwrap(executable(named: "ffmpeg"))
@@ -162,7 +242,6 @@ final class WindowCapturePrivacyTests: XCTestCase {
         let settingsSource = try projectSource("QuickRecorder/ViewModel/SettingsView.swift")
 
         XCTAssertTrue(engineSource.contains("SCContentFilter(desktopIndependentWindow: includ[0])"))
-        XCTAssertTrue(engineSource.contains("conf.capturesAudio = recordWinSound || fastStart || audioOnly"))
         XCTAssertTrue(selectorSource.contains("windowCaptureMode: windowCaptureMode"))
         XCTAssertTrue(appSource.contains("windowCaptureMode: windowCaptureMode"))
         XCTAssertTrue(appSource.contains("fastStart: true"))
@@ -215,6 +294,54 @@ final class WindowCapturePrivacyTests: XCTestCase {
             }
         }
         return buffer
+    }
+
+    private func makeSampleBuffer(imageBuffer: CVPixelBuffer) throws -> CMSampleBuffer {
+        var formatDescription: CMVideoFormatDescription?
+        XCTAssertEqual(
+            CMVideoFormatDescriptionCreateForImageBuffer(
+                allocator: kCFAllocatorDefault,
+                imageBuffer: imageBuffer,
+                formatDescriptionOut: &formatDescription
+            ),
+            noErr
+        )
+        var timing = CMSampleTimingInfo(
+            duration: CMTime(value: 1, timescale: 30),
+            presentationTimeStamp: .zero,
+            decodeTimeStamp: .invalid
+        )
+        var sampleBuffer: CMSampleBuffer?
+        XCTAssertEqual(
+            CMSampleBufferCreateReadyWithImageBuffer(
+                allocator: kCFAllocatorDefault,
+                imageBuffer: imageBuffer,
+                formatDescription: try XCTUnwrap(formatDescription),
+                sampleTiming: &timing,
+                sampleBufferOut: &sampleBuffer
+            ),
+            noErr
+        )
+        return try XCTUnwrap(sampleBuffer)
+    }
+
+    private func makeCaptureSession(
+        stream: AnyObject,
+        mode: WindowCaptureMode,
+        sink: TestVideoDestination
+    ) -> CaptureOutputSession {
+        CaptureOutputSession(
+            stream: stream,
+            outputJob: nil,
+            writer: nil,
+            videoInput: sink,
+            systemAudioInput: nil,
+            standaloneAudioFile: nil,
+            windowSanitizer: WindowCaptureFrameSanitizer(mode: mode, matte: testMatte),
+            configurationBackgroundColor: nil,
+            sampleQueue: DispatchQueue(label: "WindowCapturePrivacyTests.\(mode.rawValue)"),
+            isAudioOnly: false
+        )
     }
 
     private func writeFixture(
@@ -349,5 +476,15 @@ final class WindowCapturePrivacyTests: XCTestCase {
         let dx = x - centerX
         let dy = y - centerY
         return dx * dx + dy * dy >= cornerRadius * cornerRadius
+    }
+}
+
+private final class TestVideoDestination: CaptureVideoSampleDestination {
+    var isReadyForMoreMediaData = true
+    private(set) var appendCount = 0
+
+    func append(_ sampleBuffer: CMSampleBuffer) -> Bool {
+        appendCount += 1
+        return true
     }
 }

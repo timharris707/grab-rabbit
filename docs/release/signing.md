@@ -24,6 +24,12 @@ security find-certificate -a -c 'Developer ID Application: TIMOTHY G HARRIS (F66
 The public identity was present and valid when last confirmed. Certificate expiry,
 keychain access, and signing authorization are live environment state.
 
+This table is the complete approved signer set. Certificate rotation requires a
+tracked decision that adds the incoming common name, Team ID, and fingerprint here,
+records the outgoing certificate's overlap and revocation dates, and verifies
+notarization continuity before cutover. An artifact signed by an unlisted identity
+fails the release gate.
+
 ## Identity boundaries
 
 The current source project still requests `Apple Development`, upstream Team ID
@@ -65,6 +71,76 @@ codesign --verify --deep --strict --verbose=2 "$release_dmg"
 spctl --assess --type open --context context:primary-signature --verbose=4 "$release_dmg"
 ```
 
+The checks above prove structural validity and platform policy, not signer identity.
+Verify the leaf certificate for the host, every nested object, and the DMG against the
+approved set. The current Sparkle paths are shown explicitly so none are hidden by a
+deep check:
+
+```bash
+set -euo pipefail
+
+expected_common_name='Developer ID Application: TIMOTHY G HARRIS (F66FM4V88Q)'
+expected_team_id='F66FM4V88Q'
+expected_sha1='189EC9780DE0A94CF5B24CC5983CAB3FDAE15638'
+identity_output='.build/release-identity'
+mkdir -p "$identity_output"
+
+verify_signer() {
+    signed_path=$1
+    certificate_prefix=$2
+    signing_details=$(codesign -dvvv "$signed_path" 2>&1)
+    grep -Fq "Authority=$expected_common_name" <<<"$signing_details"
+    grep -Fq "TeamIdentifier=$expected_team_id" <<<"$signing_details"
+    codesign -d --extract-certificates="$identity_output/$certificate_prefix-" "$signed_path"
+    actual_sha1=$(openssl x509 -inform DER \
+        -in "$identity_output/$certificate_prefix-0" -noout -fingerprint -sha1 \
+        | cut -d= -f2 | tr -d ':')
+    test "$actual_sha1" = "$expected_sha1"
+}
+
+sparkle_root="$artifact_path/Contents/Frameworks/Sparkle.framework/Versions/Current"
+verify_signer "$artifact_path" host
+verify_signer "$sparkle_root/Autoupdate" autoupdate
+verify_signer "$sparkle_root/Updater.app" updater
+verify_signer "$sparkle_root/XPCServices/Downloader.xpc" downloader
+verify_signer "$sparkle_root/XPCServices/Installer.xpc" installer
+verify_signer "$artifact_path/Contents/Frameworks/Sparkle.framework" sparkle
+verify_signer "$release_dmg" dmg
+```
+
+## Entitlement allowlists
+
+Entitlements are per-object capabilities, not a bundle-wide template. Never copy the
+host entitlements onto Sparkle or another nested component. For the current baseline,
+the exact approved key/value sets are:
+
+| Signed object | Allowed entitlements |
+|---|---|
+| Grab Rabbit host | `com.apple.security.device.audio-input = true`; `com.apple.security.device.camera = true` |
+| `Autoupdate` | `com.apple.application-identifier = org.sparkle-project.Sparkle.Autoupdate` |
+| `Updater.app` | Empty |
+| `Downloader.xpc` | Empty |
+| `Installer.xpc` | Empty |
+| `Sparkle.framework` | Empty |
+
+An empty allowlist means no entitlement keys, whether `codesign` renders an empty
+dictionary or no entitlement blob. Any added, removed, or changed value requires a
+tracked security review that updates this table before signing. In particular, future
+App Sandbox or XPC work must define its minimal per-object changes here rather than
+silently broadening the host or helper.
+
+Dump every final object and compare its complete dictionary with the table; release
+automation fails on any extra or missing key/value:
+
+```bash
+codesign --display --entitlements - "$artifact_path"
+codesign --display --entitlements - "$sparkle_root/Autoupdate"
+codesign --display --entitlements - "$sparkle_root/Updater.app"
+codesign --display --entitlements - "$sparkle_root/XPCServices/Downloader.xpc"
+codesign --display --entitlements - "$sparkle_root/XPCServices/Installer.xpc"
+codesign --display --entitlements - "$artifact_path/Contents/Frameworks/Sparkle.framework"
+```
+
 ## Nested Sparkle order
 
 Manual signing proceeds from leaf code outward. Use the same Developer ID identity,
@@ -76,8 +152,8 @@ For the current Sparkle 2.9.5 layout, sign all leaf objects first: the standalon
 order relative to one another is not significant. Then sign `Sparkle.framework`
 after every leaf, and sign the Grab Rabbit host application last.
 
-After signing, enumerate nested code and confirm every authority and Team ID matches
-the host before running the deep/strict check.
+After signing, run the exact signer and entitlement checks above before the
+deep/strict check.
 
 ## TCC and runtime lessons
 

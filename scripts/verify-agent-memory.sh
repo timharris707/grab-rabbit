@@ -61,8 +61,24 @@ for required_trigger in "${required_triggers[@]}"; do
     fi
 done
 
-if ! grep -Eq '^\.claude/handoff\.md/?$' .gitignore; then
+required_agent_contracts=(
+    'Read these sources in order:'
+    'Refresh `.claude/handoff.md` before compaction or session succession.'
+    'Refresh repository bindings by re-running the ClickAI setup skill;'
+)
+
+for required_contract in "${required_agent_contracts[@]}"; do
+    if ! grep -Fq "$required_contract" AGENTS.md; then
+        fail "AGENTS.md is missing the mandatory $required_contract contract"
+    fi
+done
+
+if ! git check-ignore -q --no-index -- .claude/handoff.md; then
     fail ".gitignore no longer excludes .claude/handoff.md"
+fi
+
+if git ls-files --error-unmatch -- .claude/handoff.md >/dev/null 2>&1; then
+    fail ".claude/handoff.md must remain untracked"
 fi
 
 if ! grep -Fq 'live frontier query' AGENTS.md; then
@@ -72,6 +88,34 @@ fi
 if ! grep -Fq 'AGPL' docs/agents/project-baseline.md || ! grep -Fq '../../LICENSE' docs/agents/project-baseline.md; then
     fail "project baseline no longer points to the authoritative AGPL license"
 fi
+
+required_product_contracts=(
+    'Rounded window exteriors are transparent.'
+    'deterministic non-desktop matte'
+    'Audio and video remain real-time and synchronized.'
+    "Grab Rabbit's own native review/player"
+    'TapRecord is a workflow benchmark only'
+    '`~/Movies/GrabRabbit`'
+    'failure stays visible instead of silently'
+)
+
+for required_contract in "${required_product_contracts[@]}"; do
+    if ! grep -Fq "$required_contract" docs/agents/project-baseline.md; then
+        fail "project baseline is missing the $required_contract product contract"
+    fi
+done
+
+required_attribution_contracts=(
+    'required upstream copyright'
+    'changelog provenance'
+    'attribution are authoritative'
+)
+
+for required_contract in "${required_attribution_contracts[@]}"; do
+    if ! grep -Fq "$required_contract" docs/agents/project-baseline.md; then
+        fail "project baseline is missing the $required_contract ownership field"
+    fi
+done
 
 secret_placeholder_pattern='(BEGIN ([A-Z0-9 ]+ )?PRIVATE KEY|((password|token|secret|api[_ -]?key|private[_ -]?key)[[:space:]]*[:=][[:space:]]*(TODO|TBD|CHANGEME|REPLACE_ME|YOUR_|<[^>]+>)))'
 if grep -Eiq "$secret_placeholder_pattern" docs/release/signing.md; then

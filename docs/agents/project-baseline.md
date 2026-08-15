@@ -29,6 +29,17 @@ The daily-use gate is repeated window-level Zoom-call capture:
 A lost live-call recording is unrecoverable and blocks daily use. This baseline owns
 the acceptance scenario; tracker items own its implementation and regression tests.
 
+## Durable recording workflow decisions
+
+- Rounded window exteriors are transparent. An opaque compatibility path uses a
+  deterministic non-desktop matte; it never substitutes desktop pixels.
+- Audio and video remain real-time and synchronized.
+- A successful Stop opens Grab Rabbit's own native review/player.
+  TapRecord is a workflow benchmark only, never a branding or layout source.
+- The exact first-run output default is `~/Movies/GrabRabbit`. The user can select a
+  different destination; creation or access failure stays visible instead of silently
+  falling back elsewhere.
+
 ## Product identity status
 
 The full Grab Rabbit rebrand is approved, but application rebrand work had not begun

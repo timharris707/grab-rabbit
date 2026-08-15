@@ -129,9 +129,21 @@ extension Scene {
 }
 
 class AppDelegate: NSObject, NSApplicationDelegate, SCStreamDelegate, SCStreamOutput, AVCaptureVideoDataOutputSampleBufferDelegate  {
+    private static let registry = ApplicationDelegateRegistry<AppDelegate>()
+
     static var shared: AppDelegate {
-        ApplicationDelegateResolver.resolve(NSApp.delegate, as: AppDelegate.self)
+        do {
+            return try registry.resolve(applicationDelegate: NSApp.delegate)
+        } catch {
+            preconditionFailure("The configured application delegate is unavailable or mismatched.")
+        }
     }
+
+    override init() {
+        super.init()
+        Self.registry.register(self)
+    }
+
     var filter: SCContentFilter?
     var isResizing = false
     let captureOutputSessions = CaptureOutputSessionStore()

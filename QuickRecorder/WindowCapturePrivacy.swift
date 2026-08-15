@@ -231,15 +231,39 @@ enum CaptureStreamConstruction {
     }
 }
 
-enum ApplicationDelegateResolver {
-    static func resolve<Delegate: AnyObject>(
-        _ applicationDelegate: AnyObject?,
-        as delegateType: Delegate.Type
-    ) -> Delegate {
-        guard let applicationDelegate = applicationDelegate as? Delegate else {
-            preconditionFailure("The configured application delegate is unavailable.")
+enum ApplicationDelegateRegistryError: Error, Equatable {
+    case unavailable
+    case applicationDelegateMismatch
+}
+
+final class ApplicationDelegateRegistry<Delegate: AnyObject>: @unchecked Sendable {
+    private let lock = NSLock()
+    private weak var registeredDelegate: Delegate?
+
+    func register(_ delegate: Delegate) {
+        lock.lock()
+        defer { lock.unlock() }
+
+        if let registeredDelegate {
+            precondition(
+                registeredDelegate === delegate,
+                "A different application delegate is already registered."
+            )
         }
-        return applicationDelegate
+        registeredDelegate = delegate
+    }
+
+    func resolve(applicationDelegate: AnyObject?) throws -> Delegate {
+        lock.lock()
+        defer { lock.unlock() }
+
+        guard let registeredDelegate else {
+            throw ApplicationDelegateRegistryError.unavailable
+        }
+        guard applicationDelegate == nil || applicationDelegate === registeredDelegate else {
+            throw ApplicationDelegateRegistryError.applicationDelegateMismatch
+        }
+        return registeredDelegate
     }
 }
 

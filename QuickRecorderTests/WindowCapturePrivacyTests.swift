@@ -55,25 +55,61 @@ final class WindowCapturePrivacyTests: XCTestCase {
     func testAppDelegateSharedResolvesTheSwiftUIApplicationDelegateWithoutConstructingAnother() throws {
         let appSource = try projectSource("QuickRecorder/QuickRecorderApp.swift")
         let contextSource = try projectSource("QuickRecorder/SCContext.swift")
+        let registry = ApplicationDelegateRegistry<TestCaptureDelegate>()
         let realDelegate = TestCaptureDelegate()
         let decoyDelegate = TestCaptureDelegate()
-        let resolved = ApplicationDelegateResolver.resolve(realDelegate, as: TestCaptureDelegate.self)
+        registry.register(realDelegate)
+        let earlyResolved = try registry.resolve(applicationDelegate: nil)
+        let installedResolved = try registry.resolve(applicationDelegate: realDelegate)
         let streamA = NSObject()
         let streamB = NSObject()
         let sessionA = makeCaptureSession(stream: streamA, mode: .transparent, sink: TestVideoDestination())
         let sessionB = makeCaptureSession(stream: streamB, mode: .opaque, sink: TestVideoDestination())
 
-        XCTAssertTrue(resolved === realDelegate)
-        XCTAssertFalse(resolved === decoyDelegate)
-        XCTAssertTrue(resolved.store.install(sessionA))
-        XCTAssertTrue(resolved.adapter.handleStop(from: streamA))
-        XCTAssertTrue(resolved.store.install(sessionB), "restart must use the same store released by Stop")
+        XCTAssertTrue(earlyResolved === realDelegate)
+        XCTAssertTrue(installedResolved === realDelegate)
+        XCTAssertFalse(installedResolved === decoyDelegate)
+        XCTAssertTrue(installedResolved.store.install(sessionA))
+        XCTAssertTrue(installedResolved.adapter.handleStop(from: streamA))
+        XCTAssertTrue(installedResolved.store.install(sessionB), "restart must use the same store released by Stop")
+        XCTAssertThrowsError(try registry.resolve(applicationDelegate: decoyDelegate)) { error in
+            XCTAssertEqual(error as? ApplicationDelegateRegistryError, .applicationDelegateMismatch)
+        }
 
         XCTAssertTrue(appSource.contains("@NSApplicationDelegateAdaptor(AppDelegate.self)"))
         XCTAssertFalse(appSource.contains("static let shared = AppDelegate()"))
-        XCTAssertTrue(appSource.contains("ApplicationDelegateResolver.resolve(NSApp.delegate"))
+        XCTAssertTrue(appSource.contains("registry.resolve(applicationDelegate: NSApp.delegate)"))
         XCTAssertTrue(contextSource.contains("let sessions = AppDelegate.shared.captureOutputSessions"))
         XCTAssertTrue(contextSource.contains("AppDelegate.shared.captureStreamCallbackAdapter.handleStop"))
+    }
+
+    func testConcurrentApplicationDelegateResolutionUsesOneRegisteredIdentity() throws {
+        let registry = ApplicationDelegateRegistry<TestCaptureDelegate>()
+        let registeredDelegate = TestCaptureDelegate()
+        let observations = LockedDelegateIdentities()
+        registry.register(registeredDelegate)
+
+        DispatchQueue.concurrentPerform(iterations: 32) { _ in
+            do {
+                observations.record(try registry.resolve(applicationDelegate: nil))
+            } catch {
+                observations.record(error)
+            }
+        }
+
+        XCTAssertTrue(observations.errors.isEmpty)
+        XCTAssertEqual(observations.identities, [ObjectIdentifier(registeredDelegate)])
+    }
+
+    func testAppDelegateRegistersBeforeEarlySwiftUIViewResolution() throws {
+        let appSource = try projectSource("QuickRecorder/QuickRecorderApp.swift")
+
+        XCTAssertTrue(appSource.contains("ApplicationDelegateRegistry<AppDelegate>"))
+        XCTAssertTrue(appSource.contains("Self.registry.register(self)"))
+        XCTAssertTrue(appSource.contains("registry.resolve(applicationDelegate: NSApp.delegate)"))
+        XCTAssertFalse(appSource.contains("static let shared = AppDelegate()"))
+        XCTAssertFalse(appSource.contains("GRAB_RABBIT_HEADLESS"))
+        XCTAssertFalse(appSource.contains("hiddenUI"))
     }
 
     func testMaximumRateFrameIntervalIsValidAndThirtyFPSRemainsOneThirtieth() throws {
@@ -1997,5 +2033,22 @@ private final class LockedInfrastructureObservations: @unchecked Sendable {
             cores.insert(ObjectIdentifier(infrastructure.core))
             adapters.insert(ObjectIdentifier(infrastructure.adapter))
         }
+    }
+}
+
+private final class LockedDelegateIdentities: @unchecked Sendable {
+    private let lock = NSLock()
+    private var resolvedIdentities = Set<ObjectIdentifier>()
+    private var resolutionErrors = [Error]()
+
+    var identities: Set<ObjectIdentifier> { lock.withLock { resolvedIdentities } }
+    var errors: [Error] { lock.withLock { resolutionErrors } }
+
+    func record(_ delegate: TestCaptureDelegate) {
+        _ = lock.withLock { resolvedIdentities.insert(ObjectIdentifier(delegate)) }
+    }
+
+    func record(_ error: Error) {
+        lock.withLock { resolutionErrors.append(error) }
     }
 }

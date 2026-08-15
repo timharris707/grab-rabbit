@@ -7,7 +7,11 @@ module EnglishOnlyTextScan
   # tracked text file. Reads stay bounded to 4 KiB and never accumulate a file.
   MAX_TEXT_BYTES = 1024 * 1024
   CHUNK_BYTES = 4 * 1024
-  CJK_PATTERN = /[\u{2E80}-\u{2EFF}\u{3000}-\u{303F}\u{3040}-\u{30FF}\u{31C0}-\u{31EF}\u{3400}-\u{4DBF}\u{4E00}-\u{9FFF}\u{AC00}-\u{D7AF}\u{F900}-\u{FAFF}]/
+  CJK_PATTERN = Regexp.union(
+    /[\u{2E80}-\u{2EFF}\u{3000}-\u{303F}\u{3040}-\u{30FF}\u{31C0}-\u{31EF}\u{3400}-\u{4DBF}\u{4E00}-\u{9FFF}\u{AC00}-\u{D7AF}\u{F900}-\u{FAFF}]/,
+    # Unicode 17 supplementary extensions B-J and compatibility ideographs.
+    /[\u{20000}-\u{2A6DF}\u{2A700}-\u{2EE5F}\u{2F800}-\u{2FA1F}\u{30000}-\u{3347F}]/
+  )
 
   class ScanError < StandardError; end
 

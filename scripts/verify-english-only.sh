@@ -146,6 +146,9 @@ begin
       if basename == "ChineseNewYear" || known_foreign_asset_names.include?(basename)
         failures << "known foreign-language asset: #{relative_path}"
       end
+      failures.concat(
+        EnglishOnlyTextScan.scan_link(path, relative_path, "bundled symbolic link")
+      )
       next
     end
 

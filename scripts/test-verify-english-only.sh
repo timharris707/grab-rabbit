@@ -109,6 +109,27 @@ ruby -e 'File.binwrite(ARGV[0], "a" * (ARGV[1].to_i - 1) + "\u4E2D\n")' \
     "$split_cjk_bundle/Contents/Resources/split.txt" "$chunk_bytes"
 assert_exit 1 split-cjk "$verifier" "$split_cjk_bundle"
 
+supplementary_bundle=$(make_bundle supplementary-cjk)
+ruby -e 'File.binwrite(ARGV[0], "a" * (ARGV[1].to_i - 1) + "\u{20000}\n")' \
+    "$supplementary_bundle/Contents/Resources/split.txt" "$chunk_bytes"
+assert_exit 1 supplementary-cjk "$verifier" "$supplementary_bundle"
+
+upper_supplementary_bundle=$(make_bundle upper-supplementary-cjk)
+ruby -e 'File.binwrite(ARGV[0], "a" * (ARGV[1].to_i - 2) + "\u{3347F}\n")' \
+    "$upper_supplementary_bundle/Contents/Resources/split.txt" "$chunk_bytes"
+assert_exit 1 upper-supplementary-cjk "$verifier" "$upper_supplementary_bundle"
+
+safe_link_bundle=$(make_bundle internal-safe-link)
+ln -s clean.txt "$safe_link_bundle/Contents/Resources/internal-link.txt"
+assert_exit 0 internal-safe-link "$verifier" "$safe_link_bundle"
+
+supplementary_character=$(ruby -e 'print "\u{20000}"')
+cjk_link_bundle=$(make_bundle internal-cjk-link)
+cjk_link_target="target-$supplementary_character.txt"
+printf 'English only\n' > "$cjk_link_bundle/Contents/Resources/$cjk_link_target"
+ln -s "$cjk_link_target" "$cjk_link_bundle/Contents/Resources/internal-link.txt"
+assert_exit 1 internal-cjk-link "$verifier" "$cjk_link_bundle"
+
 external_source="$fixture_root/external-source.txt"
 printf 'external \xE4\xB8\xAD\xE6\x96\x87 content\n' > "$external_source"
 source_link_repo=$(make_source_repo source-link-no-dereference)
@@ -124,11 +145,29 @@ git -C "$source_link_text_repo" add README.md source-link
 assert_exit 1 source-link-text \
     "$source_link_text_repo/scripts/verify-english-only.sh"
 
+source_supplementary_repo=$(make_source_repo source-supplementary-cjk)
+ruby -e 'File.binwrite(ARGV[0], "a" * (ARGV[1].to_i - 1) + "\u{20000}\n")' \
+    "$source_supplementary_repo/split.txt" "$chunk_bytes"
+git -C "$source_supplementary_repo" add README.md split.txt
+assert_exit 1 source-supplementary-cjk \
+    "$source_supplementary_repo/scripts/verify-english-only.sh"
+
 source_oversize_repo=$(make_source_repo source-oversize)
 ruby -e 'File.open(ARGV[0], "wb") { |file| file.write("a" * ARGV[1].to_i) }' \
     "$source_oversize_repo/oversize.txt" "$((max_text_bytes + 1))"
 git -C "$source_oversize_repo" add README.md oversize.txt
 assert_exit 2 source-oversize \
     "$source_oversize_repo/scripts/verify-english-only.sh"
+
+ruby -I "$script_directory" -renglish_only_text_scan -e '
+  boundaries = [
+    0x20000, 0x2A6DF, 0x2A700, 0x2EE5F,
+    0x2F800, 0x2FA1F, 0x30000, 0x3347F
+  ]
+  abort "supplementary boundary missing" unless boundaries.all? do |codepoint|
+    [codepoint].pack("U").match?(EnglishOnlyTextScan::CJK_PATTERN)
+  end
+'
+echo "supplementary-boundaries=0"
 
 echo "English-only verifier fixture tests passed"

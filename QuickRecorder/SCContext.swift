@@ -49,15 +49,44 @@ class SCContext {
     static var window: [SCWindow]?
     static var application: [SCRunningApplication]?
     static var streamType: StreamType?
-    static var availableContent: SCShareableContent?
     static let excludedApps = ["", "com.apple.dock", "com.apple.screencaptureui", "com.apple.controlcenter", "com.apple.notificationcenterui", "com.apple.systemuiserver", "com.apple.WindowManager", "dev.mnpn.Azayaka", "com.gaosun.eul", "com.pointum.hazeover", "net.matthewpalmer.Vanilla", "com.dwarvesv.minimalbar", "com.bjango.istatmenus.status"]
+
+    private static let contentState = ScreenRecordingContentState<SCShareableContent> { isReady, revision in
+        DispatchQueue.main.async {
+            captureReadiness.update(isReady, revision: revision)
+        }
+    }
+
+    static var availableContent: SCShareableContent? {
+        contentState.content
+    }
+
+    private static let screenRecordingPermissionCoordinator = ScreenRecordingPermissionCoordinator<SCShareableContent> { dismiss in
+        DispatchQueue.main.async {
+            let alert = createAlert(
+                title: "Permission Required",
+                message: PermissionCopy.screenRecording(
+                    productName: Bundle.main.appName,
+                    localizedFormat: PermissionCopy.screenRecordingFormat.local
+                ),
+                button1: "Open Settings",
+                button2: "Cancel"
+            )
+            if alert.runModal() == .alertFirstButtonReturn {
+                NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!)
+            }
+            dismiss()
+        }
+    }
     
     static func updateAvailableContentSync() -> SCShareableContent? {
         let semaphore = DispatchSemaphore(value: 0)
         var result: SCShareableContent? = nil
 
-        updateAvailableContent { content in
-            result = content
+        refreshAvailableContent { refreshResult in
+            if case .success(let content) = refreshResult {
+                result = content
+            }
             semaphore.signal()
         }
 
@@ -65,43 +94,58 @@ class SCContext {
         return result
     }
     
-    private static func updateAvailableContent(completion: @escaping (SCShareableContent?) -> Void) {
-        SCShareableContent.getExcludingDesktopWindows(false, onScreenWindowsOnly: true) { [self] content, error in
-            if let error = error {
-                switch error {
-                case SCStreamError.userDeclined:
-                    DispatchQueue.global().asyncAfter(deadline: .now() + 1) {
-                        self.updateAvailableContent() {_ in}
-                    }
-                default:
-                    print("Error: failed to fetch available content: ".local, error.localizedDescription)
-                }
-                completion(nil) // Return nil when fetching content fails.
-                return
-            }
-
-            availableContent = content
-            if let displays = content?.displays, !displays.isEmpty {
-                completion(content) // Return the fetched content.
-            } else {
-                print("There needs to be at least one display connected!".local)
-                completion(nil) // Return nil when no display is connected.
+    static func updateAvailableContent(completion: @escaping () -> Void) {
+        refreshAvailableContent { result in
+            if case .success = result {
+                completion()
             }
         }
     }
-    
-    static func updateAvailableContent(completion: @escaping () -> Void) {
+
+    static func refreshAvailableContent(completion: @escaping (Result<SCShareableContent, ScreenRecordingContentError>) -> Void) {
+        screenRecordingPermissionCoordinator.refresh(using: fetchAvailableContent) { result in
+            contentState.apply(result)
+            switch result {
+            case .success:
+                scPerm = true
+            case .failure(.permissionDenied):
+                scPerm = false
+                DispatchQueue.main.async {
+                    captureReadiness.updateRecoveryActionAvailability(true)
+                }
+            case .failure(.unavailable(let message)):
+                print("Error: failed to fetch available content: ".local, message)
+            }
+            completion(result)
+        }
+    }
+
+    static func recoverScreenRecordingAccess() {
+        if CGPreflightScreenCaptureAccess() {
+            DispatchQueue.main.async {
+                captureReadiness.updateRecoveryActionAvailability(false)
+            }
+            refreshAvailableContent { _ in }
+        } else {
+            screenRecordingPermissionCoordinator.presentRecoveryIfNeeded()
+        }
+    }
+
+    private static func fetchAvailableContent(completion: @escaping (Result<SCShareableContent, ScreenRecordingContentError>) -> Void) {
         SCShareableContent.getExcludingDesktopWindows(false, onScreenWindowsOnly: false) { content, error in
-            if let error = error {
-                switch error {
-                case SCStreamError.userDeclined: requestPermissions()
-                default: print("Error: failed to fetch available content: ".local, error.localizedDescription)
+            if let error {
+                if case SCStreamError.userDeclined = error {
+                    completion(.failure(.permissionDenied))
+                } else {
+                    completion(.failure(.unavailable(error.localizedDescription)))
                 }
                 return
             }
-            availableContent = content
-            assert(availableContent?.displays.isEmpty != nil, "There needs to be at least one display connected!".local)
-            completion()
+            guard let content, !content.displays.isEmpty else {
+                completion(.failure(.unavailable("There needs to be at least one display connected!".local)))
+                return
+            }
+            completion(.success(content))
         }
     }
     
@@ -230,26 +274,18 @@ class SCContext {
 
         ud.setValue(false, forKey: "recordMic")
         DispatchQueue.main.async {
-            let alert = createAlert(title: "Permission Required",
-                                                       message: "QuickRecorder needs permission to record your microphone.",
-                                                       button1: "Open Settings",
-                                                       button2: "Cancel")
+            let alert = createAlert(
+                title: "Permission Required",
+                message: PermissionCopy.microphone(
+                    productName: Bundle.main.appName,
+                    localizedFormat: PermissionCopy.microphoneFormat.local
+                ),
+                button1: "Open Settings",
+                button2: "Cancel"
+            )
             if alert.runModal() == .alertFirstButtonReturn {
                 NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")!)
             }
-        }
-    }
-    
-    private static func requestPermissions() {
-        DispatchQueue.main.async {
-            let alert = createAlert(title: "Permission Required",
-                                                       message: "QuickRecorder needs screen recording permissions, even if you only intend on recording audio.",
-                                                       button1: "Open Settings",
-                                                       button2: "Cancel")
-            if alert.runModal() == .alertFirstButtonReturn {
-                NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!)
-            }
-            NSApp.terminate(self)
         }
     }
     
@@ -260,10 +296,15 @@ class SCContext {
             break
         case .denied:
             DispatchQueue.main.async {
-                let alert = createAlert(title: "Permission Required",
-                                                           message: "QuickRecorder needs this permission to record your camera or mobile device.",
-                                                           button1: "Open Settings",
-                                                           button2: "Cancel")
+                let alert = createAlert(
+                    title: "Permission Required",
+                    message: PermissionCopy.camera(
+                        productName: Bundle.main.appName,
+                        localizedFormat: PermissionCopy.cameraFormat.local
+                    ),
+                    button1: "Open Settings",
+                    button2: "Cancel"
+                )
                 if alert.runModal() == .alertFirstButtonReturn {
                     NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Camera")!)
                 }

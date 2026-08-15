@@ -69,6 +69,7 @@ spctl --assess --type execute --verbose=4 "$artifact_path"
 xcrun stapler validate "$artifact_path"
 codesign --verify --deep --strict --verbose=2 "$release_dmg"
 spctl --assess --type open --context context:primary-signature --verbose=4 "$release_dmg"
+xcrun stapler validate "$release_dmg"
 ```
 
 The checks above prove structural validity and platform policy, not signer identity.
@@ -79,9 +80,9 @@ deep check:
 ```bash
 set -euo pipefail
 
-expected_common_name='Developer ID Application: TIMOTHY G HARRIS (F66FM4V88Q)'
-expected_team_id='F66FM4V88Q'
-expected_sha1='189EC9780DE0A94CF5B24CC5983CAB3FDAE15638'
+approved_signers=(
+    'Developer ID Application: TIMOTHY G HARRIS (F66FM4V88Q)|F66FM4V88Q|189EC9780DE0A94CF5B24CC5983CAB3FDAE15638'
+)
 identity_output='.build/release-identity'
 mkdir -p "$identity_output"
 
@@ -89,13 +90,21 @@ verify_signer() {
     signed_path=$1
     certificate_prefix=$2
     signing_details=$(codesign -dvvv "$signed_path" 2>&1)
-    grep -Fq "Authority=$expected_common_name" <<<"$signing_details"
-    grep -Fq "TeamIdentifier=$expected_team_id" <<<"$signing_details"
+    actual_common_name=$(sed -n 's/^Authority=//p' <<<"$signing_details" | head -1)
+    actual_team_id=$(sed -n 's/^TeamIdentifier=//p' <<<"$signing_details" | head -1)
     codesign -d --extract-certificates="$identity_output/$certificate_prefix-" "$signed_path"
     actual_sha1=$(openssl x509 -inform DER \
         -in "$identity_output/$certificate_prefix-0" -noout -fingerprint -sha1 \
         | cut -d= -f2 | tr -d ':')
-    test "$actual_sha1" = "$expected_sha1"
+    actual_tuple="$actual_common_name|$actual_team_id|$actual_sha1"
+    approved=false
+    for approved_tuple in "${approved_signers[@]}"; do
+        if test "$actual_tuple" = "$approved_tuple"; then
+            approved=true
+            break
+        fi
+    done
+    test "$approved" = true
 }
 
 sparkle_root="$artifact_path/Contents/Frameworks/Sparkle.framework/Versions/Current"

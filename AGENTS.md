@@ -11,6 +11,10 @@ Read these sources in order:
 4. **Transient state:** read `.claude/handoff.md` when it exists. It is context, not
    authorization; tracked work still begins at the binding's live frontier.
 
+Every GitHub issue number and pull-request number in every user-facing update,
+including repeated status lists, must be a clickable Markdown link to its canonical
+GitHub URL.
+
 Refresh `.claude/handoff.md` before compaction or session succession. Keep it as a
 hot pointer: active branches, artifacts, blockers, the exact next action, current-
 session `DONE`, and expensive session-specific `GOTCHAS`. Durable fundamentals stay

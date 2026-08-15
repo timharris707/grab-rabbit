@@ -15,6 +15,24 @@ import AECAudioStream
 
 extension AppDelegate {
     @objc func prepRecord(type: String, screens: SCDisplay?, windows: [SCWindow]?, applications: [SCRunningApplication]?, fastStart: Bool = false) {
+        prepRecord(
+            type: type,
+            screens: screens,
+            windows: windows,
+            applications: applications,
+            fastStart: fastStart,
+            windowCaptureMode: nil
+        )
+    }
+
+    func prepRecord(
+        type: String,
+        screens: SCDisplay?,
+        windows: [SCWindow]?,
+        applications: [SCRunningApplication]?,
+        fastStart: Bool = false,
+        windowCaptureMode requestedWindowCaptureMode: WindowCaptureMode?
+    ) {
         switch type {
         case "window":  SCContext.streamType = .window
         case "windows":  SCContext.streamType = .windows
@@ -144,19 +162,33 @@ extension AppDelegate {
                 return
             }
         }
-        Task { await record(filter: SCContext.filter!, fastStart: fastStart) }
+        let sessionWindowCaptureMode: WindowCaptureMode? = SCContext.streamType == .window
+            ? requestedWindowCaptureMode ?? windowCaptureMode
+            : nil
+        Task {
+            await record(
+                filter: SCContext.filter!,
+                fastStart: fastStart,
+                windowCaptureMode: sessionWindowCaptureMode
+            )
+        }
     }
 
-    func record(filter: SCContentFilter, fastStart: Bool = true) async {
+    func record(
+        filter: SCContentFilter,
+        fastStart: Bool = true,
+        windowCaptureMode: WindowCaptureMode? = nil
+    ) async {
         SCContext.timeOffset = CMTimeMake(value: 0, timescale: 0)
         SCContext.isPaused = false
         SCContext.isResume = false
         
         let audioOnly = SCContext.streamType == .systemaudio
+        SCContext.windowCaptureMode = windowCaptureMode
         
         let conf: SCStreamConfiguration
 #if compiler(>=6.0)
-        if recordHDR {
+        if recordHDR && windowCaptureMode == nil {
             if #available(macOS 15, *) {
                 // TODO change here. https://developer.apple.com/videos/play/wwdc2024/10088/?time=191
                 // For canonical display, it means you are capturing HDR content that is optimized for sharing with other HDR devices.
@@ -174,8 +206,18 @@ extension AppDelegate {
         
         if !audioOnly {
             if #available(macOS 14.0, *) {
-                conf.width = Int(filter.contentRect.width) * (highRes == 2 ? Int(filter.pointPixelScale) : 1)
-                conf.height = Int(filter.contentRect.height) * (highRes == 2 ? Int(filter.pointPixelScale) : 1)
+                if windowCaptureMode != nil {
+                    let dimensions = WindowCapturePrivacy.pixelDimensions(
+                        contentRect: filter.contentRect,
+                        pointPixelScale: CGFloat(filter.pointPixelScale),
+                        highResolution: highRes == 2
+                    )
+                    conf.width = dimensions.width
+                    conf.height = dimensions.height
+                } else {
+                    conf.width = Int(filter.contentRect.width) * (highRes == 2 ? Int(filter.pointPixelScale) : 1)
+                    conf.height = Int(filter.contentRect.height) * (highRes == 2 ? Int(filter.pointPixelScale) : 1)
+                }
             } else {
                 guard let pointPixelScaleOld = (SCContext.screen ?? SCContext.getSCDisplayWithMouse()!).nsScreen?.backingScaleFactor else { return }
                 if SCContext.streamType == .application || SCContext.streamType == .windows || SCContext.streamType == .screen {
@@ -204,8 +246,15 @@ extension AppDelegate {
             }
                     
 
-            if background.rawValue != BackgroundType.wallpaper.rawValue { conf.backgroundColor = SCContext.getBackgroundColor() }
-            if !recordHDR {
+            if let windowCaptureMode {
+                conf.backgroundColor = WindowCapturePrivacy.backgroundColor(
+                    mode: windowCaptureMode,
+                    matte: WindowCapturePrivacy.opaqueMatte
+                )
+            } else if background.rawValue != BackgroundType.wallpaper.rawValue {
+                conf.backgroundColor = SCContext.getBackgroundColor()
+            }
+            if !recordHDR || windowCaptureMode != nil {
                 conf.pixelFormat = kCVPixelFormatType_32BGRA
                 conf.colorSpaceName = CGColorSpace.sRGB
                 //if withAlpha { conf.pixelFormat = kCVPixelFormatType_32BGRA }
@@ -265,7 +314,16 @@ extension AppDelegate {
         }
         
         let encoderIsH265 = (encoder.rawValue == Encoder.h265.rawValue) || recordHDR
-        if !audioOnly && !encoderIsH265 {
+        let checksH264Availability: Bool
+        switch windowCaptureMode {
+        case .transparent:
+            checksH264Availability = false
+        case .opaque:
+            checksH264Availability = encoder == .h264
+        case nil:
+            checksH264Availability = !encoderIsH265
+        }
+        if !audioOnly && checksH264Availability {
             var session: VTCompressionSession?
             let status = VTCompressionSessionCreate(
                 allocator: nil,
@@ -297,7 +355,7 @@ extension AppDelegate {
             try SCContext.stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: .global())
             if #available(macOS 13, *) { try SCContext.stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: .global()) }
             if !audioOnly {
-                try initVideo(conf: conf)
+                try initVideo(conf: conf, windowCaptureMode: windowCaptureMode)
             } else {
                 //SCContext.startTime = Date.now
                 if recordMic { startMicRecording() }
@@ -411,20 +469,34 @@ extension SCDisplay {
 }
 
 extension AppDelegate {
-    func initVideo(conf: SCStreamConfiguration) throws {
+    func initVideo(
+        conf: SCStreamConfiguration,
+        windowCaptureMode: WindowCaptureMode? = nil
+    ) throws {
         SCContext.startTime = nil
 
-        let fileEnding = videoFormat.rawValue
-        let fileType: AVFileType
-        switch fileEnding {
-            case VideoFormat.mov.rawValue: fileType = AVFileType.mov
-            case VideoFormat.mp4.rawValue: fileType = AVFileType.mp4
+        let compatibilityFileType: AVFileType
+        switch videoFormat.rawValue {
+            case VideoFormat.mov.rawValue: compatibilityFileType = AVFileType.mov
+            case VideoFormat.mp4.rawValue: compatibilityFileType = AVFileType.mp4
             default:
                 throw RecordingExportError.preparation(
                     stage: .first,
-                    message: "Unsupported video format: \(fileEnding)"
+                    message: "Unsupported video format: \(videoFormat.rawValue)"
                 )
         }
+        let compatibilityCodec: AVVideoCodecType = encoder == .h265 ? .hevc : .h264
+        let windowProfile = windowCaptureMode.map {
+            WindowCapturePrivacy.outputProfile(
+                mode: $0,
+                compatibilityFileType: compatibilityFileType,
+                compatibilityCodec: compatibilityCodec
+            )
+        }
+        let fileEnding = windowProfile?.fileExtension ?? videoFormat.rawValue
+        let fileType = windowProfile?.fileType ?? compatibilityFileType
+        let videoCodec = windowProfile?.codec
+            ?? ((encoder == .h265 || recordHDR) ? ((withAlpha && !recordHDR) ? .hevcWithAlpha : .hevc) : .h264)
 
         let layout: RecordingOutputJob.Layout = remuxAudio && recordMic && recordWinSound
             ? .videoRemux(fileExtension: fileEnding)
@@ -441,7 +513,7 @@ extension AppDelegate {
             throw recordingError
         }
         SCContext.vW.shouldOptimizeForNetworkUse = true
-        let encoderIsH265 = (encoder.rawValue == Encoder.h265.rawValue) || recordHDR
+        let encoderIsH265 = videoCodec == .hevc || videoCodec == .hevcWithAlpha
         let fpsMultiplier: Double = Double(frameRate)/8
         let encoderMultiplier: Double = encoderIsH265 ? 0.5 : 0.9
         let resolution = Double(max(600, conf.width)) * Double(max(600, conf.height))
@@ -452,25 +524,30 @@ extension AppDelegate {
             default: qualityMultiplier = 1.0
         }
         let h264Level = AVVideoProfileLevelH264HighAutoLevel
-        let h265Level = recordHDR ? kVTProfileLevel_HEVC_Main10_AutoLevel : kVTProfileLevel_HEVC_Main_AutoLevel
+        let recordsHDR = recordHDR && windowCaptureMode == nil
+        let h265Level = recordsHDR ? kVTProfileLevel_HEVC_Main10_AutoLevel : kVTProfileLevel_HEVC_Main_AutoLevel
 
-        let targetBitrate = resolution * fpsMultiplier * encoderMultiplier * qualityMultiplier * (recordHDR ? 2 : 1)
+        let targetBitrate = resolution * fpsMultiplier * encoderMultiplier * qualityMultiplier * (recordsHDR ? 2 : 1)
         print("framerate set in app: \(frameRate)")
         print("target bitrate: \(targetBitrate/1000000)")
 
-        var videoSettings: [String: Any] = [
-            AVVideoCodecKey: encoderIsH265 ? ((withAlpha && !recordHDR) ? AVVideoCodecType.hevcWithAlpha : AVVideoCodecType.hevc) : AVVideoCodecType.h264,
-            // yes, not ideal if we want more than these encoders in the future, but it's ok for now
-            AVVideoWidthKey: conf.width,
-            AVVideoHeightKey: conf.height,
-            AVVideoCompressionPropertiesKey: [
+        var videoSettings = WindowCapturePrivacy.videoSettings(
+            profile: WindowCaptureOutputProfile(
+                fileExtension: fileEnding,
+                fileType: fileType,
+                codec: videoCodec,
+                preservesAlpha: windowProfile?.preservesAlpha ?? (videoCodec == .hevcWithAlpha)
+            ),
+            width: conf.width,
+            height: conf.height,
+            compressionProperties: [
                 AVVideoProfileLevelKey: encoderIsH265 ? h265Level : h264Level,
                 AVVideoAverageBitRateKey: max(200000, Int(targetBitrate)),
                 AVVideoExpectedSourceFrameRateKey: frameRate,
-            ] as [String : Any]
-        ]
+            ]
+        )
         
-        if !recordHDR {
+        if !recordHDR || windowCaptureMode != nil {
             videoSettings[AVVideoColorPropertiesKey] = [
                 AVVideoTransferFunctionKey: AVVideoTransferFunction_ITU_R_709_2,
                 AVVideoColorPrimariesKey: AVVideoColorPrimaries_ITU_R_709_2,
@@ -679,6 +756,24 @@ extension AppDelegate {
                     }
                 }
                 if isPresenterON && !isCameraReady { break }
+                if let windowCaptureMode = SCContext.windowCaptureMode,
+                   let pixelBuffer = SampleBuffer.imageBuffer {
+                    do {
+                        try WindowCapturePrivacy.sanitize(
+                            pixelBuffer,
+                            mode: windowCaptureMode,
+                            matte: WindowCapturePrivacy.opaqueMatte
+                        )
+                    } catch {
+                        SCContext.showNotification(
+                            title: "Failed to Record".local,
+                            body: "Unable to apply the selected window privacy mode.".local,
+                            id: "quickrecorder.error.\(UUID().uuidString)"
+                        )
+                        SCContext.stopRecording()
+                        return
+                    }
+                }
                 if SCContext.firstFrame == nil { SCContext.firstFrame = SampleBuffer }
                 SCContext.vwInput.append(SampleBuffer)
             }

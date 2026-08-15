@@ -634,9 +634,9 @@ final class RecordingOutputIsolationTests: XCTestCase {
 
         XCTAssertTrue(appSource.contains("enum VideoFormat: String { case mov, mp4 }"))
         XCTAssertTrue(appSource.contains("enum Encoder: String { case h264, h265 }"))
-        XCTAssertTrue(appSource.contains("prepRecord(type: \"window\", screens: SCContext.getSCDisplayWithMouse(), windows: [scWindow], applications: nil, fastStart: true)"))
-        XCTAssertTrue(initVideoSource.contains("AVVideoCodecType.hevc"))
-        XCTAssertTrue(initVideoSource.contains("AVVideoCodecType.h264"))
+        XCTAssertTrue(appSource.contains("fastStart: true"))
+        XCTAssertTrue(appSource.contains("windowCaptureMode: windowCaptureMode"))
+        XCTAssertTrue(initVideoSource.contains("encoder == .h265 ? .hevc : .h264"))
         XCTAssertTrue(initVideoSource.contains("shouldOptimizeForNetworkUse = true"))
         XCTAssertTrue(contextSource.contains("exportSession.shouldOptimizeForNetworkUse = true"))
         XCTAssertTrue(contextSource.contains("outputJob?.inputURL.path ?? filePath"))

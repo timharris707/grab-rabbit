@@ -21,6 +21,7 @@ struct WinSelector: View {
     @State private var disableFilter = false
     @State private var donotCapture = false
     @State private var autoStop = 0
+    @AppStorage("windowCaptureMode") private var windowCaptureMode: WindowCaptureMode = .transparent
     var appDelegate = AppDelegate.shared
     
     var body: some View {
@@ -135,7 +136,7 @@ struct WinSelector: View {
                         .onAppear{ display = screen }
                     }
                 }
-                .frame(height: 445)
+                .frame(height: 380)
                 .padding(.horizontal, 10)
                 .onChange(of: selectedTab) { _ in selected.removeAll() }
                 .onReceive(viewModel.$isReady) { isReady in
@@ -147,6 +148,18 @@ struct WinSelector: View {
                         }
                     }
                 }
+                VStack(alignment: .leading, spacing: 5) {
+                    Picker("Single-window exterior", selection: $windowCaptureMode) {
+                        ForEach(WindowCaptureMode.allCases, id: \.self) { mode in
+                            Text(mode.title).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    Text(windowCaptureMode.tradeoff)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 40)
                 HStack(spacing: 4) {
                     Button(action: {
                         self.viewModel.setupStreams(filter: !disableFilter, capture: !donotCapture)
@@ -249,7 +262,17 @@ struct WinSelector: View {
         closeAllWindow()
         appDelegate.createCountdownPanel(screen: display) {
             SCContext.autoStop = autoStop
-            appDelegate.prepRecord(type: (selected.count<2 ? "window" : "windows") , screens: display, windows: selected, applications: nil)
+            if selected.count == 1 {
+                appDelegate.prepRecord(
+                    type: "window",
+                    screens: display,
+                    windows: selected,
+                    applications: nil,
+                    windowCaptureMode: windowCaptureMode
+                )
+            } else {
+                appDelegate.prepRecord(type: "windows", screens: display, windows: selected, applications: nil)
+            }
         }
     }
 }

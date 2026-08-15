@@ -50,6 +50,7 @@ class SCContext {
     static var window: [SCWindow]?
     static var application: [SCRunningApplication]?
     static var streamType: StreamType?
+    static var windowCaptureMode: WindowCaptureMode?
     static let excludedApps = ["", "com.apple.dock", "com.apple.screencaptureui", "com.apple.controlcenter", "com.apple.notificationcenterui", "com.apple.systemuiserver", "com.apple.WindowManager", "dev.mnpn.Azayaka", "com.gaosun.eul", "com.pointum.hazeover", "net.matthewpalmer.Vanilla", "com.dwarvesv.minimalbar", "com.bjango.istatmenus.status"]
 
     private static let contentState = ScreenRecordingContentState<SCShareableContent> { isReady, revision in

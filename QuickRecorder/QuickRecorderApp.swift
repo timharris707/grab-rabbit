@@ -144,6 +144,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, SCStreamDelegate, SCStreamOu
     @AppStorage("micDevice")        var micDevice: String = "default"
     @AppStorage("remuxAudio")       var remuxAudio: Bool = true
     @AppStorage("recordWinSound")   var recordWinSound: Bool = true
+    @AppStorage("windowCaptureMode") var windowCaptureMode: WindowCaptureMode = .transparent
     @AppStorage("recordHDR")        var recordHDR: Bool = false
     @AppStorage("encoder")          var encoder: Encoder = .h265
     @AppStorage("highRes")          var highRes: Int = 2
@@ -267,6 +268,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, SCStreamDelegate, SCStreamOu
                 "recordMic": false,
                 "remuxAudio": isMacOS12 ? false : true,
                 "recordWinSound": isMacOS12 ? false : true,
+                "windowCaptureMode": WindowCaptureMode.transparent.rawValue,
                 "trimAfterRecord": false,
                 "showOnDock": true,
                 "showMenubar": false,
@@ -372,7 +374,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, SCStreamDelegate, SCStreamOu
             let frontmostApp = NSWorkspace.shared.frontmostApplication
             if let pid = frontmostApp?.processIdentifier {
                 guard let scWindow = SCContext.getWindows().first(where: { $0.owningApplication?.processID == pid && $0.title != "" && $0.isOnScreen }) else { return }
-                prepRecord(type: "window", screens: SCContext.getSCDisplayWithMouse(), windows: [scWindow], applications: nil, fastStart: true)
+                prepRecord(
+                    type: "window",
+                    screens: SCContext.getSCDisplayWithMouse(),
+                    windows: [scWindow],
+                    applications: nil,
+                    fastStart: true,
+                    windowCaptureMode: windowCaptureMode
+                )
                 return
             }
         }

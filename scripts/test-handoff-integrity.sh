@@ -129,10 +129,19 @@ expect_failure 'Missing artifact' 'artifact does not exist' \
     bash -c "cd \"$linked_checkout\" && \"$verifier\""
 mkdir "$artifact"
 
+printf '# Handoff — fixture\n\nManual-smoke manifest: %s' "$manifest" >"$main_handoff"
+unterminated_output=$(cd "$linked_checkout" && "$verifier")
+if ! grep -Fq '(1 manifest pointer(s))' <<<"$unterminated_output"; then
+    echo 'Unterminated final manifest pointer was not validated' >&2
+    printf '%s\n' "$unterminated_output" >&2
+    exit 1
+fi
+echo 'Unterminated final manifest pointer: passed'
+
 write_handoff 'No active manual-smoke artifact.'
 mkdir -p "$linked_checkout/.claude"
 printf '# stale linked-worktree handoff\n' >"$linked_checkout/.claude/handoff.md"
 expect_failure 'Divergent linked-worktree handoff' 'linked-worktree handoff exists' \
     bash -c "cd \"$linked_checkout\" && \"$resolver\""
 
-echo 'Handoff integrity tests passed: 9/9'
+echo 'Handoff integrity tests passed: 10/10'

@@ -34,7 +34,8 @@ fi
 main_common_dir=$(git -C "$main_checkout" rev-parse --path-format=absolute --git-common-dir)
 manifest_count=0
 seen_manifests=$'\n'
-while IFS= read -r line; do
+line=
+while IFS= read -r line || [[ -n "$line" ]]; do
     [[ "$line" == 'Manual-smoke manifest: '* ]] || continue
     manifest_path=${line#Manual-smoke manifest: }
     manifest_count=$((manifest_count + 1))

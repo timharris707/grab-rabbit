@@ -377,16 +377,22 @@ extension AppDelegate {
         let stream = CaptureStreamConstruction.build(retaining: configurationOwner) {
             SCStream(filter: filter, configuration: conf, delegate: self)
         }
-        var preconfiguredOutputJob: RecordingOutputJob?
+        var preparationOwner: CapturePreparationOwner?
         var outputSession: CaptureOutputSession?
         do {
             if audioOnly {
+                preparationOwner = CapturePreparationOwner { error in
+                    let recordingError = (error as? RecordingExportError)
+                        ?? .preparation(stage: .first, message: error.localizedDescription)
+                    self.discardPreparedAudioCapture(reason: recordingError)
+                }
                 try prepareAudioRecording()
-                preconfiguredOutputJob = SCContext.outputJob
             }
-            try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: sampleQueue)
-            if #available(macOS 13, *) {
-                try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: sampleQueue)
+            try CapturePreSessionSetup.addOutputs(owner: preparationOwner) {
+                try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: sampleQueue)
+                if #available(macOS 13, *) {
+                    try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: sampleQueue)
+                }
             }
             if !audioOnly {
                 try initVideo(conf: conf, windowCaptureMode: windowCaptureMode)
@@ -438,6 +444,7 @@ extension AppDelegate {
                 microphoneStopHandler: microphoneStopHandler
             )
             outputSession = session
+            preparationOwner?.transfer()
             guard captureOutputSessions.install(session) else {
                 throw RecordingExportError.preparation(
                     stage: .first,
@@ -462,7 +469,7 @@ extension AppDelegate {
                     )
                     return
                 }
-                if captureOutputCore.handleStartFailure(outputSession, onDrained: { outputSession in
+                if captureStreamCallbackAdapter.handleStartFailure(outputSession, onDrained: { outputSession in
                     let cleanup = MainThreadCaptureCleanup { [weak self] in
                         self?.discardCaptureAfterFailedStart(
                             outputSession,
@@ -484,9 +491,8 @@ extension AppDelegate {
                 return
             }
             if SCContext.stream === stream { SCContext.stream = nil }
-            if let job = preconfiguredOutputJob {
-                _ = job.discardOutputs(reason: recordingError)
-                if SCContext.outputJob === job { SCContext.outputJob = nil }
+            if let preparationOwner {
+                preparationOwner.discard(after: recordingError)
             }
             SCContext.streamType = nil
             SCContext.showNotification(
@@ -540,6 +546,21 @@ extension AppDelegate {
             body: error.localizedDescription,
             id: "quickrecorder.error.\(UUID().uuidString)"
         )
+    }
+
+    private func discardPreparedAudioCapture(reason: RecordingExportError) {
+        let preparedJob = SCContext.outputJob
+        SCContext.audioFile = nil
+        SCContext.audioFile2 = nil
+        SCContext.vW?.cancelWriting()
+        SCContext.vW = nil
+        SCContext.vwInput = nil
+        SCContext.awInput = nil
+        SCContext.micInput = nil
+        if let preparedJob {
+            _ = preparedJob.discardOutputs(reason: reason)
+            if SCContext.outputJob === preparedJob { SCContext.outputJob = nil }
+        }
     }
 
     func prepareAudioRecording() throws {
@@ -748,19 +769,21 @@ extension AppDelegate {
                     default: level = .mid
                 }
                 try? SCContext.AECEngine.startAudioStream(enableAEC: enableAEC, duckingLevel: level, audioBufferHandler: { pcmBuffer in
-                    guard let sampleBuffer = pcmBuffer.asSampleBuffer,
-                          let lease = self.captureOutputSessions.acquire(session) else { return }
-                    defer { lease.release() }
-                    _ = session.processMicrophone(sampleBuffer)
+                    guard let sampleBuffer = pcmBuffer.asSampleBuffer else { return }
+                    _ = self.captureStreamCallbackAdapter.handleMicrophone(
+                        for: session,
+                        sampleBuffer: sampleBuffer
+                    )
                 })
             } else {
                 let input = SCContext.audioEngine.inputNode
                 let inputFormat = input.inputFormat(forBus: 0)
                 input.installTap(onBus: 0, bufferSize: 1024, format: inputFormat) { buffer, time in
-                    guard let sampleBuffer = buffer.asSampleBuffer,
-                          let lease = self.captureOutputSessions.acquire(session) else { return }
-                    defer { lease.release() }
-                    _ = session.processMicrophone(sampleBuffer)
+                    guard let sampleBuffer = buffer.asSampleBuffer else { return }
+                    _ = self.captureStreamCallbackAdapter.handleMicrophone(
+                        for: session,
+                        sampleBuffer: sampleBuffer
+                    )
                 }
                 try! SCContext.audioEngine.start()
             }
@@ -784,7 +807,7 @@ extension AppDelegate {
     }
 
     func schedulePresenterReady(_ session: CaptureOutputSession) {
-        DispatchQueue.main.asyncAfter(deadline: .now() + TimeInterval(poSafeDelay)) { [weak self, weak session] in
+        presenterReadyScheduler.schedule(after: TimeInterval(poSafeDelay)) { [weak self, weak session] in
             guard let self, let session else { return }
             self.captureOutputCore.markPresenterReady(session)
         }
@@ -960,10 +983,11 @@ class AudioRecorder: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate {
     }
 
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
-        guard let outputSession,
-              let lease = AppDelegate.shared.captureOutputSessions.acquire(outputSession) else { return }
-        defer { lease.release() }
-        _ = outputSession.processMicrophone(sampleBuffer)
+        guard let outputSession else { return }
+        _ = AppDelegate.shared.captureStreamCallbackAdapter.handleMicrophone(
+            for: outputSession,
+            sampleBuffer: sampleBuffer
+        )
     }
 }
 

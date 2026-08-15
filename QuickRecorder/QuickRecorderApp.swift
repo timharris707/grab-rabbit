@@ -133,19 +133,30 @@ class AppDelegate: NSObject, NSApplicationDelegate, SCStreamDelegate, SCStreamOu
     var filter: SCContentFilter?
     var isResizing = false
     let captureOutputSessions = CaptureOutputSessionStore()
-    lazy var captureOutputCore = CaptureOutputCore(
-        store: captureOutputSessions,
-        failureHandler: { [weak self] session in
-            self?.finishCaptureSession(session, privacyFailure: true)
-        },
-        stopHandler: { [weak self] session in
-            self?.finishCaptureSession(session, privacyFailure: false)
-        },
-        presenterReadyHandler: { [weak self] session in
-            self?.schedulePresenterReady(session)
+    let presenterReadyScheduler = CapturePresenterReadyScheduler()
+    private let captureOutputInfrastructureProvider = CaptureOutputInfrastructureProvider()
+    private var captureOutputInfrastructure: CaptureOutputInfrastructure {
+        captureOutputInfrastructureProvider.resolve {
+            let core = CaptureOutputCore(
+                store: captureOutputSessions,
+                failureHandler: { [weak self] session in
+                    self?.finishCaptureSession(session, privacyFailure: true)
+                },
+                stopHandler: { [weak self] session in
+                    self?.finishCaptureSession(session, privacyFailure: false)
+                },
+                presenterReadyHandler: { [weak self] session in
+                    self?.schedulePresenterReady(session)
+                }
+            )
+            return CaptureOutputInfrastructure(
+                core: core,
+                adapter: CaptureStreamCallbackAdapter(core: core)
+            )
         }
-    )
-    lazy var captureStreamCallbackAdapter = CaptureStreamCallbackAdapter(core: captureOutputCore)
+    }
+    var captureOutputCore: CaptureOutputCore { captureOutputInfrastructure.core }
+    var captureStreamCallbackAdapter: CaptureStreamCallbackAdapter { captureOutputInfrastructure.adapter }
     
     @AppStorage("showOnDock")       var showOnDock: Bool = true
     @AppStorage("showMenubar")      var showMenubar: Bool = false

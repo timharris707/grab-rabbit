@@ -231,6 +231,59 @@ enum CaptureStreamConstruction {
     }
 }
 
+final class CapturePreparationOwner {
+    private let lock = NSLock()
+    private var cleanup: ((Error) -> Void)?
+
+    init(cleanup: @escaping (Error) -> Void) {
+        self.cleanup = cleanup
+    }
+
+    @discardableResult
+    func discard(after error: Error) -> Bool {
+        let cleanup = lock.withLock { () -> ((Error) -> Void)? in
+            defer { self.cleanup = nil }
+            return self.cleanup
+        }
+        cleanup?(error)
+        return cleanup != nil
+    }
+
+    func transfer() {
+        lock.withLock { cleanup = nil }
+    }
+}
+
+enum CapturePreSessionSetup {
+    static func addOutputs(
+        owner: CapturePreparationOwner?,
+        _ addOutputs: () throws -> Void
+    ) throws {
+        do {
+            try addOutputs()
+        } catch {
+            owner?.discard(after: error)
+            throw error
+        }
+    }
+}
+
+final class CapturePresenterReadyScheduler {
+    typealias Schedule = (TimeInterval, @escaping () -> Void) -> Void
+    private let scheduleAction: Schedule
+
+    init(scheduleAction: @escaping Schedule = { delay, action in
+        let workItem = DispatchWorkItem(block: action)
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
+    }) {
+        self.scheduleAction = scheduleAction
+    }
+
+    func schedule(after delay: TimeInterval, _ action: @escaping () -> Void) {
+        scheduleAction(delay, action)
+    }
+}
+
 enum CaptureSampleKind {
     case screen(isComplete: Bool, presenterOverlayX: CGFloat?)
     case audio
@@ -311,6 +364,7 @@ final class CaptureOutputSession {
     private var standaloneAudioAppender: ((CMSampleBuffer) throws -> Void)?
     private var standaloneAudioReleaseHandler: ((AVAudioFile) -> Void)?
     private let saveFrameHandler: ((CMSampleBuffer) -> Void)?
+    private let firstFrameHandler: ((CMSampleBuffer) -> Void)?
     private var microphoneStopHandler: (() -> Void)?
 
     init(
@@ -328,6 +382,7 @@ final class CaptureOutputSession {
         standaloneAudioAppender: ((CMSampleBuffer) throws -> Void)? = nil,
         standaloneAudioReleaseHandler: ((AVAudioFile) -> Void)? = nil,
         saveFrameHandler: ((CMSampleBuffer) -> Void)? = nil,
+        firstFrameHandler: ((CMSampleBuffer) -> Void)? = nil,
         microphoneStopHandler: (() -> Void)? = nil
     ) {
         self.id = id
@@ -344,6 +399,7 @@ final class CaptureOutputSession {
         self.standaloneAudioAppender = standaloneAudioAppender
         self.standaloneAudioReleaseHandler = standaloneAudioReleaseHandler
         self.saveFrameHandler = saveFrameHandler
+        self.firstFrameHandler = firstFrameHandler
         self.microphoneStopHandler = microphoneStopHandler
     }
 
@@ -441,7 +497,10 @@ final class CaptureOutputSession {
                 guard let videoInput, videoInput.isReadyForMoreMediaData else {
                     return (.ignored, needsPresenterReady)
                 }
-                if firstFrame == nil { firstFrame = adjustedSample }
+                if firstFrame == nil {
+                    firstFrame = adjustedSample
+                    firstFrameHandler?(adjustedSample)
+                }
                 return (videoInput.append(adjustedSample) ? .appended : .appendFailed, needsPresenterReady)
 
             case .audio:
@@ -686,6 +745,26 @@ final class CaptureOutputSessionStore {
     }
 
     @discardableResult
+    func deactivateOrConfirmDraining(
+        _ session: CaptureOutputSession,
+        from stream: AnyObject,
+        onDrained: @escaping () -> Void
+    ) -> Bool {
+        let transition = lock.withLock { () -> (handled: Bool, shouldComplete: Bool) in
+            if currentSession === session {
+                retiredSessions[session.id] = session
+                currentSession = nil
+                return (true, session.beginDraining(onDrained))
+            }
+            let isExactRetiredSession = retiredSessions[session.id] === session
+                && session.owns(stream: stream)
+            return (isExactRetiredSession, false)
+        }
+        if transition.shouldComplete { onDrained() }
+        return transition.handled
+    }
+
+    @discardableResult
     func deactivate(
         _ session: CaptureOutputSession,
         onDrained: @escaping () -> Void = {}
@@ -759,7 +838,7 @@ final class CaptureOutputCore {
         case .active(let lease):
             defer { lease.release() }
             afterLeaseAcquired()
-            return store.deactivate(lease.session) { [stopHandler] in
+            return store.deactivateOrConfirmDraining(lease.session, from: stream) { [stopHandler] in
                 lease.session.releaseStandaloneAudioResources()
                 stopHandler(lease.session)
             }
@@ -795,6 +874,15 @@ final class CaptureOutputCore {
         defer { lease.release() }
         session.markPresenterReady()
     }
+
+    func handleMicrophone(
+        for session: CaptureOutputSession,
+        sampleBuffer: CMSampleBuffer
+    ) -> CaptureSampleResult {
+        guard let lease = store.acquire(session) else { return .rejected }
+        defer { lease.release() }
+        return session.processMicrophone(sampleBuffer)
+    }
 }
 
 final class CaptureStreamCallbackAdapter {
@@ -814,5 +902,38 @@ final class CaptureStreamCallbackAdapter {
 
     func handleStop(from stream: AnyObject) -> Bool {
         core.handleStop(from: stream)
+    }
+
+    func handleStartFailure(
+        _ session: CaptureOutputSession,
+        onDrained: @escaping CaptureOutputCore.SessionHandler
+    ) -> Bool {
+        core.handleStartFailure(session, onDrained: onDrained)
+    }
+
+    func handleMicrophone(
+        for session: CaptureOutputSession,
+        sampleBuffer: CMSampleBuffer
+    ) -> CaptureSampleResult {
+        core.handleMicrophone(for: session, sampleBuffer: sampleBuffer)
+    }
+}
+
+struct CaptureOutputInfrastructure {
+    let core: CaptureOutputCore
+    let adapter: CaptureStreamCallbackAdapter
+}
+
+final class CaptureOutputInfrastructureProvider: @unchecked Sendable {
+    private let lock = NSLock()
+    private var infrastructure: CaptureOutputInfrastructure?
+
+    func resolve(_ builder: () -> CaptureOutputInfrastructure) -> CaptureOutputInfrastructure {
+        lock.withLock {
+            if let infrastructure { return infrastructure }
+            let infrastructure = builder()
+            self.infrastructure = infrastructure
+            return infrastructure
+        }
     }
 }

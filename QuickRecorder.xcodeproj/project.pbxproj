@@ -11,6 +11,9 @@
 		27000000000000000000000D /* ScreenRecordingPermissionCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 27000000000000000000000C /* ScreenRecordingPermissionCoordinator.swift */; };
 		27000000000000000000000E /* ScreenRecordingPermissionCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 27000000000000000000000C /* ScreenRecordingPermissionCoordinator.swift */; };
 		270000000000000000000010 /* ScreenRecordingPermissionCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 27000000000000000000000F /* ScreenRecordingPermissionCoordinatorTests.swift */; };
+		A40000010000000000000001 /* RecordingOutputJob.swift in Sources */ = {isa = PBXBuildFile; fileRef = A40000020000000000000001 /* RecordingOutputJob.swift */; };
+		A40000010000000000000002 /* RecordingOutputJob.swift in Sources */ = {isa = PBXBuildFile; fileRef = A40000020000000000000001 /* RecordingOutputJob.swift */; };
+		A40000010000000000000003 /* RecordingOutputIsolationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A40000020000000000000002 /* RecordingOutputIsolationTests.swift */; };
 		181724052BE3BEA600F5F539 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 181724042BE3BEA600F5F539 /* Sparkle */; };
 		1821F2E82CF4B226004A2EC0 /* ContentViewNew.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1821F2E72CF4B226004A2EC0 /* ContentViewNew.swift */; };
 		184506CE2C69213400AFDA45 /* MatrixColorSelector in Frameworks */ = {isa = PBXBuildFile; productRef = 184506CD2C69213400AFDA45 /* MatrixColorSelector */; };
@@ -54,6 +57,8 @@
 		270000000000000000000003 /* QuickRecorderTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = QuickRecorderTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		27000000000000000000000C /* ScreenRecordingPermissionCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenRecordingPermissionCoordinator.swift; sourceTree = "<group>"; };
 		27000000000000000000000F /* ScreenRecordingPermissionCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenRecordingPermissionCoordinatorTests.swift; sourceTree = "<group>"; };
+		A40000020000000000000001 /* RecordingOutputJob.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingOutputJob.swift; sourceTree = "<group>"; };
+		A40000020000000000000002 /* RecordingOutputIsolationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingOutputIsolationTests.swift; sourceTree = "<group>"; };
 		1821F2E72CF4B226004A2EC0 /* ContentViewNew.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentViewNew.swift; sourceTree = "<group>"; };
 		184CAEC62BDCCC2300D61D57 /* AVContext.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AVContext.swift; sourceTree = "<group>"; };
 		184CAEC82BDDEC6800D61D57 /* AppBlockSelector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppBlockSelector.swift; sourceTree = "<group>"; };
@@ -159,6 +164,7 @@
 				189BD5F62BDFDF200056D06C /* Info.plist */,
 				18D3BDEA2BCE5DC1006CFFC0 /* QuickRecorderApp.swift */,
 				27000000000000000000000C /* ScreenRecordingPermissionCoordinator.swift */,
+				A40000020000000000000001 /* RecordingOutputJob.swift */,
 				18FEBDA92BCF8200003F09BC /* RecordEngine.swift */,
 				18D3BE032BCEC847006CFFC0 /* SCContext.swift */,
 				184CAEC62BDCCC2300D61D57 /* AVContext.swift */,
@@ -177,6 +183,7 @@
 			children = (
 				270000000000000000000002 /* PermissionFlowSourceTripwireTests.swift */,
 				27000000000000000000000F /* ScreenRecordingPermissionCoordinatorTests.swift */,
+				A40000020000000000000002 /* RecordingOutputIsolationTests.swift */,
 			);
 			path = QuickRecorderTests;
 			sourceTree = "<group>";
@@ -359,6 +366,8 @@
 				270000000000000000000001 /* PermissionFlowSourceTripwireTests.swift in Sources */,
 				27000000000000000000000E /* ScreenRecordingPermissionCoordinator.swift in Sources */,
 				270000000000000000000010 /* ScreenRecordingPermissionCoordinatorTests.swift in Sources */,
+				A40000010000000000000002 /* RecordingOutputJob.swift in Sources */,
+				A40000010000000000000003 /* RecordingOutputIsolationTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -366,6 +375,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A40000010000000000000001 /* RecordingOutputJob.swift in Sources */,
 				18FEBDAE2BD10ED1003F09BC /* ScreenSelector.swift in Sources */,
 				189BD5ED2BDE971B0056D06C /* VideoEditor.swift in Sources */,
 				189BD5F52BDF8A800056D06C /* CameraOverlayer.swift in Sources */,

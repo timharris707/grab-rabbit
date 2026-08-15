@@ -132,7 +132,17 @@ extension AppDelegate {
         }
         if SCContext.streamType == .systemaudio {
             SCContext.filter = SCContentFilter(display: screen, excludingApplications: [], exceptingWindows: [])
-            prepareAudioRecording()
+            do {
+                try prepareAudioRecording()
+            } catch {
+                SCContext.streamType = nil
+                _ = createAlert(
+                    title: "Failed to Record".local,
+                    message: error.localizedDescription,
+                    button1: "OK"
+                ).runModal()
+                return
+            }
         }
         Task { await record(filter: SCContext.filter!, fastStart: fastStart) }
     }
@@ -287,14 +297,24 @@ extension AppDelegate {
             try SCContext.stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: .global())
             if #available(macOS 13, *) { try SCContext.stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: .global()) }
             if !audioOnly {
-                initVideo(conf: conf)
+                try initVideo(conf: conf)
             } else {
                 //SCContext.startTime = Date.now
                 if recordMic { startMicRecording() }
             }
             try await SCContext.stream.startCapture()
         } catch {
-            assertionFailure("capture failed".local)
+            let recordingError = (error as? RecordingExportError)
+                ?? .preparation(stage: .first, message: error.localizedDescription)
+            if let job = SCContext.outputJob {
+                _ = job.discardOutputs(reason: recordingError)
+                SCContext.outputJob = nil
+            }
+            SCContext.showNotification(
+                title: "Failed to Record".local,
+                body: recordingError.localizedDescription,
+                id: "quickrecorder.error.\(UUID().uuidString)"
+            )
             return
         }
         if !audioOnly { registerGlobalMouseMonitor() }
@@ -302,42 +322,74 @@ extension AppDelegate {
         if preventSleep { SleepPreventer.shared.preventSleep(reason: "Screen recording in progress") }
     }
 
-    func prepareAudioRecording() {
+    func prepareAudioRecording() throws {
         var fileEnding = audioFormat.rawValue
-        var fileType = AVFileType.m4a
         let encorder = fileEnding == AudioFormat.mp3.rawValue ? "aac" : fileEnding
+        let fileType: AVFileType
         switch fileEnding { // todo: I'd like to store format info differently
             case AudioFormat.mp3.rawValue: fallthrough
             case AudioFormat.aac.rawValue: fallthrough
-            case AudioFormat.alac.rawValue: fileEnding = "m4a"
+            case AudioFormat.alac.rawValue: fileEnding = "m4a"; fileType = .m4a
             case AudioFormat.flac.rawValue: fileEnding = "flac"; fileType = .caf
             case AudioFormat.opus.rawValue: fileEnding = "ogg"; fileType = .caf
-            default: assertionFailure("loaded unknown audio format: ".local + fileEnding)
+            default:
+                throw RecordingExportError.preparation(
+                    stage: .first,
+                    message: "Unsupported audio format: \(fileEnding)"
+                )
         }
-        let path = SCContext.getFilePath()
         if recordMic && SCContext.streamType == .systemaudio {
-            SCContext.filePath = "\(path).qma"
-            SCContext.filePath1 = "\(path).qma/sys.\(fileEnding)"
-            SCContext.filePath2 = "\(path).qma/mic.\(fileEnding)"
-            let infoJsonURL = "\(path).qma/info.json".url
+            let job = try SCContext.reserveOutputJob(
+                layout: .package(
+                    fileExtension: "qma",
+                    requiredMembers: ["info.json", "sys.\(fileEnding)", "mic.\(fileEnding)"],
+                    automaticallyExports: remuxAudio,
+                    audioQualityKbps: ud.integer(forKey: "audioQuality")
+                )
+            )
+            SCContext.outputJob = job
+            SCContext.filePath = job.finalURL.path
+            SCContext.filePath1 = job.inputURL.appendingPathComponent("sys.\(fileEnding)").path
+            SCContext.filePath2 = job.inputURL.appendingPathComponent("mic.\(fileEnding)").path
+            let infoJsonURL = job.inputURL.appendingPathComponent("info.json")
             let jsonString = "{\"format\": \"\(fileEnding)\", \"encoder\": \"\(encorder)\", \"exportMP3\": \(audioFormat.rawValue == AudioFormat.mp3.rawValue), \"sysVol\": 1.0, \"micVol\": 1.0}"
-            try? fd.createDirectory(at: SCContext.filePath.url, withIntermediateDirectories: true, attributes: nil)
-            try? jsonString.write(to: infoJsonURL, atomically: true, encoding: .utf8)
-            
-            SCContext.audioFile = try! AVAudioFile(forWriting: SCContext.filePath1.url, settings: SCContext.updateAudioSettings(), commonFormat: .pcmFormatFloat32, interleaved: false)
+            do {
+                try jsonString.write(to: infoJsonURL, atomically: true, encoding: .utf8)
+                SCContext.audioFile = try AVAudioFile(forWriting: SCContext.filePath1.url, settings: SCContext.updateAudioSettings(), commonFormat: .pcmFormatFloat32, interleaved: false)
 
-            let sampleRate = SCContext.getSampleRate() ?? 48000
-            let settings = SCContext.updateAudioSettings(rate: sampleRate)
-            SCContext.vW = try? AVAssetWriter.init(outputURL: SCContext.filePath2.url, fileType: fileType)
-            SCContext.micInput = AVAssetWriterInput(mediaType: AVMediaType.audio, outputSettings: settings)
-            SCContext.micInput.expectsMediaDataInRealTime = true
-            if SCContext.vW.canAdd(SCContext.micInput) { SCContext.vW.add(SCContext.micInput) }
-            SCContext.vW.startWriting()
-            //SCContext.audioFile2 = try! AVAudioFile(forWriting: SCContext.filePath2.url, settings: settings, commonFormat: .pcmFormatFloat32, interleaved: false)
+                let sampleRate = SCContext.getSampleRate() ?? 48000
+                let settings = SCContext.updateAudioSettings(rate: sampleRate)
+                SCContext.vW = try AVAssetWriter.init(outputURL: SCContext.filePath2.url, fileType: fileType)
+                SCContext.micInput = AVAssetWriterInput(mediaType: AVMediaType.audio, outputSettings: settings)
+                SCContext.micInput.expectsMediaDataInRealTime = true
+                if SCContext.vW.canAdd(SCContext.micInput) { SCContext.vW.add(SCContext.micInput) }
+                SCContext.vW.startWriting()
+            } catch {
+                let recordingError = RecordingExportError.preparation(stage: .first, message: error.localizedDescription)
+                _ = job.discardOutputs(reason: recordingError)
+                SCContext.outputJob = nil
+                throw recordingError
+            }
         } else {
-            SCContext.filePath = "\(path).\(fileEnding)"
-            SCContext.filePath1 = SCContext.filePath
-            SCContext.audioFile = try! AVAudioFile(forWriting: SCContext.filePath.url, settings: SCContext.updateAudioSettings(), commonFormat: .pcmFormatFloat32, interleaved: false)
+            let layout: RecordingOutputJob.Layout = audioFormat == .mp3
+                ? .conversion(
+                    inputExtension: fileEnding,
+                    finalExtension: "mp3",
+                    audioQualityKbps: ud.integer(forKey: "audioQuality")
+                )
+                : .single(fileExtension: fileEnding)
+            let job = try SCContext.reserveOutputJob(layout: layout)
+            SCContext.outputJob = job
+            SCContext.filePath = job.finalURL.path
+            SCContext.filePath1 = job.inputURL.path
+            do {
+                SCContext.audioFile = try AVAudioFile(forWriting: job.inputURL, settings: SCContext.updateAudioSettings(), commonFormat: .pcmFormatFloat32, interleaved: false)
+            } catch {
+                let recordingError = RecordingExportError.preparation(stage: .first, message: error.localizedDescription)
+                _ = job.discardOutputs(reason: recordingError)
+                SCContext.outputJob = nil
+                throw recordingError
+            }
         }
     }
 }
@@ -359,23 +411,36 @@ extension SCDisplay {
 }
 
 extension AppDelegate {
-    func initVideo(conf: SCStreamConfiguration) {
+    func initVideo(conf: SCStreamConfiguration) throws {
         SCContext.startTime = nil
 
         let fileEnding = videoFormat.rawValue
-        var fileType: AVFileType?
+        let fileType: AVFileType
         switch fileEnding {
             case VideoFormat.mov.rawValue: fileType = AVFileType.mov
             case VideoFormat.mp4.rawValue: fileType = AVFileType.mp4
-            default: assertionFailure("loaded unknown video format".local)
+            default:
+                throw RecordingExportError.preparation(
+                    stage: .first,
+                    message: "Unsupported video format: \(fileEnding)"
+                )
         }
 
-        if remuxAudio && recordMic && recordWinSound {
-            SCContext.filePath = "\(SCContext.getFilePath()).\(fileEnding).\(fileEnding).\(fileEnding)"
-        } else {
-            SCContext.filePath = "\(SCContext.getFilePath()).\(fileEnding)"
+        let layout: RecordingOutputJob.Layout = remuxAudio && recordMic && recordWinSound
+            ? .videoRemux(fileExtension: fileEnding)
+            : .single(fileExtension: fileEnding, recordsMicrophone: recordMic)
+        let job = try SCContext.reserveOutputJob(layout: layout)
+        SCContext.outputJob = job
+        SCContext.filePath = job.finalURL.path
+        do {
+            SCContext.vW = try AVAssetWriter.init(outputURL: job.inputURL, fileType: fileType)
+        } catch {
+            let recordingError = RecordingExportError.preparation(stage: .first, message: error.localizedDescription)
+            _ = job.discardOutputs(reason: recordingError)
+            SCContext.outputJob = nil
+            throw recordingError
         }
-        SCContext.vW = try? AVAssetWriter.init(outputURL: SCContext.filePath.url, fileType: fileType!)
+        SCContext.vW.shouldOptimizeForNetworkUse = true
         let encoderIsH265 = (encoder.rawValue == Encoder.h265.rawValue) || recordHDR
         let fpsMultiplier: Double = Double(frameRate)/8
         let encoderMultiplier: Double = encoderIsH265 ? 0.5 : 0.9
@@ -489,56 +554,76 @@ extension AppDelegate {
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of outputType: SCStreamOutputType) {
         if SCContext.saveFrame, let imageBuffer = sampleBuffer.imageBuffer {
             SCContext.saveFrame = false
-            
-            var ciImage = CIImage(cvPixelBuffer: imageBuffer)
-            let url = "\(SCContext.getFilePath(capture: true)).png".url
-            if !recordHDR {
-                sampleBuffer.nsImage?.saveToFile(url)
-            } else {
-                let context = CIContext()
+            do {
+                let job = try SCContext.reserveOutputJob(capture: true, layout: .single(fileExtension: "png"))
+                do {
+                    var ciImage = CIImage(cvPixelBuffer: imageBuffer)
+                    let url = job.stagedOutputURL
+                    if !recordHDR {
+                        sampleBuffer.nsImage?.saveToFile(url)
+                    } else {
+                        let context = CIContext()
                 
-                // Create the HEIF destination with the correct UTI
-                //            if let destination = url? {
-                // Specify format and color space (assuming default settings here)
-                //                let format = CIFormat.rgb10
-                let colorSpace = CGColorSpace(name: CGColorSpace.itur_2100_PQ) ?? CGColorSpaceCreateDeviceRGB()
+                    // Create the HEIF destination with the correct UTI
+                    //            if let destination = url? {
+                    // Specify format and color space (assuming default settings here)
+                    //                let format = CIFormat.rgb10
+                    let colorSpace = CGColorSpace(name: CGColorSpace.itur_2100_PQ) ?? CGColorSpaceCreateDeviceRGB()
                 
-                // let colorSpace = ciImage.colorSpace ?? CGColorSpaceCreateDeviceRGB()
+                    // let colorSpace = ciImage.colorSpace ?? CGColorSpaceCreateDeviceRGB()
                 
-                // Image exposure needs to be increased by one stop to match the original
-                ciImage = ciImage.applyingFilter("CIExposureAdjust", parameters: ["inputEV": 1.0])
-                
-                
+                    // Image exposure needs to be increased by one stop to match the original
+                    ciImage = ciImage.applyingFilter("CIExposureAdjust", parameters: ["inputEV": 1.0])
                 
                 
                 
-                //                context.writeHEIF10Representation(of: ciImage, to: destination as! URL, colorSpace: colorSpace)
-                do{
+                
+                
+                    //                context.writeHEIF10Representation(of: ciImage, to: destination as! URL, colorSpace: colorSpace)
                     // try context.writeHEIF10Representation(of:ciImage,
                     //                                       to:url,
                     //                                       colorSpace:colorSpace,
                     //                                       options: [
                     //     kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: 1.0
-                    if #available(macOS 14.0, *) {
-                        try context.writePNGRepresentation(of:ciImage,
-                                                           to:url,
-                                                           format: .RGB10,
-                                                           colorSpace:colorSpace
-                        )
-                    } else {
-                        // Fallback on earlier versions
-                        print("RGB10 PNG not supported on this macOS version")
-                        try context.writePNGRepresentation(of:ciImage,
-                                                           to:url,
-                                                           format: .RGBA8,
-                                                           colorSpace:colorSpace)
+                        if #available(macOS 14.0, *) {
+                            try context.writePNGRepresentation(of:ciImage,
+                                                               to:url,
+                                                               format: .RGB10,
+                                                               colorSpace:colorSpace
+                            )
+                        } else {
+                            // Fallback on earlier versions
+                            print("RGB10 PNG not supported on this macOS version")
+                            try context.writePNGRepresentation(of:ciImage,
+                                                               to:url,
+                                                               format: .RGBA8,
+                                                               colorSpace:colorSpace)
+                        }
+                        //        try context.writePNGRepresentation(of:outImage, to:outURL, format: .RGBA16,colorSpace:colorSpace,options:[:])
                     }
-                    //        try context.writePNGRepresentation(of:outImage, to:outURL, format: .RGBA16,colorSpace:colorSpace,options:[:])
-                } catch let error {
-                    // Handle the error case
-                    print("Error: \(error)")
+                    if case .failure(let error) = job.finishSingleOutput() {
+                        SCContext.showNotification(
+                            title: "Failed to save file".local,
+                            body: error.localizedDescription,
+                            id: "quickrecorder.error.\(UUID().uuidString)"
+                        )
+                    }
+                    //                CGImageDestinationFinalize(destination)
+                } catch {
+                    let recordingError = RecordingExportError.failed(stage: .first, message: error.localizedDescription)
+                    let cleanupError = job.discardOutputs(reason: recordingError)
+                    SCContext.showNotification(
+                        title: "Failed to save file".local,
+                        body: cleanupError.localizedDescription,
+                        id: "quickrecorder.error.\(UUID().uuidString)"
+                    )
                 }
-                //                CGImageDestinationFinalize(destination)
+            } catch {
+                SCContext.showNotification(
+                    title: "Failed to save file".local,
+                    body: error.localizedDescription,
+                    id: "quickrecorder.error.\(UUID().uuidString)"
+                )
             }
         }
         if SCContext.isPaused { return }

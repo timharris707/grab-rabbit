@@ -53,6 +53,8 @@ class AVOutputClass: NSObject, AVCaptureFileOutputRecordingDelegate, AVCaptureVi
     static let shared = AVOutputClass()
     var output: AVCaptureMovieFileOutput!
     var dataOutput: AVCaptureVideoDataOutput!
+    private var outputJobs = [URL: RecordingOutputJob]()
+    private let outputJobsLock = NSLock()
     //var captureSession: AVCaptureSession!
     
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
@@ -102,9 +104,23 @@ class AVOutputClass: NSObject, AVCaptureFileOutputRecordingDelegate, AVCaptureVi
             guard let connection = output.connection(with: .video) else { return }
             output.setOutputSettings(videoSettings, for: connection)
             let fileEnding = ud.string(forKey: "videoFormat") ?? ""
-            SCContext.filePath = "\(SCContext.getFilePath()).\(fileEnding)"
+            let job: RecordingOutputJob
+            do {
+                job = try SCContext.reserveOutputJob(layout: .single(fileExtension: fileEnding))
+            } catch {
+                SCContext.showNotification(
+                    title: "Failed to Record".local,
+                    body: error.localizedDescription,
+                    id: "quickrecorder.error.\(UUID().uuidString)"
+                )
+                return
+            }
+            SCContext.filePath = job.finalURL.path
+            outputJobsLock.lock()
+            outputJobs[job.inputURL] = job
+            outputJobsLock.unlock()
             SCContext.captureSession.startRunning()
-            output.startRecording(to: SCContext.filePath.url, recordingDelegate: self)
+            output.startRecording(to: job.inputURL, recordingDelegate: self)
             SCContext.streamType = StreamType.idevice
             SCContext.startTime = Date.now
         }
@@ -141,9 +157,36 @@ class AVOutputClass: NSObject, AVCaptureFileOutputRecordingDelegate, AVCaptureVi
     }
 
     func fileOutput(_ output: AVCaptureFileOutput, didFinishRecordingTo outputFileURL: URL, from connections: [AVCaptureConnection], error: Error?) {
+        outputJobsLock.lock()
+        let job = outputJobs.removeValue(forKey: outputFileURL)
+        outputJobsLock.unlock()
+        guard let job else {
+            SCContext.showNotification(
+                title: "Failed to save file".local,
+                body: "The recording output job is unavailable.",
+                id: "quickrecorder.error.\(UUID().uuidString)"
+            )
+            return
+        }
+        let result: Result<URL, RecordingExportError>
+        if let error {
+            result = job.finishExport(.failure(.failed(stage: .first, message: error.localizedDescription)))
+        } else {
+            result = job.finishSingleOutput()
+        }
+        guard case .success(let finalURL) = result else {
+            if case .failure(let finalizationError) = result {
+                SCContext.showNotification(
+                    title: "Failed to save file".local,
+                    body: finalizationError.localizedDescription,
+                    id: "quickrecorder.error.\(UUID().uuidString)"
+                )
+            }
+            return
+        }
         let content = UNMutableNotificationContent()
         content.title = "Recording Completed".local
-        content.body = String(format: "File saved to: %@".local, outputFileURL.path)
+        content.body = String(format: "File saved to: %@".local, finalURL.path)
         content.sound = UNNotificationSound.default
         let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 1, repeats: false)
         let request = UNNotificationRequest(identifier: "quickrecorder.completed.\(UUID().uuidString)", content: content, trigger: trigger)

@@ -558,33 +558,44 @@ class AudioPlayerManager: ObservableObject {
         }
     }
     
-    func saveFile(_ url: URL, saveAsMP3: Bool = false) {
-        var url = url
-        if url.pathExtension == "mp3" { url = url.deletingPathExtension() }
-        if url.pathExtension != self.fileFormat { url = url.appendingPathExtension(self.fileFormat) }
-        let lastComp = url.lastPathComponent
-        if self.exportMP3 { url = url.deletingLastPathComponent().appendingPathComponent("." + url.lastPathComponent) }
-        
+    func saveFile(_ destinationURL: URL, saveAsMP3: Bool = false, recordingJob: RecordingOutputJob? = nil) {
+        var renderURL = destinationURL
+        if recordingJob == nil {
+            if renderURL.pathExtension == "mp3" { renderURL = renderURL.deletingPathExtension() }
+            if renderURL.pathExtension != self.fileFormat { renderURL = renderURL.appendingPathExtension(self.fileFormat) }
+            if self.exportMP3 {
+                renderURL = renderURL.deletingLastPathComponent().appendingPathComponent("." + renderURL.lastPathComponent)
+            }
+        } else if let recordingJob {
+            renderURL = recordingJob.inputURL
+        }
+        let originalLastComponent = destinationURL.lastPathComponent
+
         Thread.detachNewThread {
             DispatchQueue.main.async { self.exporting = true }
             do {
-                guard let audioFile1 = self.audioFile1, let audioFile2 = self.audioFile2 else { return }
+                guard let audioFile1 = self.audioFile1, let audioFile2 = self.audioFile2 else {
+                    throw RecordingExportError.preparation(stage: .first, message: "The recorded audio tracks are unavailable.")
+                }
                 self.playerNode1.scheduleFile(audioFile1, at: nil, completionHandler: nil)
                 self.playerNode2.scheduleFile(audioFile2, at: nil, completionHandler: nil)
-                
-                let audioSettings = SCContext.updateAudioSettings(format: self.fileEncoder)
+
+                let audioSettings = SCContext.updateAudioSettings(
+                    format: self.fileEncoder,
+                    qualityKbps: recordingJob?.audioQualityKbps
+                )
                 let outputFormat = self.playerNode1.outputFormat(forBus: 0)
-                let outputFile = try AVAudioFile(forWriting: url, settings: audioSettings, commonFormat: .pcmFormatFloat32, interleaved: false)
+                let outputFile = try AVAudioFile(forWriting: renderURL, settings: audioSettings, commonFormat: .pcmFormatFloat32, interleaved: false)
                 self.engine.stop()
                 try self.engine.enableManualRenderingMode(.offline, format: outputFormat, maximumFrameCount: 4096)
                 try self.engine.start()
-                
+
                 self.playerNode1.play()
                 self.playerNode2.play()
-                
+
                 let duration = audioFile1.length
                 let buffer = AVAudioPCMBuffer(pcmFormat: self.engine.manualRenderingFormat, frameCapacity: self.engine.manualRenderingMaximumFrameCount)!
-                
+
                 while self.engine.manualRenderingSampleTime < duration {
                     let framesToRender = min(UInt32(buffer.frameCapacity), UInt32(duration - self.engine.manualRenderingSampleTime))
                     let status = try self.engine.renderOffline(framesToRender, to: buffer)
@@ -599,37 +610,93 @@ class AudioPlayerManager: ObservableObject {
                         break
                     }
                 }
-                
+
                 self.engine.disableManualRenderingMode()
                 self.engine.stop()
                 self.setupAudioEngine()
-                
-                let title = "Recording Completed".local
-                var body = String(format: "File saved to: %@".local, url.path.removingPercentEncoding!)
-                let id = "quickrecorder.completed.\(UUID().uuidString)"
-                
-                if saveAsMP3 {
-                    let oldURL = url
-                    let newURl = url.deletingLastPathComponent().appendingPathComponent(lastComp).deletingPathExtension().appendingPathExtension("mp3")
-                    body = String(format: "File saved to: %@".local, newURl.path.removingPercentEncoding!)
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-                        Task {
-                            do {
-                                try await SCContext.m4a2mp3(inputUrl: oldURL, outputUrl: newURl)
-                                try? fd.removeItem(at: oldURL)
-                            } catch {
-                                SCContext.showNotification(title: "Failed to save file".local, body: "\(error.localizedDescription)", id: "quickrecorder.error.\(UUID().uuidString)")
-                                return
+
+                if let recordingJob {
+                    _ = recordingJob.beginPostprocessing()
+                    if saveAsMP3 {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                            Task { @MainActor in
+                                do {
+                                    try await SCContext.m4a2mp3(
+                                        inputUrl: recordingJob.inputURL,
+                                        outputUrl: recordingJob.stagedOutputURL,
+                                        qualityKbps: recordingJob.audioQualityKbps
+                                    )
+                                    self.notifyRecordingOutput(recordingJob.finishExport(.success(())))
+                                } catch {
+                                    let exportError: RecordingExportError
+                                    if let typedError = error as? RecordingExportError {
+                                        exportError = typedError
+                                    } else if error is CancellationError {
+                                        exportError = .cancelled(stage: .conversion)
+                                    } else {
+                                        exportError = .failed(stage: .conversion, message: error.localizedDescription)
+                                    }
+                                    let cleanupError = recordingJob.discardOutputs(reason: exportError)
+                                    SCContext.showNotification(
+                                        title: "Failed to save file".local,
+                                        body: cleanupError.localizedDescription,
+                                        id: "quickrecorder.error.\(UUID().uuidString)"
+                                    )
+                                }
+                                self.exporting = false
+                            }
+                        }
+                        return
+                    }
+                    self.notifyRecordingOutput(recordingJob.finishSingleOutput())
+                } else {
+                    let title = "Recording Completed".local
+                    var notificationURL = renderURL
+                    if saveAsMP3 {
+                        let oldURL = renderURL
+                        let newURL = renderURL.deletingLastPathComponent()
+                            .appendingPathComponent(originalLastComponent)
+                            .deletingPathExtension()
+                            .appendingPathExtension("mp3")
+                        notificationURL = newURL
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                            Task {
+                                do {
+                                    try await SCContext.m4a2mp3(inputUrl: oldURL, outputUrl: newURL)
+                                    try? fd.removeItem(at: oldURL)
+                                } catch {
+                                    SCContext.showNotification(title: "Failed to save file".local, body: error.localizedDescription, id: "quickrecorder.error.\(UUID().uuidString)")
+                                }
                             }
                         }
                     }
+                    let decodedPath = notificationURL.path.removingPercentEncoding ?? notificationURL.path
+                    let body = String(format: "File saved to: %@".local, decodedPath)
+                    SCContext.showNotification(title: title, body: body, id: "quickrecorder.completed.\(UUID().uuidString)")
                 }
-                
-                SCContext.showNotification(title: title, body: body, id: id)
             } catch {
-                SCContext.showNotification(title: "Failed to save file".local, body: "\(error.localizedDescription)", id: "quickrecorder.error.\(UUID().uuidString)")
+                let reportedError: Error
+                if let recordingJob {
+                    let exportError = (error as? RecordingExportError)
+                        ?? .failed(stage: .first, message: error.localizedDescription)
+                    reportedError = recordingJob.discardOutputs(reason: exportError)
+                } else {
+                    reportedError = error
+                }
+                SCContext.showNotification(title: "Failed to save file".local, body: reportedError.localizedDescription, id: "quickrecorder.error.\(UUID().uuidString)")
             }
             DispatchQueue.main.async { self.exporting = false }
+        }
+    }
+
+    private func notifyRecordingOutput(_ result: Result<URL, RecordingExportError>) {
+        switch result {
+        case .success(let outputURL):
+            let decodedPath = outputURL.path.removingPercentEncoding ?? outputURL.path
+            let body = String(format: "File saved to: %@".local, decodedPath)
+            SCContext.showNotification(title: "Recording Completed".local, body: body, id: "quickrecorder.completed.\(UUID().uuidString)")
+        case .failure(let error):
+            SCContext.showNotification(title: "Failed to save file".local, body: error.localizedDescription, id: "quickrecorder.error.\(UUID().uuidString)")
         }
     }
     

@@ -268,6 +268,29 @@ enum CapturePreSessionSetup {
     }
 }
 
+final class CapturePreparationFailureCoordinator {
+    private let store: CaptureOutputSessionStore
+
+    init(store: CaptureOutputSessionStore) {
+        self.store = store
+    }
+
+    func cleanup(sessionID: UUID, _ cleanup: () -> Void) {
+        cleanup()
+        store.cancelReservation(sessionID)
+    }
+}
+
+enum CapturePreparationResourceSnapshot {
+    static func clear<Resource: AnyObject>(
+        _ capturedResource: Resource?,
+        from currentResource: inout Resource?
+    ) {
+        guard let capturedResource, currentResource === capturedResource else { return }
+        currentResource = nil
+    }
+}
+
 final class CapturePresenterReadyScheduler {
     typealias Schedule = (TimeInterval, @escaping () -> Void) -> Void
     private let scheduleAction: Schedule

@@ -1196,7 +1196,51 @@ final class WindowCapturePrivacyTests: XCTestCase {
         XCTAssertNil(weakPreparedAudioResource.value, "prepared audio resources must close before outer cleanup")
         XCTAssertTrue(engineSource.contains("CapturePreparationOwner {"))
         XCTAssertTrue(engineSource.contains("CapturePreSessionSetup.addOutputs(owner: preparationOwner)"))
-        XCTAssertTrue(engineSource.contains("discardPreparedAudioCapture(reason:"))
+        XCTAssertTrue(engineSource.contains("PreparedAudioCaptureSnapshot.capture()"))
+    }
+
+    func testPreparationFailureKeepsReservationAndResourcesIsolatedThroughCleanup() throws {
+        let engineSource = try projectSource("QuickRecorder/RecordEngine.swift")
+        let store = CaptureOutputSessionStore()
+        let coordinator = CapturePreparationFailureCoordinator(store: store)
+        let sessionA = UUID()
+        let sessionB = UUID()
+        var globalResource: LifetimeProbe? = LifetimeProbe()
+        let resourceA = globalResource
+        let resourceB = LifetimeProbe()
+        let cleanupStarted = expectation(description: "A cleanup started")
+        let cleanupFinished = expectation(description: "A cleanup finished")
+        let allowCleanup = DispatchSemaphore(value: 0)
+
+        XCTAssertTrue(store.reserve(sessionA))
+        DispatchQueue(label: "WindowCapturePrivacyTests.preparation-failure-order").async {
+            coordinator.cleanup(sessionID: sessionA) {
+                cleanupStarted.fulfill()
+                _ = allowCleanup.wait(timeout: .now() + 2)
+                CapturePreparationResourceSnapshot.clear(resourceA, from: &globalResource)
+            }
+            cleanupFinished.fulfill()
+        }
+        wait(for: [cleanupStarted], timeout: 2)
+
+        let bReservedDuringACleanup = store.reserve(sessionB)
+        if bReservedDuringACleanup { globalResource = resourceB }
+        XCTAssertFalse(
+            bReservedDuringACleanup,
+            "B must not reserve while A's failed preparation still owns capture resources"
+        )
+
+        allowCleanup.signal()
+        wait(for: [cleanupFinished], timeout: 2)
+        if bReservedDuringACleanup {
+            XCTAssertTrue(globalResource === resourceB, "A cleanup must never clear B's replacement resource")
+        } else {
+            XCTAssertNil(globalResource)
+            XCTAssertTrue(store.reserve(sessionB), "B may reserve only after A cleanup completes")
+        }
+        XCTAssertTrue(engineSource.contains("CapturePreparationFailureCoordinator(store: captureOutputSessions)"))
+        XCTAssertTrue(engineSource.contains("PreparedAudioCaptureSnapshot.capture()"))
+        XCTAssertFalse(engineSource.contains("catch {\n            captureOutputSessions.cancelReservation(sessionID)"))
     }
 
     func testCaptureCallbackInfrastructureDoesNotUseUnsynchronizedLazyInitialization() throws {

@@ -27,6 +27,40 @@ private final class MainThreadCaptureCleanup: @unchecked Sendable {
     }
 }
 
+private struct PreparedAudioCaptureSnapshot {
+    let outputJob: RecordingOutputJob?
+    let audioFile: AVAudioFile?
+    let secondaryAudioFile: AVAudioFile?
+    let writer: AVAssetWriter?
+    let videoInput: AVAssetWriterInput?
+    let systemAudioInput: AVAssetWriterInput?
+    let microphoneInput: AVAssetWriterInput?
+
+    static func capture() -> PreparedAudioCaptureSnapshot {
+        PreparedAudioCaptureSnapshot(
+            outputJob: SCContext.outputJob,
+            audioFile: SCContext.audioFile,
+            secondaryAudioFile: SCContext.audioFile2,
+            writer: SCContext.vW,
+            videoInput: SCContext.vwInput,
+            systemAudioInput: SCContext.awInput,
+            microphoneInput: SCContext.micInput
+        )
+    }
+
+    func discard(reason: RecordingExportError) {
+        CapturePreparationResourceSnapshot.clear(audioFile, from: &SCContext.audioFile)
+        CapturePreparationResourceSnapshot.clear(secondaryAudioFile, from: &SCContext.audioFile2)
+        writer?.cancelWriting()
+        CapturePreparationResourceSnapshot.clear(writer, from: &SCContext.vW)
+        CapturePreparationResourceSnapshot.clear(videoInput, from: &SCContext.vwInput)
+        CapturePreparationResourceSnapshot.clear(systemAudioInput, from: &SCContext.awInput)
+        CapturePreparationResourceSnapshot.clear(microphoneInput, from: &SCContext.micInput)
+        if let outputJob { _ = outputJob.discardOutputs(reason: reason) }
+        CapturePreparationResourceSnapshot.clear(outputJob, from: &SCContext.outputJob)
+    }
+}
+
 extension AppDelegate {
     @objc func prepRecord(type: String, screens: SCDisplay?, windows: [SCWindow]?, applications: [SCRunningApplication]?, fastStart: Bool = false) {
         prepRecord(
@@ -381,12 +415,20 @@ extension AppDelegate {
         var outputSession: CaptureOutputSession?
         do {
             if audioOnly {
+                do {
+                    try prepareAudioRecording()
+                } catch {
+                    let recordingError = (error as? RecordingExportError)
+                        ?? .preparation(stage: .first, message: error.localizedDescription)
+                    PreparedAudioCaptureSnapshot.capture().discard(reason: recordingError)
+                    throw recordingError
+                }
+                let preparationSnapshot = PreparedAudioCaptureSnapshot.capture()
                 preparationOwner = CapturePreparationOwner { error in
                     let recordingError = (error as? RecordingExportError)
                         ?? .preparation(stage: .first, message: error.localizedDescription)
-                    self.discardPreparedAudioCapture(reason: recordingError)
+                    preparationSnapshot.discard(reason: recordingError)
                 }
-                try prepareAudioRecording()
             }
             try CapturePreSessionSetup.addOutputs(owner: preparationOwner) {
                 try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: sampleQueue)
@@ -456,50 +498,49 @@ extension AppDelegate {
             if recordMic { startMicRecording(session: session) }
             try await stream.startCapture()
         } catch {
-            captureOutputSessions.cancelReservation(sessionID)
             let recordingError = (error as? RecordingExportError)
                 ?? .preparation(stage: .first, message: error.localizedDescription)
-            if let outputSession {
-                if !sessionInstalled {
-                    discardPreparedCapture(
-                        outputSession,
-                        stream: stream,
-                        error: recordingError,
-                        stopsMicrophone: false
-                    )
-                    return
-                }
-                if captureStreamCallbackAdapter.handleStartFailure(outputSession, onDrained: { outputSession in
-                    let cleanup = MainThreadCaptureCleanup { [weak self] in
-                        self?.discardCaptureAfterFailedStart(
+            CapturePreparationFailureCoordinator(store: captureOutputSessions).cleanup(sessionID: sessionID) {
+                if let outputSession {
+                    if !sessionInstalled {
+                        discardPreparedCapture(
                             outputSession,
                             stream: stream,
-                            error: recordingError
+                            error: recordingError,
+                            stopsMicrophone: false
+                        )
+                    } else if !captureStreamCallbackAdapter.handleStartFailure(
+                        outputSession,
+                        onDrained: { outputSession in
+                            let cleanup = MainThreadCaptureCleanup { [weak self] in
+                                self?.discardCaptureAfterFailedStart(
+                                    outputSession,
+                                    stream: stream,
+                                    error: recordingError
+                                )
+                            }
+                            DispatchQueue.main.async {
+                                cleanup.run()
+                            }
+                        }
+                    ) {
+                        SCContext.showNotification(
+                            title: "Failed to Record".local,
+                            body: recordingError.localizedDescription,
+                            id: "quickrecorder.error.\(UUID().uuidString)"
                         )
                     }
-                    DispatchQueue.main.async {
-                        cleanup.run()
-                    }
-                }) {
-                    return
+                } else {
+                    if SCContext.stream === stream { SCContext.stream = nil }
+                    preparationOwner?.discard(after: recordingError)
+                    SCContext.streamType = nil
+                    SCContext.showNotification(
+                        title: "Failed to Record".local,
+                        body: recordingError.localizedDescription,
+                        id: "quickrecorder.error.\(UUID().uuidString)"
+                    )
                 }
-                SCContext.showNotification(
-                    title: "Failed to Record".local,
-                    body: recordingError.localizedDescription,
-                    id: "quickrecorder.error.\(UUID().uuidString)"
-                )
-                return
             }
-            if SCContext.stream === stream { SCContext.stream = nil }
-            if let preparationOwner {
-                preparationOwner.discard(after: recordingError)
-            }
-            SCContext.streamType = nil
-            SCContext.showNotification(
-                title: "Failed to Record".local,
-                body: recordingError.localizedDescription,
-                id: "quickrecorder.error.\(UUID().uuidString)"
-            )
             return
         }
         if !audioOnly { registerGlobalMouseMonitor() }
@@ -546,21 +587,6 @@ extension AppDelegate {
             body: error.localizedDescription,
             id: "quickrecorder.error.\(UUID().uuidString)"
         )
-    }
-
-    private func discardPreparedAudioCapture(reason: RecordingExportError) {
-        let preparedJob = SCContext.outputJob
-        SCContext.audioFile = nil
-        SCContext.audioFile2 = nil
-        SCContext.vW?.cancelWriting()
-        SCContext.vW = nil
-        SCContext.vwInput = nil
-        SCContext.awInput = nil
-        SCContext.micInput = nil
-        if let preparedJob {
-            _ = preparedJob.discardOutputs(reason: reason)
-            if SCContext.outputJob === preparedJob { SCContext.outputJob = nil }
-        }
     }
 
     func prepareAudioRecording() throws {

@@ -18,10 +18,27 @@ final class PermissionFlowSourceTripwireTests: XCTestCase {
         XCTAssertFalse(appSource.contains("SCContext.updateAvailableContentSync()"))
         XCTAssertTrue(appSource.contains("ScreenRecordingStartupPolicy().start"))
         XCTAssertTrue(scContextSourceText.contains("contentState.apply(result)"))
+        XCTAssertTrue(scContextSourceText.contains("captureReadiness.update(isReady, revision: revision)"))
+        XCTAssertTrue(appSource.contains("guard revision > contentRevision else { return }"))
         XCTAssertTrue(scContextSourceText.contains("guard let content, !content.displays.isEmpty else"))
         XCTAssertTrue(scContextSourceText.contains("completion(.failure(.unavailable("))
         XCTAssertEqual(contentViewSource.components(separatedBy: "SCContext.recoverScreenRecordingAccess()").count - 1, 1)
         XCTAssertEqual(contentViewNewSource.components(separatedBy: "SCContext.recoverScreenRecordingAccess()").count - 1, 1)
+    }
+
+    func testRecoveryActionTitlesUseLocalizationInBothViews() throws {
+        let sources = try [
+            source(named: "ViewModel/ContentView.swift"),
+            source(named: "ViewModel/ContentViewNew.swift")
+        ]
+
+        for source in sources {
+            XCTAssertEqual(
+                source.components(separatedBy: "SelectorView(title: \"Screen Recording Access\".local").count - 1,
+                1
+            )
+            XCTAssertFalse(source.contains("SelectorView(title: \"Screen Recording Access\","))
+        }
     }
 
     private func scContextSource() throws -> String {

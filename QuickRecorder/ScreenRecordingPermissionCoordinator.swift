@@ -7,13 +7,15 @@ enum ScreenRecordingContentError: Error, Equatable {
 
 final class ScreenRecordingContentState<Content> {
     typealias ContentResult = Result<Content, ScreenRecordingContentError>
+    typealias ReadinessChanged = (_ isReady: Bool, _ revision: UInt64) -> Void
 
     private let lock = NSLock()
-    private let readinessChanged: (Bool) -> Void
+    private let readinessChanged: ReadinessChanged
     private var storedContent: Content?
     private var storedReadiness = false
+    private var storedRevision: UInt64 = 0
 
-    init(readinessChanged: @escaping (Bool) -> Void = { _ in }) {
+    init(readinessChanged: @escaping ReadinessChanged = { _, _ in }) {
         self.readinessChanged = readinessChanged
     }
 
@@ -31,7 +33,10 @@ final class ScreenRecordingContentState<Content> {
 
     func apply(_ result: ContentResult) {
         let isReady: Bool
+        let revision: UInt64
         lock.lock()
+        storedRevision += 1
+        revision = storedRevision
         switch result {
         case .success(let content):
             storedContent = content
@@ -43,7 +48,7 @@ final class ScreenRecordingContentState<Content> {
             isReady = false
         }
         lock.unlock()
-        readinessChanged(isReady)
+        readinessChanged(isReady, revision)
     }
 }
 

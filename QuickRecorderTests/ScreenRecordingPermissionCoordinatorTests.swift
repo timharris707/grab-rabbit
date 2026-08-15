@@ -80,8 +80,8 @@ final class ScreenRecordingPermissionCoordinatorTests: XCTestCase {
         var result: Result<String, ScreenRecordingContentError>?
         var finishRequest: ((Result<String, ScreenRecordingContentError>) -> Void)?
         var readinessChanges = [Bool]()
-        let contentState = ScreenRecordingContentState<String> {
-            readinessChanges.append($0)
+        let contentState = ScreenRecordingContentState<String> { isReady, _ in
+            readinessChanges.append(isReady)
         }
         let coordinator = ScreenRecordingPermissionCoordinator<String> { _ in
             recoveryCount += 1
@@ -109,6 +109,49 @@ final class ScreenRecordingPermissionCoordinatorTests: XCTestCase {
         XCTAssertFalse(contentState.isReady)
         XCTAssertNil(contentState.content)
         XCTAssertEqual(readinessChanges, [true, false])
+    }
+
+    func testNewerFailureCannotBeOverriddenByDelayedSuccessNotification() {
+        let successNotificationEntered = DispatchSemaphore(value: 0)
+        let releaseSuccessNotification = DispatchSemaphore(value: 0)
+        let successApplyFinished = expectation(description: "success apply finished")
+        let changesLock = NSLock()
+        var deliveredRevisions = [UInt64]()
+        var latestRevision: UInt64 = 0
+        var latestReadiness = false
+        let contentState = ScreenRecordingContentState<Int> { isReady, revision in
+            if isReady {
+                successNotificationEntered.signal()
+                XCTAssertEqual(releaseSuccessNotification.wait(timeout: .now() + 2), .success)
+            }
+            changesLock.lock()
+            deliveredRevisions.append(revision)
+            if revision > latestRevision {
+                latestRevision = revision
+                latestReadiness = isReady
+            }
+            changesLock.unlock()
+        }
+
+        DispatchQueue.global().async {
+            contentState.apply(.success(1))
+            successApplyFinished.fulfill()
+        }
+
+        XCTAssertEqual(successNotificationEntered.wait(timeout: .now() + 2), .success)
+        contentState.apply(.failure(.unavailable("No displays")))
+        releaseSuccessNotification.signal()
+        wait(for: [successApplyFinished], timeout: 2)
+
+        changesLock.lock()
+        let observedRevisions = deliveredRevisions
+        let observedLatestRevision = latestRevision
+        let observedReadiness = latestReadiness
+        changesLock.unlock()
+        XCTAssertFalse(contentState.isReady)
+        XCTAssertEqual(observedRevisions, [2, 1])
+        XCTAssertEqual(observedLatestRevision, 2)
+        XCTAssertFalse(observedReadiness)
     }
 
     func testProviderCannotCompleteTheSameRequestTwice() {

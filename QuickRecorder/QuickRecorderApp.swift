@@ -23,12 +23,19 @@ var scPerm = false
 final class CaptureReadiness: ObservableObject {
     @Published private(set) var isReady = false
     @Published private(set) var isRecoveryActionAvailable = false
+    private var contentRevision: UInt64 = 0
 
     func update(_ isReady: Bool) {
         self.isReady = isReady
         if isReady {
             isRecoveryActionAvailable = false
         }
+    }
+
+    func update(_ isReady: Bool, revision: UInt64) {
+        guard revision > contentRevision else { return }
+        contentRevision = revision
+        update(isReady)
     }
 
     func updateRecoveryActionAvailability(_ isAvailable: Bool) {

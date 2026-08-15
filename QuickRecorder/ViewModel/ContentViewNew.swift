@@ -39,7 +39,7 @@ struct ContentViewNew: View {
                         Button(action: {
                             SCContext.recoverScreenRecordingAccess()
                         }, label: {
-                            SelectorView(title: "Screen Recording Access", symbol: "lock.open").cornerRadius(8)
+                            SelectorView(title: "Screen Recording Access".local, symbol: "lock.open").cornerRadius(8)
                         }).buttonStyle(.plain)
                         Divider().frame(height: 70)
                     }

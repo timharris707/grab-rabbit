@@ -51,9 +51,9 @@ class SCContext {
     static var streamType: StreamType?
     static let excludedApps = ["", "com.apple.dock", "com.apple.screencaptureui", "com.apple.controlcenter", "com.apple.notificationcenterui", "com.apple.systemuiserver", "com.apple.WindowManager", "dev.mnpn.Azayaka", "com.gaosun.eul", "com.pointum.hazeover", "net.matthewpalmer.Vanilla", "com.dwarvesv.minimalbar", "com.bjango.istatmenus.status"]
 
-    private static let contentState = ScreenRecordingContentState<SCShareableContent> { isReady in
+    private static let contentState = ScreenRecordingContentState<SCShareableContent> { isReady, revision in
         DispatchQueue.main.async {
-            captureReadiness.update(isReady)
+            captureReadiness.update(isReady, revision: revision)
         }
     }
 

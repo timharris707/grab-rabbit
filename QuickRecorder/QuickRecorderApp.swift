@@ -140,8 +140,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, SCStreamDelegate, SCStreamOu
         },
         stopHandler: { [weak self] session in
             self?.finishCaptureSession(session, privacyFailure: false)
+        },
+        presenterReadyHandler: { [weak self] session in
+            self?.schedulePresenterReady(session)
         }
     )
+    lazy var captureStreamCallbackAdapter = CaptureStreamCallbackAdapter(core: captureOutputCore)
     
     @AppStorage("showOnDock")       var showOnDock: Bool = true
     @AppStorage("showMenubar")      var showMenubar: Bool = false

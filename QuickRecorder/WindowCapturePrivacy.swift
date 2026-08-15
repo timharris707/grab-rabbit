@@ -222,6 +222,15 @@ final class CaptureConfigurationOwner {
     }
 }
 
+enum CaptureStreamConstruction {
+    static func build<Owner: AnyObject, Stream>(
+        retaining owner: Owner,
+        _ builder: () -> Stream
+    ) -> Stream {
+        withExtendedLifetime(owner) { builder() }
+    }
+}
+
 enum CaptureSampleKind {
     case screen(isComplete: Bool, presenterOverlayX: CGFloat?)
     case audio
@@ -275,7 +284,6 @@ final class CaptureOutputSession {
     let videoInput: (any CaptureVideoSampleDestination)?
     let systemAudioInput: (any CaptureVideoSampleDestination)?
     let microphoneInput: (any CaptureVideoSampleDestination)?
-    let standaloneAudioFile: AVAudioFile?
     let configurationOwner: CaptureConfigurationOwner
     let sampleQueue: DispatchQueue
     let isAudioOnly: Bool
@@ -299,7 +307,9 @@ final class CaptureOutputSession {
     private var isCameraReady = false
     private var saveFrameRequested = false
     private var firstFrame: CMSampleBuffer?
-    private let standaloneAudioAppender: ((CMSampleBuffer) throws -> Void)?
+    private var standaloneAudioFileStorage: AVAudioFile?
+    private var standaloneAudioAppender: ((CMSampleBuffer) throws -> Void)?
+    private var standaloneAudioReleaseHandler: ((AVAudioFile) -> Void)?
     private let saveFrameHandler: ((CMSampleBuffer) -> Void)?
     private var microphoneStopHandler: (() -> Void)?
 
@@ -316,6 +326,7 @@ final class CaptureOutputSession {
         sampleQueue: DispatchQueue,
         isAudioOnly: Bool,
         standaloneAudioAppender: ((CMSampleBuffer) throws -> Void)? = nil,
+        standaloneAudioReleaseHandler: ((AVAudioFile) -> Void)? = nil,
         saveFrameHandler: ((CMSampleBuffer) -> Void)? = nil,
         microphoneStopHandler: (() -> Void)? = nil
     ) {
@@ -326,11 +337,12 @@ final class CaptureOutputSession {
         self.videoInput = videoInput
         self.systemAudioInput = systemAudioInput
         self.microphoneInput = microphoneInput
-        self.standaloneAudioFile = standaloneAudioFile
+        standaloneAudioFileStorage = standaloneAudioFile
         self.configurationOwner = configurationOwner
         self.sampleQueue = sampleQueue
         self.isAudioOnly = isAudioOnly
         self.standaloneAudioAppender = standaloneAudioAppender
+        self.standaloneAudioReleaseHandler = standaloneAudioReleaseHandler
         self.saveFrameHandler = saveFrameHandler
         self.microphoneStopHandler = microphoneStopHandler
     }
@@ -377,27 +389,33 @@ final class CaptureOutputSession {
     ) -> (result: CaptureSampleResult, needsPresenterReady: Bool) {
         callbackLock.withLock {
             guard sampleBuffer.isValid else { return (.ignored, false) }
-            if saveFrameRequested {
-                saveFrameRequested = false
-                saveFrameHandler?(sampleBuffer)
-            }
-            guard !isPaused else { return (.ignored, false) }
-
-            var adjustedSample = sampleBuffer
-            if isResumePending {
-                isResumePending = false
-                guard let lastPTS else { return (.ignored, false) }
-                var pts = CMSampleBufferGetPresentationTimeStamp(adjustedSample)
-                if timeOffset.flags.contains(.valid) { pts = CMTimeSubtract(pts, timeOffset) }
-                if lastPTS.flags.contains(.valid) {
-                    let offset = CMTimeSubtract(pts, lastPTS)
-                    timeOffset = timeOffset == .zero ? offset : CMTimeAdd(timeOffset, offset)
-                }
-            }
 
             switch kind {
             case .screen(let isComplete, let presenterOverlayX):
-                guard !isAudioOnly, isComplete else { return (.ignored, false) }
+                guard !isAudioOnly, isComplete, sampleBuffer.imageBuffer != nil else {
+                    return (.ignored, false)
+                }
+                var adjustedSample = sampleBuffer
+                do {
+                    try configurationOwner.windowSanitizer?.sanitize(adjustedSample)
+                } catch {
+                    return (.failed, false)
+                }
+                if saveFrameRequested {
+                    saveFrameRequested = false
+                    saveFrameHandler?(adjustedSample)
+                }
+                guard !isPaused else { return (.ignored, false) }
+                if isResumePending {
+                    isResumePending = false
+                    guard let lastPTS else { return (.ignored, false) }
+                    var pts = CMSampleBufferGetPresentationTimeStamp(adjustedSample)
+                    if timeOffset.flags.contains(.valid) { pts = CMTimeSubtract(pts, timeOffset) }
+                    if lastPTS.flags.contains(.valid) {
+                        let offset = CMTimeSubtract(pts, lastPTS)
+                        timeOffset = timeOffset == .zero ? offset : CMTimeAdd(timeOffset, offset)
+                    }
+                }
                 startWriterIfNeeded(sampleBuffer: adjustedSample, now: now)
                 if timeOffset > .zero {
                     adjustedSample = Self.adjustTime(sample: adjustedSample, by: timeOffset) ?? adjustedSample
@@ -420,18 +438,25 @@ final class CaptureOutputSession {
                     }
                 }
                 guard !isPresenterOn || isCameraReady else { return (.ignored, needsPresenterReady) }
-                if firstFrame == nil { firstFrame = adjustedSample }
                 guard let videoInput, videoInput.isReadyForMoreMediaData else {
                     return (.ignored, needsPresenterReady)
                 }
-                do {
-                    try configurationOwner.windowSanitizer?.sanitize(adjustedSample)
-                } catch {
-                    return (.failed, false)
-                }
+                if firstFrame == nil { firstFrame = adjustedSample }
                 return (videoInput.append(adjustedSample) ? .appended : .appendFailed, needsPresenterReady)
 
             case .audio:
+                guard !isPaused else { return (.ignored, false) }
+                let adjustedSample = sampleBuffer
+                if isResumePending {
+                    isResumePending = false
+                    guard let lastPTS else { return (.ignored, false) }
+                    var pts = CMSampleBufferGetPresentationTimeStamp(adjustedSample)
+                    if timeOffset.flags.contains(.valid) { pts = CMTimeSubtract(pts, timeOffset) }
+                    if lastPTS.flags.contains(.valid) {
+                        let offset = CMTimeSubtract(pts, lastPTS)
+                        timeOffset = timeOffset == .zero ? offset : CMTimeAdd(timeOffset, offset)
+                    }
+                }
                 if isAudioOnly {
                     startWriterIfNeeded(sampleBuffer: adjustedSample, now: now)
                     do {
@@ -464,6 +489,21 @@ final class CaptureOutputSession {
             return microphoneStopHandler
         }
         handler?()
+    }
+
+    var standaloneAudioFile: AVAudioFile? {
+        callbackLock.withLock { standaloneAudioFileStorage }
+    }
+
+    func releaseStandaloneAudioResources() {
+        callbackLock.withLock {
+            if let standaloneAudioFileStorage {
+                standaloneAudioReleaseHandler?(standaloneAudioFileStorage)
+            }
+            standaloneAudioReleaseHandler = nil
+            standaloneAudioAppender = nil
+            standaloneAudioFileStorage = nil
+        }
     }
 
     func requestSaveFrame() {
@@ -568,6 +608,12 @@ final class CaptureOutputSession {
 }
 
 final class CaptureOutputSessionStore {
+    enum StopMatch {
+        case active(CaptureSessionLease)
+        case draining
+        case unmatched
+    }
+
     private let lock = NSLock()
     private var currentSession: CaptureOutputSession?
     private var retiredSessions = [UUID: CaptureOutputSession]()
@@ -626,6 +672,19 @@ final class CaptureOutputSessionStore {
         }
     }
 
+    func matchForStop(from stream: AnyObject) -> StopMatch {
+        lock.withLock {
+            if currentSession?.owns(stream: stream) == true,
+               let lease = currentSession?.acquire() {
+                return .active(lease)
+            }
+            if retiredSessions.values.contains(where: { $0.owns(stream: stream) }) {
+                return .draining
+            }
+            return .unmatched
+        }
+    }
+
     @discardableResult
     func deactivate(
         _ session: CaptureOutputSession,
@@ -680,7 +739,10 @@ final class CaptureOutputCore {
         let outcome = lease.session.process(sampleBuffer, kind: kind, now: now)
         if outcome.needsPresenterReady { presenterReadyHandler(lease.session) }
         if outcome.result == .failed {
-            _ = store.deactivate(lease.session) { [failureHandler] in failureHandler(lease.session) }
+            _ = store.deactivate(lease.session) { [failureHandler] in
+                lease.session.releaseStandaloneAudioResources()
+                failureHandler(lease.session)
+            }
         }
         return outcome.result
     }
@@ -689,17 +751,29 @@ final class CaptureOutputCore {
         from stream: AnyObject,
         afterLeaseAcquired: () -> Void = {}
     ) -> Bool {
-        guard let lease = store.acquire(for: stream) else { return false }
-        defer { lease.release() }
-        afterLeaseAcquired()
-        return store.deactivate(lease.session) { [stopHandler] in stopHandler(lease.session) }
+        switch store.matchForStop(from: stream) {
+        case .draining:
+            return true
+        case .unmatched:
+            return false
+        case .active(let lease):
+            defer { lease.release() }
+            afterLeaseAcquired()
+            return store.deactivate(lease.session) { [stopHandler] in
+                lease.session.releaseStandaloneAudioResources()
+                stopHandler(lease.session)
+            }
+        }
     }
 
     func handleStartFailure(
         _ session: CaptureOutputSession,
         onDrained: @escaping SessionHandler
     ) -> Bool {
-        store.deactivate(session) { onDrained(session) }
+        store.deactivate(session) {
+            session.releaseStandaloneAudioResources()
+            onDrained(session)
+        }
     }
 
     func handlePresenterStarted(from stream: AnyObject) -> CaptureOutputSession? {
@@ -720,5 +794,25 @@ final class CaptureOutputCore {
         guard let lease = store.acquire(session) else { return }
         defer { lease.release() }
         session.markPresenterReady()
+    }
+}
+
+final class CaptureStreamCallbackAdapter {
+    private let core: CaptureOutputCore
+
+    init(core: CaptureOutputCore) {
+        self.core = core
+    }
+
+    func handleSample(
+        from stream: AnyObject,
+        sampleBuffer: CMSampleBuffer,
+        kind: CaptureSampleKind
+    ) -> CaptureSampleResult {
+        core.handleSample(from: stream, sampleBuffer: sampleBuffer, kind: kind)
+    }
+
+    func handleStop(from stream: AnyObject) -> Bool {
+        core.handleStop(from: stream)
     }
 }

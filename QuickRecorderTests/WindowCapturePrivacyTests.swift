@@ -272,6 +272,40 @@ final class WindowCapturePrivacyTests: XCTestCase {
         XCTAssertTrue(store.session(for: streamB) === sessionB)
     }
 
+    func testRepeatedStopDuringDrainIsHandledWithoutEarlyFinalization() {
+        let streamA = NSObject()
+        let streamB = NSObject()
+        let store = CaptureOutputSessionStore()
+        let finalizedSessions = LockedSessionIDs()
+        let sessionA = makeCaptureSession(stream: streamA, mode: .transparent, sink: TestVideoDestination())
+        let sessionB = makeCaptureSession(stream: streamB, mode: .opaque, sink: TestVideoDestination())
+        let core = CaptureOutputCore(
+            store: store,
+            failureHandler: { _ in XCTFail("sample processing should not fail") },
+            stopHandler: { session in
+                finalizedSessions.append(session.id)
+                store.release(session)
+            }
+        )
+
+        XCTAssertTrue(store.install(sessionA))
+        let heldLease = store.acquire(sessionA)
+        XCTAssertNotNil(heldLease)
+
+        XCTAssertTrue(core.handleStop(from: streamA))
+        XCTAssertTrue(
+            core.handleStop(from: streamA),
+            "a repeated stop for a retired matching stream must be handled instead of falling through"
+        )
+        XCTAssertTrue(finalizedSessions.values.isEmpty, "A must not finalize while its callback lease is held")
+        XCTAssertFalse(store.install(sessionB), "B must remain blocked while A is draining")
+
+        heldLease?.release()
+        XCTAssertEqual(finalizedSessions.values, [sessionA.id], "A must finalize exactly once")
+        XCTAssertTrue(store.install(sessionB))
+        XCTAssertTrue(store.session(for: streamB) === sessionB)
+    }
+
     func testQueuedOldCallbackIsRejectedAfterDrainAndReplacement() throws {
         let streamA = NSObject()
         let streamB = NSObject()
@@ -430,6 +464,406 @@ final class WindowCapturePrivacyTests: XCTestCase {
         XCTAssertTrue(sink.observedSanitizedFrame, "the writer destination must see the sanitized frame")
     }
 
+    func testSaveRequestPersistsUntilAnEligibleScreenFrame() throws {
+        let stream = NSObject()
+        let store = CaptureOutputSessionStore()
+        var savedFrames = 0
+        let session = makeCaptureSession(
+            stream: stream,
+            mode: .transparent,
+            sink: TestVideoDestination(),
+            saveFrameHandler: { _ in savedFrames += 1 }
+        )
+        let core = CaptureOutputCore(
+            store: store,
+            failureHandler: { _ in XCTFail("sample processing should not fail") },
+            stopHandler: { _ in XCTFail("capture should not stop") }
+        )
+        let sample = try makeSampleBuffer(imageBuffer: makeRoundedWindow(over: sentinels[0]))
+
+        XCTAssertTrue(store.install(session))
+        session.requestSaveFrame()
+
+        XCTAssertEqual(core.handleSample(from: stream, sampleBuffer: sample, kind: .audio), .ignored)
+        XCTAssertEqual(savedFrames, 0, "an audio callback must not consume a pending screenshot")
+        XCTAssertTrue(session.stateSnapshot().saveFrameRequested)
+
+        XCTAssertEqual(
+            core.handleSample(
+                from: stream,
+                sampleBuffer: sample,
+                kind: .screen(isComplete: false, presenterOverlayX: nil)
+            ),
+            .ignored
+        )
+        XCTAssertEqual(savedFrames, 0, "an incomplete screen frame must not consume a pending screenshot")
+        XCTAssertTrue(session.stateSnapshot().saveFrameRequested)
+
+        XCTAssertEqual(
+            core.handleSample(
+                from: stream,
+                sampleBuffer: sample,
+                kind: .screen(isComplete: true, presenterOverlayX: nil)
+            ),
+            .appended
+        )
+        XCTAssertEqual(savedFrames, 1)
+        XCTAssertFalse(session.stateSnapshot().saveFrameRequested)
+    }
+
+    func testSavedWindowFrameIsSanitizedBeforeTheSaveHandlerRuns() throws {
+        let stream = NSObject()
+        let store = CaptureOutputSessionStore()
+        var savedFrameWasSanitized = false
+        let session = makeCaptureSession(
+            stream: stream,
+            mode: .transparent,
+            sink: TestVideoDestination(),
+            saveFrameHandler: { [self] sample in
+                guard let imageBuffer = sample.imageBuffer,
+                      let result = try? inspectExterior(
+                        of: imageBuffer,
+                        mode: .transparent,
+                        sentinel: sentinels[0]
+                      ) else { return }
+                savedFrameWasSanitized = result.sentinelPixels == 0 && result.invalidPixels == 0
+            }
+        )
+        let core = CaptureOutputCore(
+            store: store,
+            failureHandler: { _ in XCTFail("sample processing should not fail") },
+            stopHandler: { _ in XCTFail("capture should not stop") }
+        )
+        let sample = try makeSampleBuffer(imageBuffer: makeRoundedWindow(over: sentinels[0]))
+
+        XCTAssertTrue(store.install(session))
+        session.requestSaveFrame()
+        XCTAssertEqual(
+            core.handleSample(
+                from: stream,
+                sampleBuffer: sample,
+                kind: .screen(isComplete: true, presenterOverlayX: nil)
+            ),
+            .appended
+        )
+        XCTAssertTrue(savedFrameWasSanitized, "save output must never observe raw exterior RGB")
+    }
+
+    func testSaveRequestRejectsInvalidAndImageLessScreenFrames() throws {
+        let stream = NSObject()
+        let store = CaptureOutputSessionStore()
+        var savedFrames = 0
+        let session = makeCaptureSession(
+            stream: stream,
+            mode: .transparent,
+            sink: TestVideoDestination(),
+            saveFrameHandler: { _ in savedFrames += 1 }
+        )
+        let invalidSample = try makeSampleBuffer(imageBuffer: makeRoundedWindow(over: sentinels[0]))
+        CMSampleBufferInvalidate(invalidSample)
+        let imageLessSample = try makeImageLessSampleBuffer()
+
+        XCTAssertTrue(store.install(session))
+        session.requestSaveFrame()
+        XCTAssertEqual(
+            core(for: store).handleSample(
+                from: stream,
+                sampleBuffer: invalidSample,
+                kind: .screen(isComplete: true, presenterOverlayX: nil)
+            ),
+            .ignored
+        )
+        XCTAssertEqual(savedFrames, 0)
+        XCTAssertTrue(session.stateSnapshot().saveFrameRequested)
+
+        XCTAssertEqual(
+            core(for: store).handleSample(
+                from: stream,
+                sampleBuffer: imageLessSample,
+                kind: .screen(isComplete: true, presenterOverlayX: nil)
+            ),
+            .ignored
+        )
+        XCTAssertEqual(savedFrames, 0)
+        XCTAssertTrue(session.stateSnapshot().saveFrameRequested)
+    }
+
+    func testAudioOnlySessionCannotConsumeSaveRequest() throws {
+        let stream = NSObject()
+        let store = CaptureOutputSessionStore()
+        var savedFrames = 0
+        let session = makeCaptureSession(
+            stream: stream,
+            mode: .transparent,
+            sink: TestVideoDestination(),
+            isAudioOnly: true,
+            saveFrameHandler: { _ in savedFrames += 1 }
+        )
+        let sample = try makeSampleBuffer(imageBuffer: makeRoundedWindow(over: sentinels[0]))
+
+        XCTAssertTrue(store.install(session))
+        session.requestSaveFrame()
+        XCTAssertEqual(
+            core(for: store).handleSample(
+                from: stream,
+                sampleBuffer: sample,
+                kind: .screen(isComplete: true, presenterOverlayX: nil)
+            ),
+            .ignored
+        )
+        XCTAssertEqual(savedFrames, 0)
+        XCTAssertTrue(session.stateSnapshot().saveFrameRequested)
+    }
+
+    func testPausedSaveRequestUsesAnEligibleSanitizedScreenFrame() throws {
+        let stream = NSObject()
+        let store = CaptureOutputSessionStore()
+        var savedFrameWasSanitized = false
+        let session = makeCaptureSession(
+            stream: stream,
+            mode: .transparent,
+            sink: TestVideoDestination(),
+            saveFrameHandler: { [self] sample in
+                guard let imageBuffer = sample.imageBuffer,
+                      let result = try? inspectExterior(
+                        of: imageBuffer,
+                        mode: .transparent,
+                        sentinel: sentinels[0]
+                      ) else { return }
+                savedFrameWasSanitized = result.sentinelPixels == 0 && result.invalidPixels == 0
+            }
+        )
+        let sample = try makeSampleBuffer(imageBuffer: makeRoundedWindow(over: sentinels[0]))
+
+        XCTAssertTrue(store.install(session))
+        XCTAssertTrue(session.togglePause())
+        session.requestSaveFrame()
+        XCTAssertEqual(
+            core(for: store).handleSample(
+                from: stream,
+                sampleBuffer: sample,
+                kind: .screen(isComplete: true, presenterOverlayX: nil)
+            ),
+            .ignored
+        )
+        XCTAssertTrue(savedFrameWasSanitized)
+        XCTAssertFalse(session.stateSnapshot().saveFrameRequested)
+    }
+
+    func testPreviewDoesNotRetainAnUnreadyUnsanitizedFrame() throws {
+        let stream = NSObject()
+        let sink = TestVideoDestination()
+        sink.isReadyForMoreMediaData = false
+        let store = CaptureOutputSessionStore()
+        let session = makeCaptureSession(stream: stream, mode: .transparent, sink: sink)
+        let core = CaptureOutputCore(
+            store: store,
+            failureHandler: { _ in XCTFail("sample processing should not fail") },
+            stopHandler: { _ in XCTFail("capture should not stop") }
+        )
+        let sample = try makeSampleBuffer(imageBuffer: makeRoundedWindow(over: sentinels[0]))
+
+        XCTAssertTrue(store.install(session))
+        XCTAssertEqual(
+            core.handleSample(
+                from: stream,
+                sampleBuffer: sample,
+                kind: .screen(isComplete: true, presenterOverlayX: nil)
+            ),
+            .ignored
+        )
+
+        let retainedFrame = session.capturedFirstFrame()
+        XCTAssertNil(retainedFrame, "an unready writer must not retain a preview frame")
+        if let retainedBuffer = retainedFrame?.imageBuffer {
+            let result = try inspectExterior(
+                of: retainedBuffer,
+                mode: .transparent,
+                sentinel: sentinels[0]
+            )
+            XCTAssertEqual(result.sentinelPixels, 0, "a retained preview must never expose exterior RGB")
+            XCTAssertEqual(result.invalidPixels, 0, "a retained preview must use transparent sanitized corners")
+        }
+    }
+
+    func testProductionPresenterGeometryChangeResumesAfterSafeDelay() throws {
+        let stream = NSObject()
+        let sink = TestVideoDestination()
+        let store = CaptureOutputSessionStore()
+        let session = makeCaptureSession(stream: stream, mode: .transparent, sink: sink)
+        let appSource = try projectSource("QuickRecorder/QuickRecorderApp.swift")
+        let productionWiresPresenterReadiness = appSource.contains("presenterReadyHandler:")
+        var core: CaptureOutputCore!
+        core = CaptureOutputCore(
+            store: store,
+            failureHandler: { _ in XCTFail("sample processing should not fail") },
+            stopHandler: { _ in XCTFail("capture should not stop") },
+            presenterReadyHandler: { outputSession in
+                guard productionWiresPresenterReadiness else { return }
+                core.markPresenterReady(outputSession)
+            }
+        )
+        let firstSample = try makeSampleBuffer(
+            imageBuffer: makeRoundedWindow(over: sentinels[0]),
+            presentationTime: .zero
+        )
+        let secondSample = try makeSampleBuffer(
+            imageBuffer: makeRoundedWindow(over: sentinels[1]),
+            presentationTime: CMTime(value: 1, timescale: 30)
+        )
+
+        XCTAssertTrue(store.install(session))
+        XCTAssertNotNil(core.handlePresenterStarted(from: stream))
+        XCTAssertEqual(
+            core.handleSample(
+                from: stream,
+                sampleBuffer: firstSample,
+                kind: .screen(isComplete: true, presenterOverlayX: 0)
+            ),
+            .ignored
+        )
+
+        XCTAssertEqual(
+            core.handleSample(
+                from: stream,
+                sampleBuffer: secondSample,
+                kind: .screen(isComplete: true, presenterOverlayX: 0)
+            ),
+            .appended,
+            "production presenter readiness must resume capture after the configured safe delay"
+        )
+        XCTAssertEqual(sink.appendCount, 1)
+    }
+
+    func testStandaloneAudioFileClosesBeforePostprocessingHandlerRuns() throws {
+        let stream = NSObject()
+        let store = CaptureOutputSessionStore()
+        let temporaryURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("capture-audio-lifetime-\(UUID().uuidString)")
+            .appendingPathExtension("caf")
+        defer { try? FileManager.default.removeItem(at: temporaryURL) }
+        weak var weakAudioFile: AVAudioFile?
+        var externalAudioFile: AVAudioFile?
+        var lifecycleEvents = [String]()
+        var session: CaptureOutputSession!
+
+        try autoreleasepool {
+            let format = try XCTUnwrap(
+                AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1)
+            )
+            let audioFile = try AVAudioFile(forWriting: temporaryURL, settings: format.settings)
+            weakAudioFile = audioFile
+            externalAudioFile = audioFile
+            session = CaptureOutputSession(
+                stream: stream,
+                outputJob: nil,
+                writer: nil,
+                videoInput: nil,
+                systemAudioInput: nil,
+                standaloneAudioFile: audioFile,
+                configurationOwner: CaptureConfigurationOwner(
+                    windowMode: .transparent,
+                    fallbackBackgroundColor: nil
+                ),
+                sampleQueue: DispatchQueue(label: "WindowCapturePrivacyTests.audio-lifetime"),
+                isAudioOnly: true,
+                standaloneAudioAppender: { [audioFile] _ in withExtendedLifetime(audioFile) {} },
+                standaloneAudioReleaseHandler: { releasedAudioFile in
+                    XCTAssertTrue(externalAudioFile === releasedAudioFile)
+                    lifecycleEvents.append("external-release")
+                    externalAudioFile = nil
+                }
+            )
+        }
+
+        var audioWasOpenWhenPostprocessingBegan: Bool?
+        let core = CaptureOutputCore(
+            store: store,
+            failureHandler: { _ in XCTFail("sample processing should not fail") },
+            stopHandler: { stoppedSession in
+                lifecycleEvents.append("postprocessing")
+                audioWasOpenWhenPostprocessingBegan = weakAudioFile != nil
+                store.release(stoppedSession)
+            }
+        )
+
+        XCTAssertNotNil(weakAudioFile)
+        XCTAssertNotNil(externalAudioFile)
+        XCTAssertTrue(store.install(session))
+        XCTAssertTrue(core.handleStop(from: stream))
+        XCTAssertEqual(lifecycleEvents, ["external-release", "postprocessing"])
+        XCTAssertNil(externalAudioFile)
+        XCTAssertEqual(
+            audioWasOpenWhenPostprocessingBegan,
+            false,
+            "standalone audio ownership must be released before conversion or packaging starts"
+        )
+        XCTAssertNil(weakAudioFile)
+    }
+
+    func testStartFailureReleasesStandaloneAudioBeforeCleanup() throws {
+        let stream = NSObject()
+        let store = CaptureOutputSessionStore()
+        let temporaryURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("failed-start-audio-lifetime-\(UUID().uuidString)")
+            .appendingPathExtension("caf")
+        defer { try? FileManager.default.removeItem(at: temporaryURL) }
+        weak var weakAudioFile: AVAudioFile?
+        var externalAudioFile: AVAudioFile?
+        var lifecycleEvents = [String]()
+        var session: CaptureOutputSession!
+
+        try autoreleasepool {
+            let format = try XCTUnwrap(
+                AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1)
+            )
+            let audioFile = try AVAudioFile(forWriting: temporaryURL, settings: format.settings)
+            weakAudioFile = audioFile
+            externalAudioFile = audioFile
+            session = CaptureOutputSession(
+                stream: stream,
+                outputJob: nil,
+                writer: nil,
+                videoInput: nil,
+                systemAudioInput: nil,
+                standaloneAudioFile: audioFile,
+                configurationOwner: CaptureConfigurationOwner(
+                    windowMode: .transparent,
+                    fallbackBackgroundColor: nil
+                ),
+                sampleQueue: DispatchQueue(label: "WindowCapturePrivacyTests.failed-start-audio"),
+                isAudioOnly: true,
+                standaloneAudioAppender: { [audioFile] _ in withExtendedLifetime(audioFile) {} },
+                standaloneAudioReleaseHandler: { releasedAudioFile in
+                    XCTAssertTrue(externalAudioFile === releasedAudioFile)
+                    lifecycleEvents.append("external-release")
+                    externalAudioFile = nil
+                }
+            )
+        }
+        let core = CaptureOutputCore(
+            store: store,
+            failureHandler: { _ in XCTFail("sample processing should not fail") },
+            stopHandler: { _ in XCTFail("stream should not stop") }
+        )
+
+        XCTAssertTrue(store.install(session))
+        let heldLease = store.acquire(session)
+        XCTAssertNotNil(heldLease)
+        XCTAssertTrue(core.handleStartFailure(session) { failedSession in
+            lifecycleEvents.append("cleanup")
+            XCTAssertNil(weakAudioFile)
+            store.release(failedSession)
+        })
+        XCTAssertTrue(lifecycleEvents.isEmpty)
+        XCTAssertNotNil(weakAudioFile)
+
+        heldLease?.release()
+        XCTAssertEqual(lifecycleEvents, ["external-release", "cleanup"])
+        XCTAssertNil(externalAudioFile)
+        XCTAssertNil(weakAudioFile)
+    }
+
     func testSessionElapsedTimeFreezesWhilePausedAndExcludesThePause() throws {
         let stream = NSObject()
         let store = CaptureOutputSessionStore()
@@ -463,10 +897,73 @@ final class WindowCapturePrivacyTests: XCTestCase {
 
     func testProductionCaptureConfigurationRetainsAndAppliesItsOwner() throws {
         let source = try projectSource("QuickRecorder/RecordEngine.swift")
+        let privacySource = try projectSource("QuickRecorder/WindowCapturePrivacy.swift")
 
         XCTAssertTrue(source.contains("let configurationOwner = CaptureConfigurationOwner("))
         XCTAssertTrue(source.contains("configurationOwner.apply(to: conf)"))
         XCTAssertTrue(source.contains("configurationOwner: configurationOwner"))
+        XCTAssertTrue(source.contains("CaptureStreamConstruction.build(retaining: configurationOwner)"))
+        XCTAssertTrue(privacySource.contains("withExtendedLifetime(owner) { builder() }"))
+    }
+
+    func testStreamConstructionSeamKeepsItsOwnerAliveThroughConstruction() {
+        weak var weakOwner: LifetimeProbe?
+        var ownerWasAliveDuringConstruction = false
+
+        autoreleasepool {
+            var owner: LifetimeProbe? = LifetimeProbe()
+            weakOwner = owner
+            let result = CaptureStreamConstruction.build(retaining: owner!) {
+                owner = nil
+                ownerWasAliveDuringConstruction = weakOwner != nil
+                return "constructed"
+            }
+            XCTAssertEqual(result, "constructed")
+        }
+
+        XCTAssertTrue(ownerWasAliveDuringConstruction)
+        XCTAssertNil(weakOwner)
+    }
+
+    func testProductionCallbackAdapterForwardsSamplesAndExactSessionStops() throws {
+        let stream = NSObject()
+        let sink = TestVideoDestination()
+        let store = CaptureOutputSessionStore()
+        let finalizedSessions = LockedSessionIDs()
+        let session = makeCaptureSession(stream: stream, mode: .transparent, sink: sink)
+        let core = CaptureOutputCore(
+            store: store,
+            failureHandler: { _ in XCTFail("sample processing should not fail") },
+            stopHandler: { stoppedSession in
+                finalizedSessions.append(stoppedSession.id)
+                store.release(stoppedSession)
+            }
+        )
+        let adapter = CaptureStreamCallbackAdapter(core: core)
+        let sample = try makeSampleBuffer(imageBuffer: makeRoundedWindow(over: sentinels[0]))
+
+        XCTAssertTrue(store.install(session))
+        XCTAssertEqual(
+            adapter.handleSample(
+                from: stream,
+                sampleBuffer: sample,
+                kind: .screen(isComplete: true, presenterOverlayX: nil)
+            ),
+            .appended
+        )
+        XCTAssertEqual(sink.appendCount, 1)
+        XCTAssertTrue(adapter.handleStop(from: stream))
+        XCTAssertEqual(finalizedSessions.values, [session.id])
+    }
+
+    func testCaptureDelegatesAndUIStopUseTheProductionCallbackAdapter() throws {
+        let engineSource = try projectSource("QuickRecorder/RecordEngine.swift")
+        let contextSource = try projectSource("QuickRecorder/SCContext.swift")
+
+        XCTAssertTrue(engineSource.contains("captureStreamCallbackAdapter.handleSample("))
+        XCTAssertTrue(engineSource.contains("captureStreamCallbackAdapter.handleStop(from: stream)"))
+        XCTAssertTrue(engineSource.contains("session.releaseStandaloneAudioResources()"))
+        XCTAssertTrue(contextSource.contains("captureStreamCallbackAdapter.handleStop(from: activeStream)"))
     }
 
     func testFFmpegReadsTransparentAndOpaqueFixtures() throws {
@@ -596,7 +1093,10 @@ final class WindowCapturePrivacyTests: XCTestCase {
         return buffer
     }
 
-    private func makeSampleBuffer(imageBuffer: CVPixelBuffer) throws -> CMSampleBuffer {
+    private func makeSampleBuffer(
+        imageBuffer: CVPixelBuffer,
+        presentationTime: CMTime = .zero
+    ) throws -> CMSampleBuffer {
         var formatDescription: CMVideoFormatDescription?
         XCTAssertEqual(
             CMVideoFormatDescriptionCreateForImageBuffer(
@@ -608,7 +1108,7 @@ final class WindowCapturePrivacyTests: XCTestCase {
         )
         var timing = CMSampleTimingInfo(
             duration: CMTime(value: 1, timescale: 30),
-            presentationTimeStamp: .zero,
+            presentationTimeStamp: presentationTime,
             decodeTimeStamp: .invalid
         )
         var sampleBuffer: CMSampleBuffer?
@@ -618,6 +1118,28 @@ final class WindowCapturePrivacyTests: XCTestCase {
                 imageBuffer: imageBuffer,
                 formatDescription: try XCTUnwrap(formatDescription),
                 sampleTiming: &timing,
+                sampleBufferOut: &sampleBuffer
+            ),
+            noErr
+        )
+        return try XCTUnwrap(sampleBuffer)
+    }
+
+    private func makeImageLessSampleBuffer() throws -> CMSampleBuffer {
+        var sampleBuffer: CMSampleBuffer?
+        XCTAssertEqual(
+            CMSampleBufferCreate(
+                allocator: kCFAllocatorDefault,
+                dataBuffer: nil,
+                dataReady: true,
+                makeDataReadyCallback: nil,
+                refcon: nil,
+                formatDescription: nil,
+                sampleCount: 0,
+                sampleTimingEntryCount: 0,
+                sampleTimingArray: nil,
+                sampleSizeEntryCount: 0,
+                sampleSizeArray: nil,
                 sampleBufferOut: &sampleBuffer
             ),
             noErr
@@ -644,7 +1166,9 @@ final class WindowCapturePrivacyTests: XCTestCase {
     private func makeCaptureSession(
         stream: AnyObject,
         mode: WindowCaptureMode,
-        sink: any CaptureVideoSampleDestination
+        sink: any CaptureVideoSampleDestination,
+        isAudioOnly: Bool = false,
+        saveFrameHandler: ((CMSampleBuffer) -> Void)? = nil
     ) -> CaptureOutputSession {
         CaptureOutputSession(
             stream: stream,
@@ -655,7 +1179,16 @@ final class WindowCapturePrivacyTests: XCTestCase {
             standaloneAudioFile: nil,
             configurationOwner: CaptureConfigurationOwner(windowMode: mode, fallbackBackgroundColor: nil),
             sampleQueue: DispatchQueue(label: "WindowCapturePrivacyTests.\(mode.rawValue)"),
-            isAudioOnly: false
+            isAudioOnly: isAudioOnly,
+            saveFrameHandler: saveFrameHandler
+        )
+    }
+
+    private func core(for store: CaptureOutputSessionStore) -> CaptureOutputCore {
+        CaptureOutputCore(
+            store: store,
+            failureHandler: { _ in XCTFail("sample processing should not fail") },
+            stopHandler: { _ in XCTFail("capture should not stop") }
         )
     }
 
@@ -829,3 +1362,5 @@ private final class LockedSessionIDs {
         lock.withLock { storage.append(id) }
     }
 }
+
+private final class LifetimeProbe {}

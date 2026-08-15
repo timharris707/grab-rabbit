@@ -13,6 +13,20 @@ import AVFAudio
 import VideoToolbox
 import AECAudioStream
 
+private final class MainThreadCaptureCleanup: @unchecked Sendable {
+    private var operation: (() -> Void)?
+
+    init(_ operation: @escaping () -> Void) {
+        self.operation = operation
+    }
+
+    func run() {
+        dispatchPrecondition(condition: .onQueue(.main))
+        defer { operation = nil }
+        operation?()
+    }
+}
+
 extension AppDelegate {
     @objc func prepRecord(type: String, screens: SCDisplay?, windows: [SCWindow]?, applications: [SCRunningApplication]?, fastStart: Bool = false) {
         prepRecord(
@@ -360,7 +374,7 @@ extension AppDelegate {
         }
         
         let sampleQueue = DispatchQueue(label: "dev.clickai.grabrabbit.capture.\(sessionID.uuidString)")
-        let stream = withExtendedLifetime(configurationOwner) {
+        let stream = CaptureStreamConstruction.build(retaining: configurationOwner) {
             SCStream(filter: filter, configuration: conf, delegate: self)
         }
         var preconfiguredOutputJob: RecordingOutputJob?
@@ -415,6 +429,9 @@ extension AppDelegate {
                     guard let samples = sampleBuffer.asPCMBuffer else { return }
                     try audioFile?.write(from: samples)
                 } : nil,
+                standaloneAudioReleaseHandler: audioOnly ? { audioFile in
+                    if SCContext.audioFile === audioFile { SCContext.audioFile = nil }
+                } : nil,
                 saveFrameHandler: { [weak self, recordsHDR = recordHDR] sampleBuffer in
                     self?.saveCapturedFrame(sampleBuffer, recordsHDR: recordsHDR)
                 },
@@ -446,12 +463,15 @@ extension AppDelegate {
                     return
                 }
                 if captureOutputCore.handleStartFailure(outputSession, onDrained: { outputSession in
-                    DispatchQueue.main.async {
-                        self.discardCaptureAfterFailedStart(
+                    let cleanup = MainThreadCaptureCleanup { [weak self] in
+                        self?.discardCaptureAfterFailedStart(
                             outputSession,
                             stream: stream,
                             error: recordingError
                         )
+                    }
+                    DispatchQueue.main.async {
+                        cleanup.run()
                     }
                 }) {
                     return
@@ -504,6 +524,7 @@ extension AppDelegate {
         stream.stopCapture()
         if stopsMicrophone { session.stopMicrophoneCapture() }
         session.writer?.cancelWriting()
+        session.releaseStandaloneAudioResources()
         if SCContext.stream === stream { SCContext.stream = nil }
         if let job = session.outputJob {
             _ = job.discardOutputs(reason: error)
@@ -513,9 +534,6 @@ extension AppDelegate {
         if SCContext.vwInput === session.videoInput as? AVAssetWriterInput { SCContext.vwInput = nil }
         if SCContext.awInput === session.systemAudioInput as? AVAssetWriterInput { SCContext.awInput = nil }
         if SCContext.micInput === session.microphoneInput as? AVAssetWriterInput { SCContext.micInput = nil }
-        if let audioFile = session.standaloneAudioFile, SCContext.audioFile === audioFile {
-            SCContext.audioFile = nil
-        }
         SCContext.streamType = nil
         SCContext.showNotification(
             title: "Failed to Record".local,
@@ -765,6 +783,13 @@ extension AppDelegate {
         }
     }
 
+    func schedulePresenterReady(_ session: CaptureOutputSession) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + TimeInterval(poSafeDelay)) { [weak self, weak session] in
+            guard let self, let session else { return }
+            self.captureOutputCore.markPresenterReady(session)
+        }
+    }
+
     private func saveCapturedFrame(_ sampleBuffer: CMSampleBuffer, recordsHDR: Bool) {
         guard sampleBuffer.imageBuffer != nil else { return }
         do {
@@ -859,14 +884,18 @@ extension AppDelegate {
         @unknown default:
             return
         }
-        _ = captureOutputCore.handleSample(from: stream, sampleBuffer: sampleBuffer, kind: kind)
+        _ = captureStreamCallbackAdapter.handleSample(
+            from: stream,
+            sampleBuffer: sampleBuffer,
+            kind: kind
+        )
     }
 
 
     func stream(_ stream: SCStream, didStopWithError error: Error) { // stream error
         print("closing stream with error:\n".local, error,
               "\nthis might be due to the window closing or the user stopping from the sonoma ui".local)
-        _ = captureOutputCore.handleStop(from: stream)
+        _ = captureStreamCallbackAdapter.handleStop(from: stream)
     }
 }
 

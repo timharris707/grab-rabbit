@@ -402,13 +402,10 @@ class SCContext {
     
     static func stopRecording(session expectedSession: CaptureOutputSession? = nil) {
         let sessions = AppDelegate.shared.captureOutputSessions
-        if expectedSession == nil,
-           let activeStream = stream,
-           let activeSession = sessions.session(for: activeStream) {
-            _ = sessions.deactivate(activeSession) {
-                DispatchQueue.main.async { stopRecording(session: activeSession) }
+        if expectedSession == nil, let activeStream = stream {
+            if AppDelegate.shared.captureStreamCallbackAdapter.handleStop(from: activeStream) {
+                return
             }
-            return
         }
 
         let sessionToRelease = expectedSession

@@ -73,7 +73,7 @@ for canvas in 16x9 9x16 square; do
     run_case fixed-clock active "$canvas" camera-only
 done
 
-jq -s '{runs: length, passed: all(.privacySentinelPixelsInRenderedOutput == 0 and .privacySentinelPixelsBeforeCache == 0 and .appendFailures == 0), failures: map(select(.privacySentinelPixelsInRenderedOutput != 0 or .privacySentinelPixelsBeforeCache != 0 or .appendFailures != 0))}' \
+jq -s '{runs: length, passed: all(.privacySentinelPixelsInRenderedOutput == 0 and .privacySentinelPixelsAtCacheIngress == 0 and .appendFailures == 0), failures: map(select(.privacySentinelPixelsInRenderedOutput != 0 or .privacySentinelPixelsAtCacheIngress != 0 or .appendFailures != 0))}' \
     "$output_dir"/runs/*.native.json >"$output_dir/privacy-probe.json"
 
 jq -s '[.[] | {candidate, browserCase, canvas, composition, encodedVideoFrames, writerReadinessWaits, appendFailures, wallSeconds, userCPUSeconds, systemCPUSeconds, maximumResidentBytes, thermalStateBefore, thermalStateAfter, outputDurationSeconds}]' \
@@ -97,8 +97,8 @@ jq -n \
     '{schema: $schema, branch: $branch, commit: $commit, generated_at: $generated_at, host: $host, os: $os, hardware: ($hardware | fromjson), toolchain: {swift: $swift, ffprobe: $ffmpeg}, config: $config, coverage: {camera_browser_runs: 12, camera_only_runs: 3, shapes: ["1920x1080", "1080x1920", "1080x1080"], source_cases: ["static", "low-change", "active"]}, limitations: ["synthetic camera/browser/audio, not ScreenCaptureKit or physical AVCaptureDevice", "CPU time/RSS/thermal measured in process; GPU and ANE pressure require interactive sudo powermetrics", "offline asset-writer throughput, not wall-clock capture callback jitter", "injected writer-unready windows are deterministic; actual adaptor readiness waits are separately counted"]}' \
     >"$manifest_tmp"
 
-find "$output_dir" -type f ! -name 'manifest.tmp.json' ! -name 'manifest.json' ! -name 'SHA256SUMS' -print0 \
-    | sort -z | xargs -0 shasum -a 256 >"$output_dir/SHA256SUMS"
+(cd "$output_dir" && find . -type f ! -name 'manifest.tmp.json' ! -name 'manifest.json' ! -name 'SHA256SUMS' -print0 \
+    | sort -z | xargs -0 shasum -a 256 >SHA256SUMS)
 jq --rawfile hashes "$output_dir/SHA256SUMS" '. + {sha256sums: ($hashes | split("\n") | map(select(length > 0)))}' \
     "$manifest_tmp" >"$output_dir/manifest.json"
 rm "$manifest_tmp"

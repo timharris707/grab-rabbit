@@ -61,8 +61,8 @@ jq -n \
     '{schema: $schema, branch: $branch, commit: $commit, generated_at: $generated_at, host: $host, os: $os, hardware: ($hardware | fromjson), toolchain: $swift, config: $config, limitations: ["synthetic timing, not wall-clock runtime", "no playable media", "no physical camera or ScreenCaptureKit/TCC", "resource metrics deferred to Mac Mini runtime"]}' \
     >"$manifest_tmp"
 
-find "$output_dir" -type f ! -name 'manifest.tmp.json' ! -name 'manifest.json' ! -name 'SHA256SUMS' -print0 \
-    | sort -z | xargs -0 shasum -a 256 >"$output_dir/SHA256SUMS"
+(cd "$output_dir" && find . -type f ! -name 'manifest.tmp.json' ! -name 'manifest.json' ! -name 'SHA256SUMS' -print0 \
+    | sort -z | xargs -0 shasum -a 256 >SHA256SUMS)
 jq --rawfile hashes "$output_dir/SHA256SUMS" '. + {sha256sums: ($hashes | split("\n") | map(select(length > 0)))}' \
     "$manifest_tmp" >"$output_dir/manifest.json"
 rm "$manifest_tmp"

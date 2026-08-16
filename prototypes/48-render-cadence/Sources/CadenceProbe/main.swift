@@ -140,7 +140,7 @@ struct NativeMetrics: Codable {
     let maximumResidentBytes: Int64
     let thermalStateBefore: String
     let thermalStateAfter: String
-    let privacySentinelPixelsBeforeCache: Int
+    let privacySentinelPixelsAtCacheIngress: Int
     let privacySentinelPixelsInRenderedOutput: Int
     let outputDurationSeconds: Double
 }
@@ -388,6 +388,22 @@ struct NativeRenderer {
         getrusage(RUSAGE_SELF, &usageBefore)
         let wallStart = ContinuousClock.now
         let thermalBefore = thermalDescription(ProcessInfo.processInfo.thermalState)
+        let privacyProbe = WindowPrivacyBoundary.sanitize(
+            RawBrowserFrame(
+                sequence: 0,
+                pts: 0,
+                pixels: [
+                    WindowPrivacyBoundary.exteriorSentinel,
+                    0xff336699,
+                    WindowPrivacyBoundary.exteriorSentinel,
+                ]
+            )
+        )
+        var privacyCache = FrameCache()
+        privacyCache.store(privacyProbe)
+        let sentinelPixelsAtCacheIngress = privacyCache.latest?.pixels.filter {
+            $0 == WindowPrivacyBoundary.exteriorSentinel
+        }.count ?? -1
         var waits = 0
         var failures = 0
         var renderedSentinels = 0
@@ -467,7 +483,7 @@ struct NativeRenderer {
             maximumResidentBytes: Int64(usageAfter.ru_maxrss),
             thermalStateBefore: thermalBefore,
             thermalStateAfter: thermalDescription(ProcessInfo.processInfo.thermalState),
-            privacySentinelPixelsBeforeCache: 0,
+            privacySentinelPixelsAtCacheIngress: sentinelPixelsAtCacheIngress,
             privacySentinelPixelsInRenderedOutput: renderedSentinels,
             outputDurationSeconds: lastVideoPTS + 1.0 / 30.0
         )

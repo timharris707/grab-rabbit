@@ -1347,18 +1347,28 @@ final class CaptureStreamCallbackAdapter {
 }
 
 final class CaptureMicrophoneCallbackRoute {
+    let callbackQueue: DispatchQueue
+
     private weak var outputSession: CaptureOutputSession?
     private var callbackAdapter: CaptureStreamCallbackAdapter?
+
+    init(callbackQueue: DispatchQueue) {
+        self.callbackQueue = callbackQueue
+    }
 
     func configure(
         session: CaptureOutputSession,
         callbackAdapter: CaptureStreamCallbackAdapter
     ) {
-        outputSession = session
-        self.callbackAdapter = callbackAdapter
+        dispatchPrecondition(condition: .notOnQueue(callbackQueue))
+        callbackQueue.sync {
+            outputSession = session
+            self.callbackAdapter = callbackAdapter
+        }
     }
 
     func handle(_ sampleBuffer: CMSampleBuffer) -> CaptureSampleResult {
+        dispatchPrecondition(condition: .onQueue(callbackQueue))
         guard let outputSession, let callbackAdapter else { return .rejected }
         return callbackAdapter.handleMicrophone(
             for: outputSession,
@@ -1366,9 +1376,12 @@ final class CaptureMicrophoneCallbackRoute {
         )
     }
 
-    func clear() {
-        outputSession = nil
-        callbackAdapter = nil
+    func drainAndClear() {
+        dispatchPrecondition(condition: .notOnQueue(callbackQueue))
+        callbackQueue.sync {
+            outputSession = nil
+            callbackAdapter = nil
+        }
     }
 }
 

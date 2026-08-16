@@ -1941,7 +1941,8 @@ final class WindowCapturePrivacyTests: XCTestCase {
         )
         let adapter = CaptureStreamCallbackAdapter(core: core)
         let sample = try makeSampleBuffer(imageBuffer: makeRoundedWindow(over: sentinels[0]))
-        let route = CaptureMicrophoneCallbackRoute()
+        let callbackQueue = DispatchQueue(label: "WindowCapturePrivacyTests.external-microphone")
+        let route = CaptureMicrophoneCallbackRoute(callbackQueue: callbackQueue)
         let results = LockedCaptureSampleResults()
         let forwarded = expectation(description: "off-main microphone sample forwarded")
         let rejectedAfterStop = expectation(description: "stopped route rejects microphone sample")
@@ -1957,7 +1958,7 @@ final class WindowCapturePrivacyTests: XCTestCase {
         )
         XCTAssertTrue(Thread.isMainThread, "capture setup is expected to run on the main thread")
         route.configure(session: session, callbackAdapter: adapter)
-        DispatchQueue(label: "WindowCapturePrivacyTests.external-microphone").async {
+        callbackQueue.async {
             XCTAssertFalse(Thread.isMainThread)
             results.append(route.handle(sample))
             forwarded.fulfill()
@@ -1965,14 +1966,134 @@ final class WindowCapturePrivacyTests: XCTestCase {
         wait(for: [forwarded], timeout: 2)
         XCTAssertEqual(microphoneSink.appendCount, 1, "the injected route must forward to its exact session")
 
-        route.clear()
-        DispatchQueue(label: "WindowCapturePrivacyTests.external-microphone-after-stop").async {
+        route.drainAndClear()
+        callbackQueue.async {
             results.append(route.handle(sample))
             rejectedAfterStop.fulfill()
         }
         wait(for: [rejectedAfterStop], timeout: 2)
         XCTAssertEqual(results.values, [.appended, .rejected])
         XCTAssertEqual(microphoneSink.appendCount, 1, "stop must clear the callback route")
+    }
+
+    func testExternalMicrophoneStopDrainsDelegateQueueBeforeRouteReuse() throws {
+        let streamA = NSObject()
+        let streamB = NSObject()
+        let videoSinkA = TestVideoDestination()
+        let videoSinkB = TestVideoDestination()
+        let microphoneSinkA = TestVideoDestination()
+        let microphoneSinkB = TestVideoDestination()
+        let store = CaptureOutputSessionStore()
+        let callbackQueue = DispatchQueue(label: "WindowCapturePrivacyTests.external-microphone-drain")
+        let route = CaptureMicrophoneCallbackRoute(callbackQueue: callbackQueue)
+        let stopReachedDrain = DispatchSemaphore(value: 0)
+        let stopCompleted = DispatchSemaphore(value: 0)
+        let configureBStarted = DispatchSemaphore(value: 0)
+        let configureBCompleted = DispatchSemaphore(value: 0)
+        let callbackAStarted = DispatchSemaphore(value: 0)
+        let releaseCallbackA = DispatchSemaphore(value: 0)
+        let callbackACompleted = DispatchSemaphore(value: 0)
+        let lateACompleted = DispatchSemaphore(value: 0)
+        let callbackBCompleted = DispatchSemaphore(value: 0)
+        let results = LockedCaptureSampleResults()
+        var core: CaptureOutputCore!
+        core = CaptureOutputCore(
+            store: store,
+            failureHandler: { _ in XCTFail("sample processing should not fail") },
+            stopHandler: { stoppedSession in
+                stopReachedDrain.signal()
+                route.drainAndClear()
+                store.release(stoppedSession)
+            }
+        )
+        let adapter = CaptureStreamCallbackAdapter(core: core)
+        let sessionA = makeCaptureSession(
+            stream: streamA,
+            mode: .transparent,
+            sink: videoSinkA,
+            microphoneInput: microphoneSinkA
+        )
+        let sessionB = makeCaptureSession(
+            stream: streamB,
+            mode: .transparent,
+            sink: videoSinkB,
+            microphoneInput: microphoneSinkB
+        )
+        let sampleA = try makeSampleBuffer(imageBuffer: makeRoundedWindow(over: sentinels[0]))
+        let sampleB = try makeSampleBuffer(imageBuffer: makeRoundedWindow(over: sentinels[1]))
+
+        XCTAssertTrue(store.install(sessionA))
+        XCTAssertEqual(
+            adapter.handleSample(
+                from: streamA,
+                sampleBuffer: sampleA,
+                kind: .screen(isComplete: true, presenterOverlayX: nil)
+            ),
+            .appended
+        )
+        route.configure(session: sessionA, callbackAdapter: adapter)
+        callbackQueue.async {
+            callbackAStarted.signal()
+            _ = releaseCallbackA.wait(timeout: .now() + 2)
+            results.append(route.handle(sampleA))
+            callbackACompleted.signal()
+        }
+        XCTAssertEqual(callbackAStarted.wait(timeout: .now() + 2), .success)
+
+        DispatchQueue(label: "WindowCapturePrivacyTests.external-microphone-stop").async {
+            _ = adapter.handleStop(from: streamA)
+            stopCompleted.signal()
+        }
+        XCTAssertEqual(stopReachedDrain.wait(timeout: .now() + 2), .success)
+        DispatchQueue(label: "WindowCapturePrivacyTests.external-microphone-configure-b").async {
+            configureBStarted.signal()
+            route.configure(session: sessionB, callbackAdapter: adapter)
+            configureBCompleted.signal()
+        }
+        XCTAssertEqual(configureBStarted.wait(timeout: .now() + 2), .success)
+
+        let earlyStop = stopCompleted.wait(timeout: .now() + 0.1)
+        let earlyBConfiguration = configureBCompleted.wait(timeout: .now() + 0.1)
+        XCTAssertEqual(earlyStop, .timedOut, "Stop must wait for the exact delegate queue to drain")
+        XCTAssertEqual(
+            earlyBConfiguration,
+            .timedOut,
+            "B must not reconfigure the route while A remains queued"
+        )
+
+        releaseCallbackA.signal()
+        XCTAssertEqual(callbackACompleted.wait(timeout: .now() + 2), .success)
+        if earlyStop == .timedOut {
+            XCTAssertEqual(stopCompleted.wait(timeout: .now() + 2), .success)
+        }
+        if earlyBConfiguration == .timedOut {
+            XCTAssertEqual(configureBCompleted.wait(timeout: .now() + 2), .success)
+        }
+        route.drainAndClear()
+        callbackQueue.async {
+            results.append(route.handle(sampleA))
+            lateACompleted.signal()
+        }
+        XCTAssertEqual(lateACompleted.wait(timeout: .now() + 2), .success)
+
+        XCTAssertTrue(store.install(sessionB))
+        XCTAssertEqual(
+            adapter.handleSample(
+                from: streamB,
+                sampleBuffer: sampleB,
+                kind: .screen(isComplete: true, presenterOverlayX: nil)
+            ),
+            .appended
+        )
+        route.configure(session: sessionB, callbackAdapter: adapter)
+        callbackQueue.async {
+            results.append(route.handle(sampleB))
+            callbackBCompleted.signal()
+        }
+        XCTAssertEqual(callbackBCompleted.wait(timeout: .now() + 2), .success)
+        XCTAssertEqual(results.values, [.rejected, .rejected, .appended])
+        XCTAssertEqual(microphoneSinkA.appendCount, 0)
+        XCTAssertEqual(microphoneSinkB.appendCount, 1)
     }
 
     func testMissingWriterFinalizationClearsOnlyItsFinishedJob() throws {
@@ -2030,6 +2151,7 @@ final class WindowCapturePrivacyTests: XCTestCase {
     func testCaptureDelegatesAndUIStopUseTheProductionCallbackAdapter() throws {
         let engineSource = try projectSource("QuickRecorder/RecordEngine.swift")
         let contextSource = try projectSource("QuickRecorder/SCContext.swift")
+        let privacySource = try projectSource("QuickRecorder/WindowCapturePrivacy.swift")
 
         XCTAssertTrue(engineSource.contains("captureStreamCallbackAdapter.handleSample("))
         XCTAssertTrue(engineSource.contains("captureStreamCallbackAdapter.handleStop(from: stream)"))
@@ -2042,12 +2164,34 @@ final class WindowCapturePrivacyTests: XCTestCase {
         XCTAssertTrue(engineSource.contains("callbackAdapter: captureStreamCallbackAdapter"))
         XCTAssertTrue(engineSource.contains("callbackRoute.configure(session: session, callbackAdapter: callbackAdapter)"))
         XCTAssertTrue(engineSource.contains("_ = callbackRoute.handle(sampleBuffer)"))
-        XCTAssertTrue(engineSource.contains("callbackRoute.clear()"))
+        XCTAssertTrue(engineSource.contains("private let audioQueue: DispatchQueue"))
+        XCTAssertTrue(engineSource.contains("CaptureMicrophoneCallbackRoute(callbackQueue: audioQueue)"))
+        XCTAssertTrue(engineSource.contains("setSampleBufferDelegate(self, queue: audioQueue)"))
+        XCTAssertTrue(engineSource.contains("setSampleBufferDelegate(nil, queue: nil)"))
+        XCTAssertTrue(engineSource.contains("callbackRoute.drainAndClear()"))
+        XCTAssertEqual(
+            privacySource.components(separatedBy: "callbackQueue.sync {").count - 1,
+            2,
+            "configuration and teardown must cross the exact delegate queue"
+        )
+        XCTAssertTrue(privacySource.contains("dispatchPrecondition(condition: .onQueue(callbackQueue))"))
+        XCTAssertTrue(privacySource.contains("dispatchPrecondition(condition: .notOnQueue(callbackQueue))"))
         let audioRecorderSource = try XCTUnwrap(
             engineSource.components(separatedBy: "class AudioRecorder").last?
                 .components(separatedBy: "extension CMSampleBuffer").first
         )
         XCTAssertFalse(audioRecorderSource.contains("AppDelegate.shared"))
+        let stopSource = try XCTUnwrap(
+            audioRecorderSource.components(separatedBy: "func stop()").last?
+                .components(separatedBy: "func captureOutput").first
+        )
+        let stopRunning = try XCTUnwrap(stopSource.range(of: "session.stopRunning()"))
+        let detachDelegate = try XCTUnwrap(
+            stopSource.range(of: "setSampleBufferDelegate(nil, queue: nil)")
+        )
+        let drainRoute = try XCTUnwrap(stopSource.range(of: "callbackRoute.drainAndClear()"))
+        XCTAssertLessThan(stopRunning.lowerBound, detachDelegate.lowerBound)
+        XCTAssertLessThan(detachDelegate.lowerBound, drainRoute.lowerBound)
         XCTAssertTrue(engineSource.contains("captureStreamCallbackAdapter.handleStartFailure("))
         XCTAssertTrue(contextSource.contains("captureStreamCallbackAdapter.handleStop(from: activeStream)"))
     }

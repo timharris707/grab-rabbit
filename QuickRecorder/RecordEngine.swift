@@ -959,7 +959,15 @@ class AudioRecorder: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate {
     private var captureSession: AVCaptureSession!
     private var audioInput: AVCaptureDeviceInput!
     private var audioDataOutput: AVCaptureAudioDataOutput!
-    private let callbackRoute = CaptureMicrophoneCallbackRoute()
+    private let audioQueue: DispatchQueue
+    private let callbackRoute: CaptureMicrophoneCallbackRoute
+
+    override init() {
+        let audioQueue = DispatchQueue(label: "dev.clickai.grabrabbit.external-microphone")
+        self.audioQueue = audioQueue
+        callbackRoute = CaptureMicrophoneCallbackRoute(callbackQueue: audioQueue)
+        super.init()
+    }
 
     func setupAudioCapture(
         session: CaptureOutputSession,
@@ -992,7 +1000,6 @@ class AudioRecorder: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate {
 
         // Create audio data output
         audioDataOutput = AVCaptureAudioDataOutput()
-        let audioQueue = DispatchQueue(label: "audioQueue")
         audioDataOutput.setSampleBufferDelegate(self, queue: audioQueue)
         
         // Add audio data output to capture session
@@ -1014,7 +1021,8 @@ class AudioRecorder: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate {
         if let session = captureSession {
             if session.isRunning { session.stopRunning() }
         }
-        callbackRoute.clear()
+        audioDataOutput?.setSampleBufferDelegate(nil, queue: nil)
+        callbackRoute.drainAndClear()
     }
 
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {

@@ -22,10 +22,13 @@ This is a route verdict, not a final provider selection. Documentation establish
 policy, and cost boundaries; it cannot establish which model makes the lighting profile look real.
 That belongs to the bounded visual comparison in [issue #49][issue-49].
 
-The normal product path remains exactly Q13: only scene direction plus a locally derived textual
-lighting profile leaves the Mac. No camera pixel, crop, embedding, face geometry, or continuous
-video is part of that request. Generation finishes before recording; recording never triggers a
-cloud regeneration.
+The normal product path remains exactly Q13. The only user-derived content that may leave the Mac
+is the user's scene direction and a locally derived textual lighting profile (direction, approximate
+color temperature, brightness, contrast, softness, and background depth/blur intent). The request
+also carries the fixed output envelope, provider safety settings, and a non-identifying request ID;
+these are request-control fields, not camera-derived content. No camera pixel, crop, embedding, face
+geometry, device name, room image, audio, live video, or prose description of identity/appearance is
+sent. Generation finishes before recording; recording never triggers a cloud regeneration.
 
 ## Evidence boundaries
 
@@ -59,8 +62,8 @@ camera-pixel upload.
 | Item | Primary-source finding | Consequence |
 |---|---|---|
 | Model contract | `gpt-image-2` accepts text and image inputs and produces images for generation and editing. OpenAI publishes the dated snapshot `gpt-image-2-2026-04-21`; the model page says snapshots lock a specific version so performance and behavior remain consistent. [OpenAI model][openai-model] | Pin the dated snapshot in any visual evidence and production brief. An alias-only result is not durable evidence. |
-| Output envelope | The Images API accepts flexible sizes, including 1536×1024 landscape, and `low`, `medium`, `high`, or `auto` quality. Image inputs are always processed at high fidelity for GPT Image 2. [OpenAI image guide][openai-images] | The text matrix can use one medium landscape output per cell. Optional still input costs more than text-only and cannot be silently downshifted to low fidelity. |
-| Price | At 1536×1024, output prices are `$0.005` low, `$0.041` medium, and `$0.165` high. Input is `$5/M` text tokens and `$8/M` image tokens; output is `$30/M` image tokens. [OpenAI pricing][openai-pricing] [OpenAI image guide][openai-images] | Four medium text-only outputs cost `$0.164` before the small text-token charge. Recalculate image-input cost before an optional-still run. |
+| Output envelope | The Images API accepts custom sizes, including the common Stage-1 envelope `1376×768` landscape, with medium quality. Image inputs are always processed at high fidelity for GPT Image 2. [OpenAI image guide][openai-images] | Both hosted finalists use exactly `1376×768`; scoring does not reward a provider for a different native canvas. Optional still input costs more than text-only and cannot be silently downshifted to low fidelity. |
+| Price | OpenAI prices image output at `$30/M` image tokens; the dated pricing calculation for `1376×768` medium is 991 output tokens, or `$0.02973` per image. Text input is `$5/M` and image input `$8/M`. [OpenAI pricing][openai-pricing] [OpenAI image guide][openai-images] | Four Stage-1 outputs cost `4 × $0.02973 = $0.11892` before text input. Recalculate image-input cost before an optional-still run. |
 | Rate/size limits | The current tier table is 5, 20, 50, 150, or 250 images per minute for tiers 1–5; free is unsupported. The API accepts popular landscape/portrait/square sizes and thousands of valid custom sizes subject to documented pixel bounds. [OpenAI model][openai-model] [OpenAI image guide][openai-images] | The eight-call prototype is below even Tier 1 if paced. Production still needs visible 429/quota handling and a spend cap. |
 | Latency/availability | OpenAI says complex prompts may take up to two minutes. No public standard on-demand Images latency or uptime SLA was found in the cited product docs. [OpenAI image guide][openai-images] | Generation is a pre-recording task with progress/cancel/error UI, never a recording-time dependency. “Usually fast” is not an acceptance threshold. |
 
@@ -105,8 +108,8 @@ away from those endpoints. [Google Imagen 4 lifecycle][google-imagen4]
 | Item | Primary-source finding | Consequence |
 |---|---|---|
 | Model contract | `gemini-3.1-flash-image` is GA, accepts text and images, generates and edits images, and supports C2PA. Google's lifecycle table dates its release to 2026-05-28 and retirement to 2027-05-28 or later. [Google model][google-model] [Google lifecycle][google-lifecycle] | It is the current Google comparator. It is a lifecycle ID, not a dated immutable snapshot like OpenAI's; preserve prompts/outputs and re-run evidence after material updates. |
-| Output envelope | It supports 1:1 through 21:9, including 16:9, at 512, 1K, and 2K; 4K and video input remain preview. It accepts up to 14 input images, 7 MB inline per image or 30 MB from Cloud Storage. [Google model][google-model] | Use GA 1K/16:9 only. Do not let a prototype accidentally depend on preview 4K or video input. |
-| Price | Standard PayGo is `$0.50/M` input tokens, `$3/M` text output tokens, and `$60/M` image output tokens. A 1K image consumes 1,120 output tokens (`$0.067` rounded); each input image consumes 1,120 input tokens. [Google pricing][google-pricing] [Google model][google-model] | Four 1K text-only outputs cost about `$0.268` plus negligible text input. Two reduced-resolution still inputs add about `$0.00112` before outputs. |
+| Output envelope | It supports 1:1 through 21:9, including the common `1376×768` landscape envelope, at 512, 1K, and 2K; 4K and video input remain preview. It accepts up to 14 input images, 7 MB inline per image or 30 MB from Cloud Storage. [Google model][google-model] | Request the common `1376×768` landscape envelope for Stage 1. Do not let a prototype accidentally depend on preview 4K or video input. |
+| Price | Standard PayGo is `$0.50/M` input tokens, `$3/M` text output tokens, and `$60/M` image output tokens. A 1K image consumes 1,120 output tokens (`$0.0672`); each input image consumes 1,120 input tokens. [Google pricing][google-pricing] [Google model][google-model] | Four Stage-1 outputs cost `4 × (1,120 × $60/M) = $0.26880` before text input. |
 | Capacity | Standard and Flex PayGo plus Provisioned Throughput are supported; fixed quota is not. The image-input quota is enforced per project/model/resolution, and capacity can return 429. [Google model][google-model] [Google quotas][google-quotas] | PayGo needs bounded backoff and a visible capacity failure. Provisioned Throughput is a later operating-cost decision, not needed for the prototype. |
 | Latency/SLA | Google describes generation as taking a few seconds but possibly slower with capacity. The current Vertex SLA's covered-service table does not name hosted Gemini model inference and supplies no image-latency promise. [Google image guide][google-images] [Google SLA][google-sla] | Record wall time in the prototype; do not convert documentation prose into a latency commitment. |
 
@@ -121,6 +124,11 @@ away from those endpoints. [Google Imagen 4 lifecycle][google-imagen4]
   with a 24-hour TTL by default. Google calls this compatible with its ZDR definition; it can be
   disabled project-wide. **Q4/Q13 consequence:** disable it before any camera-still evaluation,
   even though it is not at-rest storage. [Google ZDR][google-zdr]
+- Each Google `generateContent` call in the later gate is a standalone request: send one complete
+  `contents` payload and do not use a conversation, session, or `cachedContent` handle. The
+  application must not imply that a prior request, provider session, or cached context is reused;
+  the separate 24-hour provider cache policy above remains an account-control gate, not application
+  state. [Google generateContent][google-generate-content] [Google ZDR][google-zdr]
 - Under ordinary Google Cloud Platform Terms, automated classifiers can cause suspicious prompts
   to be logged for up to 90 days in the selected region and reviewed by authorized staff. Master
   Agreement customers are exempt by default; other customers can request an exception, after
@@ -157,7 +165,7 @@ different account, transport, and policy chain. [OpenRouter endpoint][or-endpoin
 | Provider-layer retention | OpenRouter says ZDR enforcement is conservative and endpoint-specific. Its live OpenAI ledger has `retainsPrompts: true`; the current ZDR endpoint catalog has no GPT Image 2 entry. [OpenRouter provider logging][or-logging] [OpenRouter provider ledger][or-providers] [OpenRouter ZDR][or-zdr] [OpenRouter ZDR catalog][or-zdr-api] | A text-only request can be offered with disclosure. A camera still cannot be sent merely because OpenAI offers ZDR directly; OpenRouter has not established that contract for this endpoint. |
 | Region | Enterprise customers can request EU or US in-region routing, but model availability must be queried through the authenticated regional `/models/user` endpoint. [OpenRouter provider logging][or-logging] | Regional GPT Image 2 availability is vendor/account-held and unproven. Do not claim US/EU processing for this route before written confirmation. |
 | Version | The endpoint record exposes only `openai/gpt-image-2`; OpenRouter publishes no dated snapshot endpoint for it. [OpenRouter endpoint][or-endpoint] | Visual results through this route are alias-bound. It loses OpenAI direct's exact snapshot advantage. |
-| Price/billing | Inference pricing is passed through without markup. Stripe credit purchases add 5.5% with an `$0.80` minimum; the minimum credit purchase is `$5`. Unused credits may expire after 365 days. [OpenRouter FAQ][or-faq] [OpenRouter terms][or-terms] | Four `$0.041` outputs debit roughly `$0.164`, but a new user initially pays at least `$5.80`. This is material onboarding, not a per-image price increase. |
+| Price/billing | Inference pricing is passed through without markup. Stripe credit purchases add 5.5% with an `$0.80` minimum; the minimum credit purchase is `$5`. Unused credits may expire after 365 days. [OpenRouter FAQ][or-faq] [OpenRouter terms][or-terms] | At the common envelope, four pass-through outputs are `4 × $0.02973 = $0.11892`; a new user initially pays at least `$5.80`. This is material onboarding, not a per-image price increase. |
 | Limits/availability | Paid traffic is subject to upstream capacity and DDoS protection; 429 can originate from OpenRouter or the provider. OpenRouter does not guarantee any model's availability and may change or discontinue the service. [OpenRouter limits][or-limits] [OpenRouter terms][or-terms] | This model currently has no second provider fallback. Generation failure remains visible and pre-recording. |
 | Output/content terms | OpenRouter makes upstream Model Terms controlling for output ownership and permissible use and offers no independent quality, availability, retention, or IP warranty. Its account terms require age 13+, with parent/guardian permission under 18. [OpenRouter terms][or-terms] | OpenAI content/ownership/minor rules still flow through. OpenRouter does not simplify policy custody; it simplifies user billing/authentication. |
 
@@ -204,7 +212,7 @@ The outbound payload may contain only:
 1. the user's scene direction;
 2. a local textual lighting description (direction, approximate color temperature, brightness,
    contrast, softness, and background depth/blur intent);
-3. output shape/quality and safety settings; and
+3. the fixed `1376×768` output shape, medium quality, and provider safety settings; and
 4. a non-identifying request ID needed for failure support.
 
 It may not contain a frame, crop, thumbnail, face/body measurement, pixel-derived embedding,
@@ -247,31 +255,39 @@ cells go once to each hosted finalist:
 | Scene | Uncluttered warm home office with a clear central subject zone and no people, text, marks, or logos. | Neutral modern studio/library with the same central subject zone and exclusions. |
 | Lighting profile | Soft warm key from camera-left (~3200 K), low contrast, gentle fill, rear wall about one stop darker. | Cooler hard key from camera-right (~5600 K), higher contrast, weak fill, plausible directional shadows and depth falloff. |
 
-- **Models:** `gpt-image-2-2026-04-21` at 1536×1024 medium, and
-  `gemini-3.1-flash-image` at 1K/16:9 with image-only response.
+- **Models:** `gpt-image-2-2026-04-21` and `gemini-3.1-flash-image`, both requested at the common
+  `1376×768` landscape envelope, medium-equivalent quality, with image-only response. OpenAI's
+  custom-size support and Google's supported landscape ratios make this envelope comparable;
+  preserve actual returned dimensions and treat any provider rejection as a failed cell.
 - **Paid multiplication:** 2 scenes × 2 lighting profiles × 2 models × 1 output = **8 image
   calls**. No automatic retry or “best of N.” A block, timeout, or 429 is evidence.
-- **Rough cost before running:** OpenAI output `$0.164`; Google output about `$0.268`; generous
-  text-input allowance keeps the total under about **`$0.46`** at 2026-08-16 prices. OpenRouter
-  adds no call because it is the same visual model; a new OpenRouter user would still face the
+- **Exact image-output subtotal before text input:** OpenAI `4 × $0.02973 = $0.11892`; Google
+  `4 × (1,120 × $60/M) = 4 × $0.0672 = $0.26880`; combined **`$0.38772`**. Add only the
+  measured text-token charges afterward; do not round either provider subtotal in repeated totals.
+  OpenRouter adds no call because it is the same visual model; a new OpenRouter user would still face the
   separate `$5.80` minimum cash/fee outlay.
 - **Artifacts:** exact prompt, provider/route/model ID, account retention/region settings (never
   secrets), output bytes/hash/dimensions, wall time, request ID, safety/failure result, and billed
   usage/cost.
 - **Review:** compare lighting direction/color/contrast, believable room depth, subject-zone
-  usability, photorealism, compositional defects, and policy failures. Documentation sets no pass
-  threshold; Tim chooses after seeing the eight outputs.
+  usability, photorealism, compositional defects, and policy failures. Because both outputs use the
+  same `1376×768` envelope, these size-sensitive criteria are comparable; a provider that cannot
+  return that envelope is a failed cell, not a score advantage. Documentation sets no pass threshold;
+  Tim chooses after seeing the eight outputs.
 
 ### Stage 2 — optional still only after Stage 1 and authorization
 
-Select the two hardest cells and the one chosen model. For each, generate one fresh text-only
-control and one image-conditioned result: **4 calls total**, of which exactly 2 carry the approved
-still. No other model or route participates.
+Select the two hardest cells and the one chosen model. The optional still is exactly one user-approved
+`768×432` JPEG (16:9, no audio or video, maximum 1 MB), sent once for each selected cell. For each,
+generate one fresh text-only control and one image-conditioned result: **4 calls total**, of which
+exactly 2 carry that same approved still. No other model or route participates. This stage remains
+locked behind Tim's separate approval; this lane performs no still upload and no paid call.
 
-- If OpenAI is chosen, budget about **`$0.30`**: `$0.164` output floor plus two automatically
-  high-fidelity image inputs and text; re-run OpenAI's calculator immediately before approval.
-- If Google is chosen, four 1K outputs plus two input images are about **`$0.27–$0.28`** before
-  small text charges.
+- If OpenAI is chosen, the image-output floor is **`$0.11892`** (`4 × $0.02973`), plus the
+  published `$8/M` image-input charge for exactly two `768×432` stills and measured text tokens:
+  `Stage2 = $0.11892 + (2 × input_image_tokens × $8/M) + text charges`.
+- If Google is chosen, the deterministic pre-text total is **`$0.26992`**: four outputs
+  (`4 × 1,120 × $60/M = $0.26880`) plus two input images (`2 × 1,120 × $0.50/M = $0.00112`).
 - If on-device is chosen, there are zero paid/API calls, but the authorized ~3.35 GB asset and
   measured local time replace the cloud cost.
 
@@ -318,7 +334,7 @@ claim those controls.
 | Authentication, version, content policy, limits, cost, latency/SLA, commercial terms | Detailed OpenAI/Google/OpenRouter/on-device tables. |
 | User-key, managed, and local service boundaries | Credential/failure/billing table. |
 | Existing OpenRouter route remains a candidate | Accepted only as text transport; no reuse of Tim's development key and no duplicate visual call. |
-| Smallest visual matrix and rough paid cost | Eight-call Stage 1 (`~$0.46`) plus gated four-call Stage 2 budgets. |
+| Smallest visual matrix and rough paid cost | Eight-call Stage 1 image-output subtotal (`$0.38772` before text) plus a separately approved, deterministic four-call Stage 2 budget. |
 | Remaining Tim decisions | Nine-item decision ledger above. |
 
 ## Primary-source ledger
@@ -339,6 +355,7 @@ All capability, live-catalog, policy, lifecycle, and pricing facts were checked 
 
 - [Gemini 3.1 Flash Image model card][google-model] and [model lifecycle][google-lifecycle]
 - [Generate images with Gemini][google-images], [pricing][google-pricing], and [quotas][google-quotas]
+- [GenerateContent inference reference][google-generate-content]
 - [Zero-data-retention controls][google-zdr], [abuse monitoring][google-abuse],
   [locations][google-locations], and [data residency][google-residency]
 - [Authentication][google-auth], [image safety][google-safety], [service terms][google-terms], and
@@ -382,6 +399,7 @@ All capability, live-catalog, policy, lifecycle, and pricing facts were checked 
 [google-model]: https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/gemini/3-1-flash-image
 [google-lifecycle]: https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/model-versions
 [google-images]: https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/capabilities/image-generation
+[google-generate-content]: https://cloud.google.com/vertex-ai/generative-ai/docs/model-reference/inference
 [google-pricing]: https://cloud.google.com/gemini-enterprise-agent-platform/generative-ai/pricing
 [google-quotas]: https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/quotas
 [google-zdr]: https://docs.cloud.google.com/gemini-enterprise-agent-platform/resources/zero-data-retention

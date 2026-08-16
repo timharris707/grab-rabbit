@@ -336,7 +336,8 @@ behavior, and which routes may enter the visual prototype. No provider choice is
 **Ticket.** [#46 — STUDIO RESEARCH: Define the production image-generation and privacy route](https://github.com/timharris707/grab-rabbit/issues/46)
 
 **Verdict.** Advance direct OpenAI `gpt-image-2-2026-04-21` and Google
-`gemini-3.1-flash-image` to an exactly eight-call, text-only gate costing about `$0.46`; keep
+`gemini-3.1-flash-image` to an exactly eight-call, text-only gate with a `$0.38772` image-output
+subtotal before text input; keep
 OpenRouter only as a user-funded text transport and Core ML SDXL as a separately approved offline
 challenger. No call or still upload is authorized now, and optional-still routes stay excluded
 until Tim approves one and the exact account proves the Q4/Q13 retention and region controls.

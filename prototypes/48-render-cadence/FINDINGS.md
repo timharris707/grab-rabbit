@@ -102,5 +102,18 @@ state, and a predeclared external-powermetrics path. The tool does not invoke `s
 TCC, silently omit requested audio, substitute a display, or switch cameras.
 
 This preparation does not close the physical gate. Until a camera is present and Tim performs
-the signed run, all live metric fields remain unmeasured. The unsigned-safe Mini preflight is
-expected to exit 20 with zero cameras and prove that no output file is created.
+the signed run, all live metric fields remain unmeasured.
+
+The unsigned-safe Mini gate at source checkpoint `75d3a354fb924700f00ca2f562c0deab0203ce5c`
+passed its warnings-as-errors Release build, 3/3 selection/fail-closed tests, static
+desktop-filter/TCC/privacy checks, and unsigned app-bundle build. Live inventory reported zero
+cameras. The missing-camera preflight exited 20, its machine report recorded zero privacy
+sentinel pixels and `outputCreated: false`, and the requested movie path did not exist. Screen
+preflight authorization was false, so window enumeration was skipped without requesting access;
+no Screen Sharing source was substituted.
+
+The same Mini check found one identity with the approved common name but zero certificates with
+the approved `189EC9780DE0A94CF5B24CC5983CAB3FDAE15638` fingerprint and one identity beginning
+with the prohibited `45F21D` prefix. No signing was attempted. CuaDriver PID 12083 and Screen
+Sharing PID 9243 were present before and after; the two owned verification/build process PIDs
+exited 0 and are recorded with timestamps.

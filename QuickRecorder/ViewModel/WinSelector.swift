@@ -171,7 +171,7 @@ struct WinSelector: View {
                         self.viewModel.setupStreams(
                             filter: !disableFilter,
                             capture: !donotCapture,
-                            selectedWindows: selected,
+                            currentSelection: { selected },
                             updateSelection: { selected = $0 }
                         )
                     }, label: {
@@ -204,7 +204,7 @@ struct WinSelector: View {
                                     self.viewModel.setupStreams(
                                         filter: !disableFilter,
                                         capture: !donotCapture,
-                                        selectedWindows: selected,
+                                        currentSelection: { selected },
                                         updateSelection: { selected = $0 }
                                     )
                                 }
@@ -214,7 +214,7 @@ struct WinSelector: View {
                                     self.viewModel.setupStreams(
                                         filter: !disableFilter,
                                         capture: !donotCapture,
-                                        selectedWindows: selected,
+                                        currentSelection: { selected },
                                         updateSelection: { selected = $0 }
                                     )
                                 }
@@ -314,7 +314,7 @@ class WindowSelectorViewModel: NSObject, ObservableObject {
     func setupStreams(
         filter: Bool = true,
         capture: Bool = true,
-        selectedWindows: [SCWindow] = [],
+        currentSelection: @escaping () -> [SCWindow] = { [] },
         updateSelection: @escaping ([SCWindow]) -> Void = { _ in }
     ) {
         let disposition = refreshAdapter.refresh(using: { completion in
@@ -325,12 +325,13 @@ class WindowSelectorViewModel: NSObject, ObservableObject {
             provider.start(completion: completion)
             return { provider.cancel() }
         }, publish: { [weak self] result in
+            dispatchPrecondition(condition: .onQueue(DispatchQueue.main))
             guard let self else { return }
             switch result {
             case .success(let snapshot):
                 let resolution = WindowSelectorRefreshTransaction.resolve(
                     currentModel: self.windowThumbnails,
-                    currentSelection: selectedWindows,
+                    currentSelection: currentSelection,
                     candidateModel: snapshot.thumbnails,
                     candidateItems: snapshot.windows,
                     identifier: \.windowID

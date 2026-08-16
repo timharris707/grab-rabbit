@@ -65,19 +65,20 @@ struct WindowSelectorRefreshResolution<Model, Item> {
 struct WindowSelectorRefreshTransaction {
     static func resolve<Model, Item, Identifier: Hashable>(
         currentModel: Model,
-        currentSelection: [Item],
+        currentSelection: () -> [Item],
         candidateModel: Model,
         candidateItems: [Item],
         identifier: (Item) -> Identifier
     ) -> WindowSelectorRefreshResolution<Model, Item> {
+        let liveSelection = currentSelection()
         guard let reconciledSelection = WindowSelectorSelectionReconciler.reconcile(
-            selected: currentSelection,
+            selected: liveSelection,
             available: candidateItems,
             identifier: identifier
         ) else {
             return WindowSelectorRefreshResolution(
                 model: currentModel,
-                selection: currentSelection,
+                selection: liveSelection,
                 acceptedCandidate: false
             )
         }

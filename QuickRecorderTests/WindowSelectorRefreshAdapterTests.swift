@@ -23,8 +23,13 @@ final class WindowSelectorRefreshAdapterTests: XCTestCase {
         XCTAssertFalse(selector.contains("self.selected.removeAll()"))
         XCTAssertTrue(selector.contains("WindowSelectorRefreshTransaction.resolve"))
         XCTAssertTrue(adapter.contains("WindowSelectorSelectionReconciler.reconcile"))
-        XCTAssertEqual(selector.components(separatedBy: "selectedWindows: selected").count - 1, 3)
+        XCTAssertFalse(selector.contains("selectedWindows: selected"))
+        XCTAssertEqual(selector.components(separatedBy: "currentSelection: { selected }").count - 1, 3)
         XCTAssertEqual(selector.components(separatedBy: "updateSelection: { selected = $0 }").count - 1, 3)
+        XCTAssertTrue(selector.contains("currentSelection: @escaping () -> [SCWindow]"))
+        XCTAssertEqual(selector.components(separatedBy: ".disabled(viewModel.isRefreshing)").count - 1, 1)
+        XCTAssertTrue(selector.contains("dispatchPrecondition(condition: .onQueue(DispatchQueue.main))"))
+        XCTAssertTrue(adapter.contains("let liveSelection = currentSelection()"))
         XCTAssertTrue(selector.contains("if isReady && selected.isEmpty"))
     }
 
@@ -86,7 +91,7 @@ final class WindowSelectorRefreshAdapterTests: XCTestCase {
         let currentChoices = priorChoices
         let accepted = WindowSelectorRefreshTransaction.resolve(
             currentModel: "prior snapshot",
-            currentSelection: [priorWindow],
+            currentSelection: { [priorWindow] },
             candidateModel: "candidate snapshot",
             candidateItems: [TestWindow(id: 7, revision: 2), TestWindow(id: 8, revision: 1)],
             identifier: \.id
@@ -99,7 +104,7 @@ final class WindowSelectorRefreshAdapterTests: XCTestCase {
 
         let rejected = WindowSelectorRefreshTransaction.resolve(
             currentModel: "prior snapshot",
-            currentSelection: [priorWindow],
+            currentSelection: { [priorWindow] },
             candidateModel: "candidate snapshot",
             candidateItems: [TestWindow(id: 8, revision: 1)],
             identifier: \.id
@@ -112,6 +117,131 @@ final class WindowSelectorRefreshAdapterTests: XCTestCase {
         XCTAssertEqual(
             WindowSelectorRefreshError.selectedTargetUnavailable.userMessage,
             "The selected window is no longer available. Your previous selection was kept."
+        )
+    }
+
+    func testSlowRefreshReconcilesCandidateAgainstLiveSelectionAtPublicationTime() {
+        struct TestWindow: Equatable {
+            let id: Int
+            let revision: Int
+        }
+        struct TestSnapshot {
+            let model: String
+            let windows: [TestWindow]
+        }
+
+        let providerStarted = expectation(description: "slow provider started")
+        let published = expectation(description: "slow refresh published")
+        let adapter = WindowSelectorRefreshAdapter<TestSnapshot>(timeout: 1)
+        let stateLock = NSLock()
+        var providerCompletion: WindowSelectorRefreshAdapter<TestSnapshot>.Completion?
+        var liveSelection = [TestWindow(id: 7, revision: 1)]
+        var observedResolution: WindowSelectorRefreshResolution<String, TestWindow>?
+
+        XCTAssertEqual(
+            adapter.refresh(using: { completion in
+                stateLock.lock()
+                providerCompletion = completion
+                stateLock.unlock()
+                providerStarted.fulfill()
+                return {}
+            }, publish: { result in
+                XCTAssertTrue(Thread.isMainThread)
+                guard case .success(let snapshot) = result else {
+                    return XCTFail("Slow refresh unexpectedly failed")
+                }
+                observedResolution = WindowSelectorRefreshTransaction.resolve(
+                    currentModel: "prior snapshot",
+                    currentSelection: { liveSelection },
+                    candidateModel: snapshot.model,
+                    candidateItems: snapshot.windows,
+                    identifier: \.id
+                )
+                published.fulfill()
+            }),
+            .started
+        )
+        wait(for: [providerStarted], timeout: 1)
+
+        liveSelection = [TestWindow(id: 8, revision: 1)]
+        stateLock.lock()
+        let completion = providerCompletion
+        stateLock.unlock()
+        completion?(.success(TestSnapshot(
+            model: "candidate snapshot",
+            windows: [TestWindow(id: 7, revision: 2), TestWindow(id: 8, revision: 2)]
+        )))
+
+        wait(for: [published], timeout: 1)
+        XCTAssertEqual(observedResolution?.model, "candidate snapshot")
+        XCTAssertEqual(observedResolution?.selection, [TestWindow(id: 8, revision: 2)])
+        XCTAssertEqual(observedResolution?.acceptedCandidate, true)
+    }
+
+    func testSlowRefreshRetainsLiveSelectionAndPriorSnapshotWhenNewTargetIsMissing() {
+        struct TestWindow: Equatable {
+            let id: Int
+            let revision: Int
+        }
+        struct TestSnapshot {
+            let model: String
+            let windows: [TestWindow]
+        }
+
+        let providerStarted = expectation(description: "slow provider started")
+        let published = expectation(description: "missing target published")
+        let adapter = WindowSelectorRefreshAdapter<TestSnapshot>(timeout: 1)
+        let stateLock = NSLock()
+        var providerCompletion: WindowSelectorRefreshAdapter<TestSnapshot>.Completion?
+        var liveSelection = [TestWindow(id: 7, revision: 1)]
+        var observedResolution: WindowSelectorRefreshResolution<String, TestWindow>?
+        var visibleErrors = [String]()
+
+        XCTAssertEqual(
+            adapter.refresh(using: { completion in
+                stateLock.lock()
+                providerCompletion = completion
+                stateLock.unlock()
+                providerStarted.fulfill()
+                return {}
+            }, publish: { result in
+                XCTAssertTrue(Thread.isMainThread)
+                guard case .success(let snapshot) = result else {
+                    return XCTFail("Slow refresh unexpectedly failed")
+                }
+                let resolution = WindowSelectorRefreshTransaction.resolve(
+                    currentModel: "prior snapshot",
+                    currentSelection: { liveSelection },
+                    candidateModel: snapshot.model,
+                    candidateItems: snapshot.windows,
+                    identifier: \.id
+                )
+                observedResolution = resolution
+                if !resolution.acceptedCandidate {
+                    visibleErrors.append(WindowSelectorRefreshError.selectedTargetUnavailable.userMessage)
+                }
+                published.fulfill()
+            }),
+            .started
+        )
+        wait(for: [providerStarted], timeout: 1)
+
+        liveSelection = [TestWindow(id: 9, revision: 1)]
+        stateLock.lock()
+        let completion = providerCompletion
+        stateLock.unlock()
+        completion?(.success(TestSnapshot(
+            model: "candidate snapshot",
+            windows: [TestWindow(id: 7, revision: 2), TestWindow(id: 8, revision: 2)]
+        )))
+
+        wait(for: [published], timeout: 1)
+        XCTAssertEqual(observedResolution?.model, "prior snapshot")
+        XCTAssertEqual(observedResolution?.selection, [TestWindow(id: 9, revision: 1)])
+        XCTAssertEqual(observedResolution?.acceptedCandidate, false)
+        XCTAssertEqual(
+            visibleErrors,
+            ["The selected window is no longer available. Your previous selection was kept."]
         )
     }
 
@@ -412,6 +542,101 @@ final class WindowSelectorRefreshAdapterTests: XCTestCase {
         let observedPublications = publications
         lock.unlock()
         XCTAssertEqual(observedPublications, [2])
+    }
+
+    func testSupersededSlowRefreshCannotReconcileAStaleLiveSelection() {
+        struct TestWindow: Equatable {
+            let id: Int
+            let revision: Int
+        }
+        struct TestSnapshot {
+            let generation: Int
+            let windows: [TestWindow]
+        }
+
+        let publicationQueue = DispatchQueue(label: "window-refresh-live-selection-generation-test")
+        let publicationQueueBlocked = DispatchSemaphore(value: 0)
+        let releasePublicationQueue = DispatchSemaphore(value: 0)
+        publicationQueue.async {
+            publicationQueueBlocked.signal()
+            releasePublicationQueue.wait()
+        }
+        XCTAssertEqual(publicationQueueBlocked.wait(timeout: .now() + 1), .success)
+
+        let firstProviderFinished = expectation(description: "first provider finished")
+        let secondPublished = expectation(description: "second generation published")
+        let adapter = WindowSelectorRefreshAdapter<TestSnapshot>(
+            timeout: 1,
+            publicationQueue: publicationQueue
+        )
+        let stateLock = NSLock()
+        var liveSelection = [TestWindow(id: 7, revision: 1)]
+        var reconciledGenerations = [Int]()
+        var observedSelection = [TestWindow]()
+
+        XCTAssertEqual(
+            adapter.refresh(using: { completion in
+                completion(.success(TestSnapshot(
+                    generation: 1,
+                    windows: [TestWindow(id: 7, revision: 2)]
+                )))
+                firstProviderFinished.fulfill()
+                return {}
+            }, publish: { result in
+                guard case .success(let snapshot) = result else { return }
+                let resolution = WindowSelectorRefreshTransaction.resolve(
+                    currentModel: 0,
+                    currentSelection: { liveSelection },
+                    candidateModel: snapshot.generation,
+                    candidateItems: snapshot.windows,
+                    identifier: \.id
+                )
+                stateLock.lock()
+                reconciledGenerations.append(snapshot.generation)
+                observedSelection = resolution.selection
+                stateLock.unlock()
+            }),
+            .started
+        )
+        wait(for: [firstProviderFinished], timeout: 1)
+
+        liveSelection = [TestWindow(id: 8, revision: 1)]
+        XCTAssertEqual(
+            adapter.refresh(using: { completion in
+                completion(.success(TestSnapshot(
+                    generation: 2,
+                    windows: [TestWindow(id: 8, revision: 2), TestWindow(id: 9, revision: 2)]
+                )))
+                return {}
+            }, publish: { result in
+                guard case .success(let snapshot) = result else {
+                    return XCTFail("Latest generation unexpectedly failed")
+                }
+                let resolution = WindowSelectorRefreshTransaction.resolve(
+                    currentModel: 0,
+                    currentSelection: { liveSelection },
+                    candidateModel: snapshot.generation,
+                    candidateItems: snapshot.windows,
+                    identifier: \.id
+                )
+                stateLock.lock()
+                reconciledGenerations.append(snapshot.generation)
+                observedSelection = resolution.selection
+                stateLock.unlock()
+                secondPublished.fulfill()
+            }),
+            .started
+        )
+        liveSelection = [TestWindow(id: 9, revision: 1)]
+
+        releasePublicationQueue.signal()
+        wait(for: [secondPublished], timeout: 1)
+        stateLock.lock()
+        let observedGenerations = reconciledGenerations
+        let finalSelection = observedSelection
+        stateLock.unlock()
+        XCTAssertEqual(observedGenerations, [2])
+        XCTAssertEqual(finalSelection, [TestWindow(id: 9, revision: 2)])
     }
 
     func testPublicationCallbackRunsAfterAdapterUnlock() throws {

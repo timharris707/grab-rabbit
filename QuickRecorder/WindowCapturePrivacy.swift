@@ -2,6 +2,7 @@ import AVFoundation
 import CoreGraphics
 import CoreMedia
 import CoreVideo
+import OSLog
 import ScreenCaptureKit
 
 enum WindowCaptureMode: String, CaseIterable {
@@ -430,6 +431,8 @@ struct CaptureDiagnosticsSnapshot: Equatable {
 
 final class CaptureDiagnostics {
     static let environmentKey = "GRAB_RABBIT_CAPTURE_DIAGNOSTICS"
+    static let pathEnvironmentKey = "GRAB_RABBIT_CAPTURE_DIAGNOSTICS_PATH"
+    private static let logger = Logger(subsystem: "dev.clickai.grabrabbit", category: "capture")
 
     private let lock = NSLock()
     private let enabled: Bool
@@ -449,16 +452,31 @@ final class CaptureDiagnostics {
     private var appendFailed = 0
     private var processingFailed = 0
 
-    init(enabled: Bool, emitter: @escaping (String) -> Void = { print($0) }) {
+    init(enabled: Bool, emitter: ((String) -> Void)? = nil) {
         self.enabled = enabled
-        self.emitter = emitter
+        self.emitter = emitter ?? Self.defaultEmitter(environment: ProcessInfo.processInfo.environment)
     }
 
     static func environmentConfigured(
         environment: [String: String] = ProcessInfo.processInfo.environment,
-        emitter: @escaping (String) -> Void = { print($0) }
+        emitter: ((String) -> Void)? = nil
     ) -> CaptureDiagnostics {
-        CaptureDiagnostics(enabled: environment[environmentKey] == "1", emitter: emitter)
+        CaptureDiagnostics(
+            enabled: environment[environmentKey] == "1",
+            emitter: emitter ?? defaultEmitter(environment: environment)
+        )
+    }
+
+    private static func defaultEmitter(environment: [String: String]) -> (String) -> Void {
+        let path = environment[pathEnvironmentKey].flatMap { $0.isEmpty ? nil : $0 }
+        return { line in
+            logger.notice("\(line, privacy: .public)")
+            guard let path else { return }
+            try? Data("\(line)\n".utf8).write(
+                to: URL(fileURLWithPath: path),
+                options: .atomic
+            )
+        }
     }
 
     func recordScreenCallback(isValid: Bool, isComplete: Bool, hasImage: Bool) {

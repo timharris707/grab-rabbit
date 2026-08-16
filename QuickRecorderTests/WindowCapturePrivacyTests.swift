@@ -242,6 +242,68 @@ final class WindowCapturePrivacyTests: XCTestCase {
         XCTAssertFalse(privacySource.contains("audioContent"))
     }
 
+    func testEnvironmentDiagnosticsPersistOneAggregateLineOnlyAtAnExplicitPath() throws {
+        let pathKey = CaptureDiagnostics.pathEnvironmentKey
+        let temporaryDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("capture-diagnostics-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
+        let enabledURL = temporaryDirectory.appendingPathComponent("enabled.log")
+        let disabledURL = temporaryDirectory.appendingPathComponent("disabled.log")
+
+        let disabled = CaptureDiagnostics.environmentConfigured(
+            environment: [pathKey: disabledURL.path]
+        )
+        disabled.recordScreenCallback(isValid: true, isComplete: true, hasImage: true)
+        disabled.emitOnce(writerStatus: 1)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: disabledURL.path))
+
+        let enabled = CaptureDiagnostics.environmentConfigured(
+            environment: [
+                CaptureDiagnostics.environmentKey: "1",
+                pathKey: enabledURL.path,
+            ]
+        )
+        enabled.recordScreenCallback(isValid: true, isComplete: true, hasImage: true)
+        enabled.recordAudioCallback(isValid: true)
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: enabledURL.path),
+            "diagnostics must not emit per callback"
+        )
+        enabled.emitOnce(writerStatus: 1)
+        enabled.emitOnce(writerStatus: 2)
+
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: enabledURL.path),
+            "LaunchServices diagnostics must survive at the explicitly requested path"
+        )
+        guard FileManager.default.fileExists(atPath: enabledURL.path) else { return }
+        let contents = try String(contentsOf: enabledURL, encoding: .utf8)
+        let lines = contents.split(whereSeparator: \.isNewline)
+        XCTAssertEqual(lines.count, 1, "emitOnce must persist exactly one aggregate line")
+        let line = try XCTUnwrap(lines.first).description
+        let fields = line.split(separator: " ")
+        XCTAssertEqual(fields.first, "[CaptureDiagnostics]")
+        XCTAssertEqual(fields.dropFirst().count, 14)
+        XCTAssertTrue(fields.dropFirst().allSatisfy { $0.contains("=") })
+        XCTAssertEqual(
+            Set(fields.dropFirst().compactMap { $0.split(separator: "=", maxSplits: 1).first }),
+            Set([
+                "screen_callbacks", "audio_callbacks", "invalid_callbacks",
+                "complete_frames", "incomplete_frames", "image_frames", "image_missing",
+                "pts_rejected", "presenter_gate_rejected", "writer_not_ready",
+                "append_succeeded", "append_failed", "processing_failed", "writer_status",
+            ])
+        )
+        XCTAssertTrue(line.contains("screen_callbacks=1"))
+        XCTAssertTrue(line.contains("audio_callbacks=1"))
+        XCTAssertTrue(line.contains("writer_status=1"))
+        XCTAssertFalse(line.contains("writer_status=2"))
+        XCTAssertFalse(line.contains("capturedPixels"))
+        XCTAssertFalse(line.contains("windowTitle"))
+        XCTAssertFalse(line.contains("audioContent"))
+    }
+
     func testProductionAdapterAppendsMoreThanTwentyIncreasingCompleteFrames() throws {
         let stream = NSObject()
         let sink = TestVideoDestination()

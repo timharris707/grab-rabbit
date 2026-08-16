@@ -1,0 +1,56 @@
+{
+  "experimentID": "q11-foreground-YYYYMMDD",
+  "version": 1,
+  "clips": [
+    {
+      "cameraClass": "continuity-camera",
+      "cameraName": "Tim's iPhone Camera",
+      "captureMetadata": "captures/iphone-normal.capture.json",
+      "id": "iphone-normal",
+      "lighting": "normal-room-light",
+      "regions": [
+        {
+          "endSeconds": 32,
+          "height": 0.6,
+          "kind": "person",
+          "label": "person-envelope",
+          "startSeconds": 0,
+          "width": 0.45,
+          "x": 0.25,
+          "y": 0.1
+        },
+        {
+          "endSeconds": 32,
+          "height": 0.24,
+          "kind": "chair",
+          "label": "chair-back",
+          "startSeconds": 0,
+          "width": 0.24,
+          "x": 0.14,
+          "y": 0.47
+        },
+        {
+          "endSeconds": 32,
+          "height": 0.2,
+          "kind": "microphone",
+          "label": "shure-microphone",
+          "startSeconds": 0,
+          "width": 0.18,
+          "x": 0.69,
+          "y": 0.48
+        },
+        {
+          "endSeconds": 32,
+          "height": 0.2,
+          "kind": "background",
+          "label": "known-background",
+          "startSeconds": 0,
+          "width": 0.2,
+          "x": 0.02,
+          "y": 0.02
+        }
+      ],
+      "source": "captures/iphone-normal.mov"
+    }
+  ]
+}

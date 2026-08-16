@@ -1,12 +1,147 @@
 import XCTest
 
 final class WindowSelectorRefreshAdapterTests: XCTestCase {
+    func testWindowSelectorFetchChecksPreflightBeforeCallingTheProvider() throws {
+        let context = try projectSource("QuickRecorder/SCContext.swift")
+        guard let start = context.range(of: "static func fetchWindowSelectorContent"),
+              let end = context.range(
+                of: "static func applyWindowSelectorContent",
+                range: start.upperBound..<context.endIndex
+              ) else {
+            return XCTFail("Window-selector fetch seam is missing")
+        }
+        let fetchSeam = String(context[start.lowerBound..<end.lowerBound])
+
+        XCTAssertTrue(fetchSeam.contains("CGPreflightScreenCaptureAccess()"))
+        XCTAssertTrue(fetchSeam.contains("WindowSelectorContentAccessPolicy"))
+    }
+
+    func testRefreshNeverClearsSelectionAndUsesIdentityReconciliation() throws {
+        let selector = try projectSource("QuickRecorder/ViewModel/WinSelector.swift")
+        let adapter = try projectSource("QuickRecorder/WindowSelectorRefreshAdapter.swift")
+
+        XCTAssertFalse(selector.contains("self.selected.removeAll()"))
+        XCTAssertTrue(selector.contains("WindowSelectorRefreshTransaction.resolve"))
+        XCTAssertTrue(adapter.contains("WindowSelectorSelectionReconciler.reconcile"))
+        XCTAssertEqual(selector.components(separatedBy: "selectedWindows: selected").count - 1, 3)
+        XCTAssertEqual(selector.components(separatedBy: "updateSelection: { selected = $0 }").count - 1, 3)
+        XCTAssertTrue(selector.contains("if isReady && selected.isEmpty"))
+    }
+
+    func testDeniedPreflightReturnsTypedFailureWithoutCallingProvider() {
+        var providerCount = 0
+        var results = [Result<Int, ScreenRecordingContentError>]()
+
+        WindowSelectorContentAccessPolicy().fetch(
+            preflightAuthorized: false,
+            provider: { completion in
+                providerCount += 1
+                completion(.success(1))
+            },
+            completion: { results.append($0) }
+        )
+
+        XCTAssertEqual(providerCount, 0)
+        XCTAssertEqual(results, [.failure(.permissionDenied)])
+        XCTAssertEqual(
+            WindowSelectorRefreshError.permissionDenied.userMessage,
+            "Screen recording access is required to refresh windows."
+        )
+
+        let failurePublished = expectation(description: "permission failure published")
+        let adapter = WindowSelectorRefreshAdapter<Int>(timeout: 1)
+        var messages = [String]()
+        adapter.refresh(using: { completion in
+            completion(.failure(.permissionDenied))
+            return {}
+        }, publish: { result in
+            if case .failure(let error) = result {
+                messages.append(error.userMessage)
+            }
+            failurePublished.fulfill()
+        })
+        wait(for: [failurePublished], timeout: 1)
+        XCTAssertEqual(messages, ["Screen recording access is required to refresh windows."])
+    }
+
+    func testSelectionTransactionPreservesSameIdentityAndRejectsMissingTarget() {
+        struct TestWindow: Equatable {
+            let id: Int
+            let revision: Int
+        }
+        struct TestChoices: Equatable {
+            let microphone: String
+            let systemAudio: Bool
+            let codec: String
+            let saveLocation: String
+        }
+
+        let priorWindow = TestWindow(id: 7, revision: 1)
+        let priorChoices = TestChoices(
+            microphone: "Desk Mic",
+            systemAudio: true,
+            codec: "HEVC",
+            saveLocation: "~/Movies/GrabRabbit"
+        )
+        let currentChoices = priorChoices
+        let accepted = WindowSelectorRefreshTransaction.resolve(
+            currentModel: "prior snapshot",
+            currentSelection: [priorWindow],
+            candidateModel: "candidate snapshot",
+            candidateItems: [TestWindow(id: 7, revision: 2), TestWindow(id: 8, revision: 1)],
+            identifier: \.id
+        )
+
+        XCTAssertTrue(accepted.acceptedCandidate)
+        XCTAssertEqual(accepted.model, "candidate snapshot")
+        XCTAssertEqual(accepted.selection, [TestWindow(id: 7, revision: 2)])
+        XCTAssertEqual(currentChoices, priorChoices)
+
+        let rejected = WindowSelectorRefreshTransaction.resolve(
+            currentModel: "prior snapshot",
+            currentSelection: [priorWindow],
+            candidateModel: "candidate snapshot",
+            candidateItems: [TestWindow(id: 8, revision: 1)],
+            identifier: \.id
+        )
+
+        XCTAssertFalse(rejected.acceptedCandidate)
+        XCTAssertEqual(rejected.model, "prior snapshot")
+        XCTAssertEqual(rejected.selection, [priorWindow])
+        XCTAssertEqual(currentChoices, priorChoices)
+        XCTAssertEqual(
+            WindowSelectorRefreshError.selectedTargetUnavailable.userMessage,
+            "The selected window is no longer available. Your previous selection was kept."
+        )
+    }
+
+    func testRefreshTransactionSourceCannotMutateMediaCodecOrSaveChoices() throws {
+        let selector = try projectSource("QuickRecorder/ViewModel/WinSelector.swift")
+        guard let viewModelStart = selector.range(of: "class WindowSelectorViewModel") else {
+            return XCTFail("WindowSelectorViewModel is missing")
+        }
+        let refreshSource = String(selector[viewModelStart.lowerBound...])
+        let forbiddenMutations = [
+            "recordMic =",
+            "recordWinSound =",
+            "encoder =",
+            "videoFormat =",
+            "savePath =",
+            "outputJob =",
+            "UserDefaults.standard.set"
+        ]
+
+        forbiddenMutations.forEach { mutation in
+            XCTAssertFalse(refreshSource.contains(mutation), "Refresh must not mutate \(mutation)")
+        }
+    }
+
     func testWindowSelectorUsesOneBoundedBatchPublicationWithoutMainQueueThumbnailCallbacks() throws {
         let selector = try projectSource("QuickRecorder/ViewModel/WinSelector.swift")
         let provider = try projectSource("QuickRecorder/WindowSelectorThumbnailProvider.swift")
 
         XCTAssertTrue(selector.contains("WindowSelectorRefreshAdapter<WindowSelectorRefreshSnapshot>"))
-        XCTAssertTrue(selector.contains("self.windowThumbnails = snapshot.thumbnails"))
+        XCTAssertTrue(selector.contains("self.windowThumbnails = resolution.model"))
         XCTAssertEqual(selector.components(separatedBy: "self.windowThumbnails =").count - 1, 1)
         XCTAssertTrue(selector.contains("accessibilityIdentifier(\"window-refresh-error\")"))
         XCTAssertTrue(selector.contains(".disabled(viewModel.isRefreshing)"))
@@ -219,6 +354,151 @@ final class WindowSelectorRefreshAdapterTests: XCTestCase {
             WindowSelectorRefreshError.unavailable("localized provider detail").userMessage,
             "Window refresh failed. Please try again."
         )
+    }
+
+    func testQueuedOlderPublicationCannotOverwriteANewerGeneration() {
+        let publicationQueue = DispatchQueue(label: "window-refresh-publication-test")
+        let publicationQueueBlocked = DispatchSemaphore(value: 0)
+        let releasePublicationQueue = DispatchSemaphore(value: 0)
+        publicationQueue.async {
+            publicationQueueBlocked.signal()
+            releasePublicationQueue.wait()
+        }
+        XCTAssertEqual(publicationQueueBlocked.wait(timeout: .now() + 1), .success)
+
+        let firstProviderFinished = expectation(description: "first provider finished")
+        let secondPublished = expectation(description: "second published")
+        let adapter = WindowSelectorRefreshAdapter<Int>(
+            timeout: 1,
+            publicationQueue: publicationQueue
+        )
+        let lock = NSLock()
+        var publications = [Int]()
+
+        XCTAssertEqual(
+            adapter.refresh(using: { complete in
+                complete(.success(1))
+                firstProviderFinished.fulfill()
+                return {}
+            }, publish: { result in
+                if case .success(let value) = result {
+                    lock.lock()
+                    publications.append(value)
+                    lock.unlock()
+                }
+            }),
+            .started
+        )
+        wait(for: [firstProviderFinished], timeout: 1)
+
+        XCTAssertEqual(
+            adapter.refresh(using: { complete in
+                complete(.success(2))
+                return {}
+            }, publish: { result in
+                if case .success(let value) = result {
+                    lock.lock()
+                    publications.append(value)
+                    lock.unlock()
+                }
+                secondPublished.fulfill()
+            }),
+            .started
+        )
+
+        releasePublicationQueue.signal()
+        wait(for: [secondPublished], timeout: 1)
+        lock.lock()
+        let observedPublications = publications
+        lock.unlock()
+        XCTAssertEqual(observedPublications, [2])
+    }
+
+    func testPublicationCallbackRunsAfterAdapterUnlock() throws {
+        let adapter = try projectSource("QuickRecorder/WindowSelectorRefreshAdapter.swift")
+        guard let methodStart = adapter.range(of: "private func publishIfCurrent"),
+              let methodEnd = adapter.range(
+                of: "deinit",
+                range: methodStart.upperBound..<adapter.endIndex
+              ) else {
+            return XCTFail("Publication boundary is missing")
+        }
+        let publicationBoundary = String(adapter[methodStart.lowerBound..<methodEnd.lowerBound])
+        guard let publish = publicationBoundary.range(of: "publish(result)") else {
+            return XCTFail("Publication boundary must unlock and publish")
+        }
+        let afterPublish = publicationBoundary[publish.upperBound...]
+        XCTAssertFalse(
+            afterPublish.contains("lock.unlock()"),
+            "External publication callbacks must never run while the adapter lock is held"
+        )
+    }
+
+    func testPublicationCallbackCanSynchronouslyStartTheNextGeneration() {
+        let publicationQueue = DispatchQueue(label: "window-refresh-reentrant-start-test")
+        let adapter = WindowSelectorRefreshAdapter<Int>(
+            timeout: 1,
+            publicationQueue: publicationQueue
+        )
+        let secondPublished = expectation(description: "second generation published")
+        let lock = NSLock()
+        var publications = [Int]()
+
+        XCTAssertEqual(
+            adapter.refresh(using: { complete in
+                complete(.success(1))
+                return {}
+            }, publish: { result in
+                if case .success(let value) = result {
+                    lock.lock()
+                    publications.append(value)
+                    lock.unlock()
+                }
+                XCTAssertEqual(
+                    adapter.refresh(using: { complete in
+                        complete(.success(2))
+                        return {}
+                    }, publish: { result in
+                        if case .success(let value) = result {
+                            lock.lock()
+                            publications.append(value)
+                            lock.unlock()
+                        }
+                        secondPublished.fulfill()
+                    }),
+                    .started
+                )
+            }),
+            .started
+        )
+
+        wait(for: [secondPublished], timeout: 1)
+        lock.lock()
+        let observedPublications = publications
+        lock.unlock()
+        XCTAssertEqual(observedPublications, [1, 2])
+    }
+
+    func testPublicationCallbackCanSynchronouslyCancelWithoutDeadlock() {
+        let publicationQueue = DispatchQueue(label: "window-refresh-reentrant-cancel-test")
+        let adapter = WindowSelectorRefreshAdapter<Int>(
+            timeout: 1,
+            publicationQueue: publicationQueue
+        )
+        let published = expectation(description: "callback cancelled adapter")
+
+        XCTAssertEqual(
+            adapter.refresh(using: { complete in
+                complete(.success(1))
+                return {}
+            }, publish: { _ in
+                adapter.cancel()
+                published.fulfill()
+            }),
+            .started
+        )
+
+        wait(for: [published], timeout: 1)
     }
 
     private func projectSource(_ relativePath: String) throws -> String {

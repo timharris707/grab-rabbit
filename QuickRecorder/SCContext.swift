@@ -123,7 +123,11 @@ class SCContext {
     static func fetchWindowSelectorContent(
         completion: @escaping (Result<SCShareableContent, ScreenRecordingContentError>) -> Void
     ) {
-        fetchAvailableContent(completion: completion)
+        WindowSelectorContentAccessPolicy().fetch(
+            preflightAuthorized: CGPreflightScreenCaptureAccess(),
+            provider: { fetchAvailableContent(completion: $0) },
+            completion: completion
+        )
     }
 
     static func applyWindowSelectorContent(_ content: SCShareableContent) {

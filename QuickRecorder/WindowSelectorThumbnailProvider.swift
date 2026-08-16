@@ -5,6 +5,7 @@ import Foundation
 
 struct WindowSelectorRefreshSnapshot {
     let content: SCShareableContent
+    let windows: [SCWindow]
     let thumbnails: [SCDisplay: [WindowThumbnail]]
 }
 
@@ -27,6 +28,7 @@ final class WindowSelectorThumbnailProvider: NSObject, SCStreamDelegate, SCStrea
     private var streams = [SCStream]()
     private var entries = [ObjectIdentifier: StreamEntry]()
     private var pendingStreams = Set<ObjectIdentifier>()
+    private var windows = [SCWindow]()
     private var thumbnails = [SCDisplay: [WindowThumbnail]]()
     private var finished = false
 
@@ -45,7 +47,7 @@ final class WindowSelectorThumbnailProvider: NSObject, SCStreamDelegate, SCStrea
                     case .success(let content):
                         self.prepare(content)
                     case .failure(.permissionDenied):
-                        self.fail("Screen recording access is unavailable.")
+                        self.finish(with: .failure(.permissionDenied))
                     case .failure(.unavailable(let message)):
                         self.fail(message)
                     }
@@ -100,7 +102,7 @@ final class WindowSelectorThumbnailProvider: NSObject, SCStreamDelegate, SCStrea
     private func prepare(_ content: SCShareableContent) {
         guard !finished else { return }
         self.content = content
-        let windows = eligibleWindows(from: content)
+        windows = eligibleWindows(from: content)
 
         guard captureThumbnails else {
             for window in windows {
@@ -202,7 +204,11 @@ final class WindowSelectorThumbnailProvider: NSObject, SCStreamDelegate, SCStrea
         guard !finished, let content else { return }
         finished = true
         let completion = self.completion
-        let snapshot = WindowSelectorRefreshSnapshot(content: content, thumbnails: thumbnails)
+        let snapshot = WindowSelectorRefreshSnapshot(
+            content: content,
+            windows: windows,
+            thumbnails: thumbnails
+        )
         stopAllStreams()
         self.completion = nil
         self.content = nil
@@ -210,13 +216,18 @@ final class WindowSelectorThumbnailProvider: NSObject, SCStreamDelegate, SCStrea
     }
 
     private func fail(_ message: String) {
+        finish(with: .failure(.unavailable(message)))
+    }
+
+    private func finish(with result: Result<WindowSelectorRefreshSnapshot, WindowSelectorRefreshError>) {
         guard !finished else { return }
         finished = true
         let completion = self.completion
         stopAllStreams()
         self.completion = nil
         content = nil
-        completion?(.failure(.unavailable(message)))
+        windows.removeAll()
+        completion?(result)
     }
 
     private func stopAllStreams() {

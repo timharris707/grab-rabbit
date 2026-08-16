@@ -2,15 +2,90 @@ import Foundation
 
 enum WindowSelectorRefreshError: Error, Equatable {
     case timedOut
+    case permissionDenied
+    case selectedTargetUnavailable
     case unavailable(String)
 
     var userMessage: String {
         switch self {
         case .timedOut:
             return "Window refresh timed out. Please try again."
+        case .permissionDenied:
+            return "Screen recording access is required to refresh windows."
+        case .selectedTargetUnavailable:
+            return "The selected window is no longer available. Your previous selection was kept."
         case .unavailable:
             return "Window refresh failed. Please try again."
         }
+    }
+}
+
+struct WindowSelectorContentAccessPolicy {
+    func fetch<Content>(
+        preflightAuthorized: Bool,
+        provider: (@escaping (Result<Content, ScreenRecordingContentError>) -> Void) -> Void,
+        completion: @escaping (Result<Content, ScreenRecordingContentError>) -> Void
+    ) {
+        guard preflightAuthorized else {
+            completion(.failure(.permissionDenied))
+            return
+        }
+        provider(completion)
+    }
+}
+
+struct WindowSelectorSelectionReconciler {
+    static func reconcile<Item, Identifier: Hashable>(
+        selected: [Item],
+        available: [Item],
+        identifier: (Item) -> Identifier
+    ) -> [Item]? {
+        let availableByIdentifier = Dictionary(
+            available.map { (identifier($0), $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        var reconciled = [Item]()
+        reconciled.reserveCapacity(selected.count)
+        for priorSelection in selected {
+            guard let current = availableByIdentifier[identifier(priorSelection)] else {
+                return nil
+            }
+            reconciled.append(current)
+        }
+        return reconciled
+    }
+}
+
+struct WindowSelectorRefreshResolution<Model, Item> {
+    let model: Model
+    let selection: [Item]
+    let acceptedCandidate: Bool
+}
+
+struct WindowSelectorRefreshTransaction {
+    static func resolve<Model, Item, Identifier: Hashable>(
+        currentModel: Model,
+        currentSelection: [Item],
+        candidateModel: Model,
+        candidateItems: [Item],
+        identifier: (Item) -> Identifier
+    ) -> WindowSelectorRefreshResolution<Model, Item> {
+        guard let reconciledSelection = WindowSelectorSelectionReconciler.reconcile(
+            selected: currentSelection,
+            available: candidateItems,
+            identifier: identifier
+        ) else {
+            return WindowSelectorRefreshResolution(
+                model: currentModel,
+                selection: currentSelection,
+                acceptedCandidate: false
+            )
+        }
+        return WindowSelectorRefreshResolution(
+            model: candidateModel,
+            selection: reconciledSelection,
+            acceptedCandidate: true
+        )
     }
 }
 
@@ -24,9 +99,15 @@ final class WindowSelectorRefreshAdapter<Output> {
     typealias Cancellation = () -> Void
     typealias Provider = (@escaping Completion) -> Cancellation
 
+    private enum Phase {
+        case providing
+        case publishing
+    }
+
     private struct ActiveRefresh {
         let generation: UInt64
         let timeout: DispatchWorkItem
+        var phase: Phase
         var cancellation: Cancellation?
     }
 
@@ -56,9 +137,15 @@ final class WindowSelectorRefreshAdapter<Output> {
         publish: @escaping Completion
     ) -> WindowSelectorRefreshDisposition {
         lock.lock()
-        guard activeRefresh == nil else {
-            lock.unlock()
-            return .coalesced
+        let supersededRefresh: ActiveRefresh?
+        if let activeRefresh {
+            guard activeRefresh.phase == .publishing else {
+                lock.unlock()
+                return .coalesced
+            }
+            supersededRefresh = activeRefresh
+        } else {
+            supersededRefresh = nil
         }
 
         generation += 1
@@ -69,9 +156,13 @@ final class WindowSelectorRefreshAdapter<Output> {
         activeRefresh = ActiveRefresh(
             generation: currentGeneration,
             timeout: timeoutWork,
+            phase: .providing,
             cancellation: nil
         )
         lock.unlock()
+
+        supersededRefresh?.timeout.cancel()
+        supersededRefresh?.cancellation?()
 
         timeoutQueue.asyncAfter(deadline: .now() + timeout, execute: timeoutWork)
         workerQueue.async { [weak self] in
@@ -87,7 +178,7 @@ final class WindowSelectorRefreshAdapter<Output> {
     private func isActive(generation: UInt64) -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        return activeRefresh?.generation == generation
+        return activeRefresh?.generation == generation && activeRefresh?.phase == .providing
     }
 
     func cancel() {
@@ -105,7 +196,9 @@ final class WindowSelectorRefreshAdapter<Output> {
 
     private func install(cancellation: @escaping Cancellation, generation: UInt64) {
         lock.lock()
-        guard var activeRefresh, activeRefresh.generation == generation else {
+        guard var activeRefresh,
+              activeRefresh.generation == generation,
+              activeRefresh.phase == .providing else {
             lock.unlock()
             cancellation()
             return
@@ -121,18 +214,40 @@ final class WindowSelectorRefreshAdapter<Output> {
         publish: @escaping Completion
     ) {
         lock.lock()
-        guard let activeRefresh, activeRefresh.generation == generation else {
+        guard var activeRefresh,
+              activeRefresh.generation == generation,
+              activeRefresh.phase == .providing else {
+            lock.unlock()
+            return
+        }
+        let cancellation = activeRefresh.cancellation
+        activeRefresh.cancellation = nil
+        activeRefresh.phase = .publishing
+        self.activeRefresh = activeRefresh
+        lock.unlock()
+
+        activeRefresh.timeout.cancel()
+        cancellation?()
+        publicationQueue.async { [weak self] in
+            self?.publishIfCurrent(result, generation: generation, publish: publish)
+        }
+    }
+
+    private func publishIfCurrent(
+        _ result: Result<Output, WindowSelectorRefreshError>,
+        generation: UInt64,
+        publish: Completion
+    ) {
+        lock.lock()
+        guard let activeRefresh,
+              activeRefresh.generation == generation,
+              activeRefresh.phase == .publishing else {
             lock.unlock()
             return
         }
         self.activeRefresh = nil
         lock.unlock()
-
-        activeRefresh.timeout.cancel()
-        activeRefresh.cancellation?()
-        publicationQueue.async {
-            publish(result)
-        }
+        publish(result)
     }
 
     deinit {

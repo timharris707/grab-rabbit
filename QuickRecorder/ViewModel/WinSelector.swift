@@ -140,7 +140,7 @@ struct WinSelector: View {
                 .padding(.horizontal, 10)
                 .onChange(of: selectedTab) { _ in selected.removeAll() }
                 .onReceive(viewModel.$isReady) { isReady in
-                    if isReady {
+                    if isReady && selected.isEmpty {
                         let allApps = viewModel.windowThumbnails.sorted(by: { $0.key.displayID < $1.key.displayID })
                         if let s = NSApp.windows.first(where: { $0.title == "Window Selector".local })?.screen,
                            let index = allApps.firstIndex(where: { $0.key.displayID == s.displayID }) {
@@ -168,8 +168,12 @@ struct WinSelector: View {
                 .padding(.horizontal, 40)
                 HStack(spacing: 4) {
                     Button(action: {
-                        self.viewModel.setupStreams(filter: !disableFilter, capture: !donotCapture)
-                        self.selected.removeAll()
+                        self.viewModel.setupStreams(
+                            filter: !disableFilter,
+                            capture: !donotCapture,
+                            selectedWindows: selected,
+                            updateSelection: { selected = $0 }
+                        )
                     }, label: {
                         VStack{
                             Image(systemName: "arrow.clockwise.circle.fill")
@@ -197,14 +201,22 @@ struct WinSelector: View {
                             Toggle(isOn: $disableFilter) { Text("Show Windows with No Title") }
                                 .toggleStyle(.checkbox)
                                 .onChange(of: disableFilter) { _ in
-                                    self.viewModel.setupStreams(filter: !disableFilter, capture: !donotCapture)
-                                    self.selected.removeAll()
+                                    self.viewModel.setupStreams(
+                                        filter: !disableFilter,
+                                        capture: !donotCapture,
+                                        selectedWindows: selected,
+                                        updateSelection: { selected = $0 }
+                                    )
                                 }
                             Toggle(isOn: $donotCapture) { Text("Don't Create Thumbnails") }
                                 .toggleStyle(.checkbox)
                                 .onChange(of: donotCapture) { _ in
-                                    self.viewModel.setupStreams(filter: !disableFilter, capture: !donotCapture)
-                                    self.selected.removeAll()
+                                    self.viewModel.setupStreams(
+                                        filter: !disableFilter,
+                                        capture: !donotCapture,
+                                        selectedWindows: selected,
+                                        updateSelection: { selected = $0 }
+                                    )
                                 }
                         }
                         .fixedSize()
@@ -299,7 +311,12 @@ class WindowSelectorViewModel: NSObject, ObservableObject {
         }
     }
 
-    func setupStreams(filter: Bool = true, capture: Bool = true) {
+    func setupStreams(
+        filter: Bool = true,
+        capture: Bool = true,
+        selectedWindows: [SCWindow] = [],
+        updateSelection: @escaping ([SCWindow]) -> Void = { _ in }
+    ) {
         let disposition = refreshAdapter.refresh(using: { completion in
             let provider = WindowSelectorThumbnailProvider(
                 filterUntitledWindows: filter,
@@ -309,17 +326,30 @@ class WindowSelectorViewModel: NSObject, ObservableObject {
             return { provider.cancel() }
         }, publish: { [weak self] result in
             guard let self else { return }
-            self.isRefreshing = false
             switch result {
             case .success(let snapshot):
-                SCContext.applyWindowSelectorContent(snapshot.content)
-                self.windowThumbnails = snapshot.thumbnails
-                self.refreshErrorMessage = nil
-                self.isReady = true
+                let resolution = WindowSelectorRefreshTransaction.resolve(
+                    currentModel: self.windowThumbnails,
+                    currentSelection: selectedWindows,
+                    candidateModel: snapshot.thumbnails,
+                    candidateItems: snapshot.windows,
+                    identifier: \.windowID
+                )
+                if resolution.acceptedCandidate {
+                    SCContext.applyWindowSelectorContent(snapshot.content)
+                    self.windowThumbnails = resolution.model
+                    updateSelection(resolution.selection)
+                    self.refreshErrorMessage = nil
+                    self.isReady = true
+                } else {
+                    self.refreshErrorMessage = WindowSelectorRefreshError.selectedTargetUnavailable.userMessage
+                    self.isReady = !self.windowThumbnails.isEmpty
+                }
             case .failure(let error):
                 self.refreshErrorMessage = error.userMessage
                 self.isReady = !self.windowThumbnails.isEmpty
             }
+            self.isRefreshing = false
         })
 
         if disposition == .started {

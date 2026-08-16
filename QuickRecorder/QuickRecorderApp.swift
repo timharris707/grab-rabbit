@@ -129,13 +129,48 @@ extension Scene {
 }
 
 class AppDelegate: NSObject, NSApplicationDelegate, SCStreamDelegate, SCStreamOutput, AVCaptureVideoDataOutputSampleBufferDelegate  {
-    static let shared = AppDelegate()
+    private static let registry = ApplicationDelegateRegistry<AppDelegate>()
+
+    static var shared: AppDelegate {
+        do {
+            return try registry.resolve(applicationDelegate: NSApp.delegate)
+        } catch {
+            preconditionFailure("The configured application delegate is unavailable or mismatched.")
+        }
+    }
+
+    override init() {
+        super.init()
+        Self.registry.register(self)
+    }
+
     var filter: SCContentFilter?
-    var isCameraReady = false
-    var isPresenterON = false
     var isResizing = false
-    var presenterType = "OFF"
-    var frameQueue = FixedLengthArray<CMTime>(maxLength: 20)
+    let captureOutputSessions = CaptureOutputSessionStore()
+    let presenterReadyScheduler = CapturePresenterReadyScheduler()
+    private let captureOutputInfrastructureProvider = CaptureOutputInfrastructureProvider()
+    private var captureOutputInfrastructure: CaptureOutputInfrastructure {
+        captureOutputInfrastructureProvider.resolve {
+            let core = CaptureOutputCore(
+                store: captureOutputSessions,
+                failureHandler: { [weak self] session in
+                    self?.finishCaptureSession(session, privacyFailure: true)
+                },
+                stopHandler: { [weak self] session in
+                    self?.finishCaptureSession(session, privacyFailure: false)
+                },
+                presenterReadyHandler: { [weak self] session in
+                    self?.schedulePresenterReady(session)
+                }
+            )
+            return CaptureOutputInfrastructure(
+                core: core,
+                adapter: CaptureStreamCallbackAdapter(core: core)
+            )
+        }
+    }
+    var captureOutputCore: CaptureOutputCore { captureOutputInfrastructure.core }
+    var captureStreamCallbackAdapter: CaptureStreamCallbackAdapter { captureOutputInfrastructure.adapter }
     
     @AppStorage("showOnDock")       var showOnDock: Bool = true
     @AppStorage("showMenubar")      var showMenubar: Bool = false
@@ -144,6 +179,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, SCStreamDelegate, SCStreamOu
     @AppStorage("micDevice")        var micDevice: String = "default"
     @AppStorage("remuxAudio")       var remuxAudio: Bool = true
     @AppStorage("recordWinSound")   var recordWinSound: Bool = true
+    @AppStorage("windowCaptureMode") var windowCaptureMode: WindowCaptureMode = .transparent
     @AppStorage("recordHDR")        var recordHDR: Bool = false
     @AppStorage("encoder")          var encoder: Encoder = .h265
     @AppStorage("highRes")          var highRes: Int = 2
@@ -267,6 +303,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, SCStreamDelegate, SCStreamOu
                 "recordMic": false,
                 "remuxAudio": isMacOS12 ? false : true,
                 "recordWinSound": isMacOS12 ? false : true,
+                "windowCaptureMode": WindowCaptureMode.transparent.rawValue,
                 "trimAfterRecord": false,
                 "showOnDock": true,
                 "showMenubar": false,
@@ -347,7 +384,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, SCStreamDelegate, SCStreamOu
             _ = self.applicationShouldHandleReopen(NSApp, hasVisibleWindows: true)
             if SCContext.stream == nil { NSApp.activate(ignoringOtherApps: true) }
         }
-        KeyboardShortcuts.onKeyDown(for: .saveFrame) { if SCContext.stream != nil { SCContext.saveFrame = true }}
+        KeyboardShortcuts.onKeyDown(for: .saveFrame) {
+            AppDelegate.shared.captureOutputSessions.activeSession()?.requestSaveFrame()
+        }
         KeyboardShortcuts.onKeyDown(for: .screenMagnifier) { if SCContext.stream != nil { SCContext.isMagnifierEnabled.toggle() }}
         KeyboardShortcuts.onKeyDown(for: .stop) { if SCContext.stream != nil { SCContext.stopRecording() }}
         KeyboardShortcuts.onKeyDown(for: .pauseResume) { if SCContext.stream != nil { SCContext.pauseRecording() }}
@@ -372,7 +411,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, SCStreamDelegate, SCStreamOu
             let frontmostApp = NSWorkspace.shared.frontmostApplication
             if let pid = frontmostApp?.processIdentifier {
                 guard let scWindow = SCContext.getWindows().first(where: { $0.owningApplication?.processID == pid && $0.title != "" && $0.isOnScreen }) else { return }
-                prepRecord(type: "window", screens: SCContext.getSCDisplayWithMouse(), windows: [scWindow], applications: nil, fastStart: true)
+                prepRecord(
+                    type: "window",
+                    screens: SCContext.getSCDisplayWithMouse(),
+                    windows: [scWindow],
+                    applications: nil,
+                    fastStart: true,
+                    windowCaptureMode: windowCaptureMode
+                )
                 return
             }
         }

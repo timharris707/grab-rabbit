@@ -13,8 +13,88 @@ import AVFAudio
 import VideoToolbox
 import AECAudioStream
 
+private final class MainThreadCaptureCleanup: @unchecked Sendable {
+    private var operation: (() -> Void)?
+
+    init(_ operation: @escaping () -> Void) {
+        self.operation = operation
+    }
+
+    func run() {
+        dispatchPrecondition(condition: .onQueue(.main))
+        defer { operation = nil }
+        operation?()
+    }
+}
+
+private struct PreparedAudioCaptureSnapshot {
+    let outputJob: RecordingOutputJob?
+    let audioFile: AVAudioFile?
+    let secondaryAudioFile: AVAudioFile?
+    let writer: AVAssetWriter?
+    let videoInput: AVAssetWriterInput?
+    let systemAudioInput: AVAssetWriterInput?
+    let microphoneInput: AVAssetWriterInput?
+
+    static func capture() -> PreparedAudioCaptureSnapshot {
+        PreparedAudioCaptureSnapshot(
+            outputJob: SCContext.outputJob,
+            audioFile: SCContext.audioFile,
+            secondaryAudioFile: SCContext.audioFile2,
+            writer: SCContext.vW,
+            videoInput: SCContext.vwInput,
+            systemAudioInput: SCContext.awInput,
+            microphoneInput: SCContext.micInput
+        )
+    }
+
+    func discard(reason: RecordingExportError) {
+        CapturePreparationResourceSnapshot.clear(audioFile, from: &SCContext.audioFile)
+        CapturePreparationResourceSnapshot.clear(secondaryAudioFile, from: &SCContext.audioFile2)
+        writer?.cancelWriting()
+        CapturePreparationResourceSnapshot.clear(writer, from: &SCContext.vW)
+        CapturePreparationResourceSnapshot.clear(videoInput, from: &SCContext.vwInput)
+        CapturePreparationResourceSnapshot.clear(systemAudioInput, from: &SCContext.awInput)
+        CapturePreparationResourceSnapshot.clear(microphoneInput, from: &SCContext.micInput)
+        if let outputJob { _ = outputJob.discardOutputs(reason: reason) }
+        CapturePreparationResourceSnapshot.clear(outputJob, from: &SCContext.outputJob)
+    }
+}
+
 extension AppDelegate {
     @objc func prepRecord(type: String, screens: SCDisplay?, windows: [SCWindow]?, applications: [SCRunningApplication]?, fastStart: Bool = false) {
+        prepRecord(
+            type: type,
+            screens: screens,
+            windows: windows,
+            applications: applications,
+            fastStart: fastStart,
+            windowCaptureMode: nil
+        )
+    }
+
+    func prepRecord(
+        type: String,
+        screens: SCDisplay?,
+        windows: [SCWindow]?,
+        applications: [SCRunningApplication]?,
+        fastStart: Bool = false,
+        windowCaptureMode requestedWindowCaptureMode: WindowCaptureMode?
+    ) {
+        let sessionID = UUID()
+        guard captureOutputSessions.reserve(sessionID) else {
+            SCContext.showNotification(
+                title: "Failed to Record".local,
+                body: "Another capture session is still finishing.".local,
+                id: "quickrecorder.error.\(UUID().uuidString)"
+            )
+            return
+        }
+        var reservationTransferred = false
+        defer {
+            if !reservationTransferred { captureOutputSessions.cancelReservation(sessionID) }
+        }
+
         switch type {
         case "window":  SCContext.streamType = .window
         case "windows":  SCContext.streamType = .windows
@@ -132,31 +212,47 @@ extension AppDelegate {
         }
         if SCContext.streamType == .systemaudio {
             SCContext.filter = SCContentFilter(display: screen, excludingApplications: [], exceptingWindows: [])
-            do {
-                try prepareAudioRecording()
-            } catch {
-                SCContext.streamType = nil
-                _ = createAlert(
-                    title: "Failed to Record".local,
-                    message: error.localizedDescription,
-                    button1: "OK"
-                ).runModal()
-                return
-            }
         }
-        Task { await record(filter: SCContext.filter!, fastStart: fastStart) }
+        let sessionWindowCaptureMode: WindowCaptureMode? = SCContext.streamType == .window
+            ? requestedWindowCaptureMode ?? windowCaptureMode
+            : nil
+        reservationTransferred = true
+        Task {
+            await record(
+                filter: SCContext.filter!,
+                fastStart: fastStart,
+                windowCaptureMode: sessionWindowCaptureMode,
+                sessionID: sessionID
+            )
+        }
     }
 
-    func record(filter: SCContentFilter, fastStart: Bool = true) async {
-        SCContext.timeOffset = CMTimeMake(value: 0, timescale: 0)
-        SCContext.isPaused = false
-        SCContext.isResume = false
-        
+    func record(
+        filter: SCContentFilter,
+        fastStart: Bool = true,
+        windowCaptureMode: WindowCaptureMode? = nil,
+        sessionID: UUID
+    ) async {
+        var sessionInstalled = false
+        defer {
+            if !sessionInstalled { captureOutputSessions.cancelReservation(sessionID) }
+        }
+
         let audioOnly = SCContext.streamType == .systemaudio
+        let fallbackBackgroundColor: CGColor? = {
+            guard !audioOnly else { return nil }
+            guard windowCaptureMode == nil else { return nil }
+            guard background.rawValue != BackgroundType.wallpaper.rawValue else { return nil }
+            return SCContext.getBackgroundColor()
+        }()
+        let configurationOwner = CaptureConfigurationOwner(
+            windowMode: windowCaptureMode,
+            fallbackBackgroundColor: fallbackBackgroundColor
+        )
         
         let conf: SCStreamConfiguration
 #if compiler(>=6.0)
-        if recordHDR {
+        if recordHDR && windowCaptureMode == nil {
             if #available(macOS 15, *) {
                 // TODO change here. https://developer.apple.com/videos/play/wwdc2024/10088/?time=191
                 // For canonical display, it means you are capturing HDR content that is optimized for sharing with other HDR devices.
@@ -174,8 +270,18 @@ extension AppDelegate {
         
         if !audioOnly {
             if #available(macOS 14.0, *) {
-                conf.width = Int(filter.contentRect.width) * (highRes == 2 ? Int(filter.pointPixelScale) : 1)
-                conf.height = Int(filter.contentRect.height) * (highRes == 2 ? Int(filter.pointPixelScale) : 1)
+                if windowCaptureMode != nil {
+                    let dimensions = WindowCapturePrivacy.pixelDimensions(
+                        contentRect: filter.contentRect,
+                        pointPixelScale: CGFloat(filter.pointPixelScale),
+                        highResolution: highRes == 2
+                    )
+                    conf.width = dimensions.width
+                    conf.height = dimensions.height
+                } else {
+                    conf.width = Int(filter.contentRect.width) * (highRes == 2 ? Int(filter.pointPixelScale) : 1)
+                    conf.height = Int(filter.contentRect.height) * (highRes == 2 ? Int(filter.pointPixelScale) : 1)
+                }
             } else {
                 guard let pointPixelScaleOld = (SCContext.screen ?? SCContext.getSCDisplayWithMouse()!).nsScreen?.backingScaleFactor else { return }
                 if SCContext.streamType == .application || SCContext.streamType == .windows || SCContext.streamType == .screen {
@@ -204,8 +310,8 @@ extension AppDelegate {
             }
                     
 
-            if background.rawValue != BackgroundType.wallpaper.rawValue { conf.backgroundColor = SCContext.getBackgroundColor() }
-            if !recordHDR {
+            configurationOwner.apply(to: conf)
+            if !recordHDR || windowCaptureMode != nil {
                 conf.pixelFormat = kCVPixelFormatType_32BGRA
                 conf.colorSpaceName = CGColorSpace.sRGB
                 //if withAlpha { conf.pixelFormat = kCVPixelFormatType_32BGRA }
@@ -214,7 +320,7 @@ extension AppDelegate {
                 conf.colorSpaceName = CGColorSpace.itur_2100_PQ
 //                https://developer.apple.com/videos/play/wwdc2022/10155/ guide on how to record 4k60
 //                streamConfiguration.pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
-    
+
 // Note: 420 encoding causes color bleed at edges, e.g. youtube settings icon with red logo
                 // conf.pixelFormat = kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
 //              dont exceed 8 frames  https://developer.apple.com/documentation/screencapturekit/scstreamconfiguration/queuedepth
@@ -231,7 +337,10 @@ extension AppDelegate {
         
 
         //  conf.minimumFrameInterval = CMTime(value: 1, timescale: audioOnly ? CMTimeScale.max : CMTimeScale(frameRate))
-         conf.minimumFrameInterval = CMTime(value: 1, timescale: audioOnly ? CMTimeScale.max : (frameRate >= 60 ? 0 : CMTimeScale(frameRate)))
+         conf.minimumFrameInterval = CaptureFrameCadence.minimumFrameInterval(
+            frameRate: frameRate,
+            audioOnly: audioOnly
+         )
 
 //        CMTimeScale is the denominator in the fraction
 //        conf.minimumFrameInterval = CMTime(seconds: audioOnly ? Double(CMTimeScale.max) : Double(1)/Double(frameRate), preferredTimescale: 10000)
@@ -265,7 +374,16 @@ extension AppDelegate {
         }
         
         let encoderIsH265 = (encoder.rawValue == Encoder.h265.rawValue) || recordHDR
-        if !audioOnly && !encoderIsH265 {
+        let checksH264Availability: Bool
+        switch windowCaptureMode {
+        case .transparent:
+            checksH264Availability = false
+        case .opaque:
+            checksH264Availability = encoder == .h264
+        case nil:
+            checksH264Availability = !encoderIsH265
+        }
+        if !audioOnly && checksH264Availability {
             var session: VTCompressionSession?
             let status = VTCompressionSessionCreate(
                 allocator: nil,
@@ -292,34 +410,186 @@ extension AppDelegate {
             }
         }
         
-        SCContext.stream = SCStream(filter: filter, configuration: conf, delegate: self)
+        let sampleQueue = DispatchQueue(label: "dev.clickai.grabrabbit.capture.\(sessionID.uuidString)")
+        let stream = CaptureStreamConstruction.build(retaining: configurationOwner) {
+            SCStream(filter: filter, configuration: conf, delegate: self)
+        }
+        var preparationOwner: CapturePreparationOwner?
+        var outputSession: CaptureOutputSession?
         do {
-            try SCContext.stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: .global())
-            if #available(macOS 13, *) { try SCContext.stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: .global()) }
-            if !audioOnly {
-                try initVideo(conf: conf)
-            } else {
-                //SCContext.startTime = Date.now
-                if recordMic { startMicRecording() }
+            if audioOnly {
+                do {
+                    try prepareAudioRecording()
+                } catch {
+                    let recordingError = (error as? RecordingExportError)
+                        ?? .preparation(stage: .first, message: error.localizedDescription)
+                    PreparedAudioCaptureSnapshot.capture().discard(reason: recordingError)
+                    throw recordingError
+                }
+                let preparationSnapshot = PreparedAudioCaptureSnapshot.capture()
+                preparationOwner = CapturePreparationOwner { error in
+                    let recordingError = (error as? RecordingExportError)
+                        ?? .preparation(stage: .first, message: error.localizedDescription)
+                    preparationSnapshot.discard(reason: recordingError)
+                }
             }
-            try await SCContext.stream.startCapture()
+            try CapturePreSessionSetup.addOutputs(owner: preparationOwner) {
+                try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: sampleQueue)
+                if #available(macOS 13, *) {
+                    try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: sampleQueue)
+                }
+            }
+            if !audioOnly {
+                try initVideo(conf: conf, windowCaptureMode: windowCaptureMode)
+            }
+            let videoInput: AVAssetWriterInput? = audioOnly ? nil : SCContext.vwInput
+            let systemAudioInput: AVAssetWriterInput?
+            if #available(macOS 13, *), !audioOnly {
+                systemAudioInput = SCContext.awInput
+            } else {
+                systemAudioInput = nil
+            }
+            let microphoneStopHandler: (() -> Void)? = {
+                guard recordMic else { return nil }
+                let usesDefaultDevice = micDevice == "default"
+                let usesAEC = enableAEC
+                return {
+                    if !usesDefaultDevice {
+                        AudioRecorder.shared.stop()
+                    } else if usesAEC {
+                        try? SCContext.AECEngine.stopAudioUnit()
+                    } else {
+                        SCContext.audioEngine.inputNode.removeTap(onBus: 0)
+                        SCContext.audioEngine.stop()
+                    }
+                }
+            }()
+            let session = CaptureOutputSession(
+                id: sessionID,
+                stream: stream,
+                outputJob: SCContext.outputJob,
+                writer: SCContext.vW,
+                videoInput: videoInput,
+                systemAudioInput: systemAudioInput,
+                microphoneInput: recordMic ? SCContext.micInput : nil,
+                standaloneAudioFile: audioOnly ? SCContext.audioFile : nil,
+                configurationOwner: configurationOwner,
+                sampleQueue: sampleQueue,
+                isAudioOnly: audioOnly,
+                standaloneAudioAppender: audioOnly ? { [audioFile = SCContext.audioFile] sampleBuffer in
+                    guard let samples = sampleBuffer.asPCMBuffer else { return }
+                    try audioFile?.write(from: samples)
+                } : nil,
+                standaloneAudioReleaseHandler: audioOnly ? { audioFile in
+                    if SCContext.audioFile === audioFile { SCContext.audioFile = nil }
+                } : nil,
+                saveFrameHandler: { [weak self, recordsHDR = recordHDR] sampleBuffer in
+                    self?.saveCapturedFrame(sampleBuffer, recordsHDR: recordsHDR)
+                },
+                microphoneStopHandler: microphoneStopHandler
+            )
+            outputSession = session
+            preparationOwner?.transfer()
+            guard captureOutputSessions.install(session) else {
+                throw RecordingExportError.preparation(
+                    stage: .first,
+                    message: "Another capture session is already active."
+                )
+            }
+            sessionInstalled = true
+            SCContext.stream = stream
+            if recordMic { startMicRecording(session: session) }
+            try await stream.startCapture()
         } catch {
             let recordingError = (error as? RecordingExportError)
                 ?? .preparation(stage: .first, message: error.localizedDescription)
-            if let job = SCContext.outputJob {
-                _ = job.discardOutputs(reason: recordingError)
-                SCContext.outputJob = nil
+            CapturePreparationFailureCoordinator(store: captureOutputSessions).cleanup(sessionID: sessionID) {
+                if let outputSession {
+                    if !sessionInstalled {
+                        discardPreparedCapture(
+                            outputSession,
+                            stream: stream,
+                            error: recordingError,
+                            stopsMicrophone: false
+                        )
+                    } else if !captureStreamCallbackAdapter.handleStartFailure(
+                        outputSession,
+                        onDrained: { outputSession in
+                            let cleanup = MainThreadCaptureCleanup { [weak self] in
+                                self?.discardCaptureAfterFailedStart(
+                                    outputSession,
+                                    stream: stream,
+                                    error: recordingError
+                                )
+                            }
+                            DispatchQueue.main.async {
+                                cleanup.run()
+                            }
+                        }
+                    ) {
+                        SCContext.showNotification(
+                            title: "Failed to Record".local,
+                            body: recordingError.localizedDescription,
+                            id: "quickrecorder.error.\(UUID().uuidString)"
+                        )
+                    }
+                } else {
+                    if SCContext.stream === stream { SCContext.stream = nil }
+                    preparationOwner?.discard(after: recordingError)
+                    SCContext.streamType = nil
+                    SCContext.showNotification(
+                        title: "Failed to Record".local,
+                        body: recordingError.localizedDescription,
+                        id: "quickrecorder.error.\(UUID().uuidString)"
+                    )
+                }
             }
-            SCContext.showNotification(
-                title: "Failed to Record".local,
-                body: recordingError.localizedDescription,
-                id: "quickrecorder.error.\(UUID().uuidString)"
-            )
             return
         }
         if !audioOnly { registerGlobalMouseMonitor() }
         DispatchQueue.main.async { updateStatusBar() }
         if preventSleep { SleepPreventer.shared.preventSleep(reason: "Screen recording in progress") }
+    }
+
+    private func discardCaptureAfterFailedStart(
+        _ session: CaptureOutputSession,
+        stream: SCStream,
+        error: RecordingExportError
+    ) {
+        defer { captureOutputSessions.release(session) }
+        discardPreparedCapture(
+            session,
+            stream: stream,
+            error: error,
+            stopsMicrophone: true
+        )
+    }
+
+    private func discardPreparedCapture(
+        _ session: CaptureOutputSession,
+        stream: SCStream,
+        error: RecordingExportError,
+        stopsMicrophone: Bool
+    ) {
+        stream.stopCapture()
+        if stopsMicrophone { session.stopMicrophoneCapture() }
+        session.writer?.cancelWriting()
+        session.releaseStandaloneAudioResources()
+        if SCContext.stream === stream { SCContext.stream = nil }
+        if let job = session.outputJob {
+            _ = job.discardOutputs(reason: error)
+            if SCContext.outputJob === job { SCContext.outputJob = nil }
+        }
+        if SCContext.vW === session.writer { SCContext.vW = nil }
+        if SCContext.vwInput === session.videoInput as? AVAssetWriterInput { SCContext.vwInput = nil }
+        if SCContext.awInput === session.systemAudioInput as? AVAssetWriterInput { SCContext.awInput = nil }
+        if SCContext.micInput === session.microphoneInput as? AVAssetWriterInput { SCContext.micInput = nil }
+        SCContext.streamType = nil
+        SCContext.showNotification(
+            title: "Failed to Record".local,
+            body: error.localizedDescription,
+            id: "quickrecorder.error.\(UUID().uuidString)"
+        )
     }
 
     func prepareAudioRecording() throws {
@@ -411,20 +681,34 @@ extension SCDisplay {
 }
 
 extension AppDelegate {
-    func initVideo(conf: SCStreamConfiguration) throws {
+    func initVideo(
+        conf: SCStreamConfiguration,
+        windowCaptureMode: WindowCaptureMode? = nil
+    ) throws {
         SCContext.startTime = nil
 
-        let fileEnding = videoFormat.rawValue
-        let fileType: AVFileType
-        switch fileEnding {
-            case VideoFormat.mov.rawValue: fileType = AVFileType.mov
-            case VideoFormat.mp4.rawValue: fileType = AVFileType.mp4
+        let compatibilityFileType: AVFileType
+        switch videoFormat.rawValue {
+            case VideoFormat.mov.rawValue: compatibilityFileType = AVFileType.mov
+            case VideoFormat.mp4.rawValue: compatibilityFileType = AVFileType.mp4
             default:
                 throw RecordingExportError.preparation(
                     stage: .first,
-                    message: "Unsupported video format: \(fileEnding)"
+                    message: "Unsupported video format: \(videoFormat.rawValue)"
                 )
         }
+        let compatibilityCodec: AVVideoCodecType = encoder == .h265 ? .hevc : .h264
+        let windowProfile = windowCaptureMode.map {
+            WindowCapturePrivacy.outputProfile(
+                mode: $0,
+                compatibilityFileType: compatibilityFileType,
+                compatibilityCodec: compatibilityCodec
+            )
+        }
+        let fileEnding = windowProfile?.fileExtension ?? videoFormat.rawValue
+        let fileType = windowProfile?.fileType ?? compatibilityFileType
+        let videoCodec = windowProfile?.codec
+            ?? ((encoder == .h265 || recordHDR) ? ((withAlpha && !recordHDR) ? .hevcWithAlpha : .hevc) : .h264)
 
         let layout: RecordingOutputJob.Layout = remuxAudio && recordMic && recordWinSound
             ? .videoRemux(fileExtension: fileEnding)
@@ -441,7 +725,7 @@ extension AppDelegate {
             throw recordingError
         }
         SCContext.vW.shouldOptimizeForNetworkUse = true
-        let encoderIsH265 = (encoder.rawValue == Encoder.h265.rawValue) || recordHDR
+        let encoderIsH265 = videoCodec == .hevc || videoCodec == .hevcWithAlpha
         let fpsMultiplier: Double = Double(frameRate)/8
         let encoderMultiplier: Double = encoderIsH265 ? 0.5 : 0.9
         let resolution = Double(max(600, conf.width)) * Double(max(600, conf.height))
@@ -452,25 +736,30 @@ extension AppDelegate {
             default: qualityMultiplier = 1.0
         }
         let h264Level = AVVideoProfileLevelH264HighAutoLevel
-        let h265Level = recordHDR ? kVTProfileLevel_HEVC_Main10_AutoLevel : kVTProfileLevel_HEVC_Main_AutoLevel
+        let recordsHDR = recordHDR && windowCaptureMode == nil
+        let h265Level = recordsHDR ? kVTProfileLevel_HEVC_Main10_AutoLevel : kVTProfileLevel_HEVC_Main_AutoLevel
 
-        let targetBitrate = resolution * fpsMultiplier * encoderMultiplier * qualityMultiplier * (recordHDR ? 2 : 1)
+        let targetBitrate = resolution * fpsMultiplier * encoderMultiplier * qualityMultiplier * (recordsHDR ? 2 : 1)
         print("framerate set in app: \(frameRate)")
         print("target bitrate: \(targetBitrate/1000000)")
 
-        var videoSettings: [String: Any] = [
-            AVVideoCodecKey: encoderIsH265 ? ((withAlpha && !recordHDR) ? AVVideoCodecType.hevcWithAlpha : AVVideoCodecType.hevc) : AVVideoCodecType.h264,
-            // yes, not ideal if we want more than these encoders in the future, but it's ok for now
-            AVVideoWidthKey: conf.width,
-            AVVideoHeightKey: conf.height,
-            AVVideoCompressionPropertiesKey: [
+        var videoSettings = WindowCapturePrivacy.videoSettings(
+            profile: WindowCaptureOutputProfile(
+                fileExtension: fileEnding,
+                fileType: fileType,
+                codec: videoCodec,
+                preservesAlpha: windowProfile?.preservesAlpha ?? (videoCodec == .hevcWithAlpha)
+            ),
+            width: conf.width,
+            height: conf.height,
+            compressionProperties: [
                 AVVideoProfileLevelKey: encoderIsH265 ? h265Level : h264Level,
                 AVVideoAverageBitRateKey: max(200000, Int(targetBitrate)),
                 AVVideoExpectedSourceFrameRateKey: frameRate,
-            ] as [String : Any]
-        ]
+            ]
+        )
         
-        if !recordHDR {
+        if !recordHDR || windowCaptureMode != nil {
             videoSettings[AVVideoColorPropertiesKey] = [
                 AVVideoTransferFunctionKey: AVVideoTransferFunction_ITU_R_709_2,
                 AVVideoColorPrimariesKey: AVVideoColorPrimaries_ITU_R_709_2,
@@ -495,12 +784,11 @@ extension AppDelegate {
             SCContext.micInput = AVAssetWriterInput(mediaType: AVMediaType.audio, outputSettings: settings)
             SCContext.micInput.expectsMediaDataInRealTime = true
             if SCContext.vW.canAdd(SCContext.micInput) { SCContext.vW.add(SCContext.micInput) }
-            startMicRecording()
         }
         SCContext.vW.startWriting()
     }
-    
-    func startMicRecording() {
+
+    func startMicRecording(session: CaptureOutputSession) {
         if micDevice == "default" {
             if enableAEC {
                 var level = AUVoiceIOOtherAudioDuckingLevel.mid
@@ -510,209 +798,159 @@ extension AppDelegate {
                     default: level = .mid
                 }
                 try? SCContext.AECEngine.startAudioStream(enableAEC: enableAEC, duckingLevel: level, audioBufferHandler: { pcmBuffer in
-                    if SCContext.isPaused || SCContext.startTime == nil { return }
-                    if SCContext.micInput.isReadyForMoreMediaData {
-                        SCContext.micInput.append(pcmBuffer.asSampleBuffer!)
-                    }
+                    guard let sampleBuffer = pcmBuffer.asSampleBuffer else { return }
+                    _ = self.captureStreamCallbackAdapter.handleMicrophone(
+                        for: session,
+                        sampleBuffer: sampleBuffer
+                    )
                 })
             } else {
                 let input = SCContext.audioEngine.inputNode
                 let inputFormat = input.inputFormat(forBus: 0)
                 input.installTap(onBus: 0, bufferSize: 1024, format: inputFormat) { buffer, time in
-                    if SCContext.isPaused || SCContext.startTime == nil { return }
-                    if SCContext.micInput.isReadyForMoreMediaData {
-                        SCContext.micInput.append(buffer.asSampleBuffer!)
-                    }
+                    guard let sampleBuffer = buffer.asSampleBuffer else { return }
+                    _ = self.captureStreamCallbackAdapter.handleMicrophone(
+                        for: session,
+                        sampleBuffer: sampleBuffer
+                    )
                 }
                 try! SCContext.audioEngine.start()
             }
         } else {
-            AudioRecorder.shared.setupAudioCapture()
+            AudioRecorder.shared.setupAudioCapture(
+                session: session,
+                callbackAdapter: captureStreamCallbackAdapter
+            )
             AudioRecorder.shared.start()
         }
     }
-    
-    func outputVideoEffectDidStart(for stream: SCStream) {
-        DispatchQueue.main.async { camWindow.close() }
-        print("[Presenter Overlay ON]")
-        isPresenterON = true
-        DispatchQueue.main.asyncAfter(deadline: .now() + TimeInterval(poSafeDelay)) {
-            self.isCameraReady = true
-        }
-    }
-    
-    func outputVideoEffectDidStop(for stream: SCStream) {
-        print("[Presenter Overlay OFF]")
-        presenterType = "OFF"
-        isPresenterON = false
-        isCameraReady = false
+
+    func finishCaptureSession(_ session: CaptureOutputSession, privacyFailure: Bool) {
         DispatchQueue.main.async {
-            if SCContext.stream != nil { camWindow.orderFront(self) }
+            if privacyFailure {
+                SCContext.showNotification(
+                    title: "Failed to Record".local,
+                    body: "Unable to apply the selected window privacy mode.".local,
+                    id: "quickrecorder.error.\(UUID().uuidString)"
+                )
+            }
+            SCContext.stopRecording(session: session)
         }
     }
-    
-    func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of outputType: SCStreamOutputType) {
-        if SCContext.saveFrame, let imageBuffer = sampleBuffer.imageBuffer {
-            SCContext.saveFrame = false
+
+    func schedulePresenterReady(_ session: CaptureOutputSession) {
+        presenterReadyScheduler.schedule(after: TimeInterval(poSafeDelay)) { [weak self, weak session] in
+            guard let self, let session else { return }
+            self.captureOutputCore.markPresenterReady(session)
+        }
+    }
+
+    private func saveCapturedFrame(_ sampleBuffer: CMSampleBuffer, recordsHDR: Bool) {
+        guard sampleBuffer.imageBuffer != nil else { return }
+        do {
+            let job = try SCContext.reserveOutputJob(capture: true, layout: .single(fileExtension: "png"))
             do {
-                let job = try SCContext.reserveOutputJob(capture: true, layout: .single(fileExtension: "png"))
-                do {
-                    var ciImage = CIImage(cvPixelBuffer: imageBuffer)
-                    let url = job.stagedOutputURL
-                    if !recordHDR {
-                        sampleBuffer.nsImage?.saveToFile(url)
-                    } else {
-                        let context = CIContext()
-                
-                    // Create the HEIF destination with the correct UTI
-                    //            if let destination = url? {
-                    // Specify format and color space (assuming default settings here)
-                    //                let format = CIFormat.rgb10
-                    let colorSpace = CGColorSpace(name: CGColorSpace.itur_2100_PQ) ?? CGColorSpaceCreateDeviceRGB()
-                
-                    // let colorSpace = ciImage.colorSpace ?? CGColorSpaceCreateDeviceRGB()
-                
-                    // Image exposure needs to be increased by one stop to match the original
-                    ciImage = ciImage.applyingFilter("CIExposureAdjust", parameters: ["inputEV": 1.0])
-                
-                
-                
-                
-                
-                    //                context.writeHEIF10Representation(of: ciImage, to: destination as! URL, colorSpace: colorSpace)
-                    // try context.writeHEIF10Representation(of:ciImage,
-                    //                                       to:url,
-                    //                                       colorSpace:colorSpace,
-                    //                                       options: [
-                    //     kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: 1.0
-                        if #available(macOS 14.0, *) {
-                            try context.writePNGRepresentation(of:ciImage,
-                                                               to:url,
-                                                               format: .RGB10,
-                                                               colorSpace:colorSpace
-                            )
-                        } else {
-                            // Fallback on earlier versions
-                            print("RGB10 PNG not supported on this macOS version")
-                            try context.writePNGRepresentation(of:ciImage,
-                                                               to:url,
-                                                               format: .RGBA8,
-                                                               colorSpace:colorSpace)
-                        }
-                        //        try context.writePNGRepresentation(of:outImage, to:outURL, format: .RGBA16,colorSpace:colorSpace,options:[:])
-                    }
-                    if case .failure(let error) = job.finishSingleOutput() {
-                        SCContext.showNotification(
-                            title: "Failed to save file".local,
-                            body: error.localizedDescription,
-                            id: "quickrecorder.error.\(UUID().uuidString)"
-                        )
-                    }
-                    //                CGImageDestinationFinalize(destination)
-                } catch {
-                    let recordingError = RecordingExportError.failed(stage: .first, message: error.localizedDescription)
-                    let cleanupError = job.discardOutputs(reason: recordingError)
+                if !recordsHDR {
+                    sampleBuffer.nsImage?.saveToFile(job.stagedOutputURL)
+                } else if let imageBuffer = sampleBuffer.imageBuffer {
+                    let image = CIImage(cvPixelBuffer: imageBuffer).applyingFilter(
+                        "CIExposureAdjust",
+                        parameters: ["inputEV": 1.0]
+                    )
+                    let colorSpace = CGColorSpace(name: CGColorSpace.itur_2100_PQ)
+                        ?? CGColorSpaceCreateDeviceRGB()
+                    let format: CIFormat
+                    if #available(macOS 14.0, *) { format = .RGB10 } else { format = .RGBA8 }
+                    try CIContext().writePNGRepresentation(
+                        of: image,
+                        to: job.stagedOutputURL,
+                        format: format,
+                        colorSpace: colorSpace
+                    )
+                }
+                if case .failure(let error) = job.finishSingleOutput() {
                     SCContext.showNotification(
                         title: "Failed to save file".local,
-                        body: cleanupError.localizedDescription,
+                        body: error.localizedDescription,
                         id: "quickrecorder.error.\(UUID().uuidString)"
                     )
                 }
             } catch {
+                let failure = RecordingExportError.failed(stage: .first, message: error.localizedDescription)
+                let cleanupError = job.discardOutputs(reason: failure)
                 SCContext.showNotification(
                     title: "Failed to save file".local,
-                    body: error.localizedDescription,
+                    body: cleanupError.localizedDescription,
                     id: "quickrecorder.error.\(UUID().uuidString)"
                 )
             }
-        }
-        if SCContext.isPaused { return }
-        guard sampleBuffer.isValid else { return }
-        var SampleBuffer = sampleBuffer
-        if SCContext.isResume {
-            SCContext.isResume = false
-            var pts = CMSampleBufferGetPresentationTimeStamp(SampleBuffer)
-            guard let last = SCContext.lastPTS else { return }
-            if last.flags.contains(CMTimeFlags.valid) {
-                if SCContext.timeOffset.flags.contains(CMTimeFlags.valid) { pts = CMTimeSubtract(pts, SCContext.timeOffset) }
-                let off = CMTimeSubtract(pts, last)
-                print("adding \(CMTimeGetSeconds(off)) to \(CMTimeGetSeconds(SCContext.timeOffset)) (pts \(CMTimeGetSeconds(SCContext.timeOffset)))")
-                if SCContext.timeOffset.value == 0 { SCContext.timeOffset = off } else { SCContext.timeOffset = CMTimeAdd(SCContext.timeOffset, off) }
-            }
-            SCContext.lastPTS?.flags = []
-        }
-        switch outputType {
-        case .screen:
-            if (SCContext.screen == nil && SCContext.window == nil && SCContext.application == nil) || SCContext.streamType == .systemaudio { break }
-            guard let attachmentsArray = CMSampleBufferGetSampleAttachmentsArray(SampleBuffer, createIfNecessary: false) as? [[SCStreamFrameInfo: Any]],
-                  let attachments = attachmentsArray.first else { return }
-            guard let statusRawValue = attachments[SCStreamFrameInfo.status] as? Int,
-                  let status = SCFrameStatus(rawValue: statusRawValue),
-                  status == .complete else { return }
-            
-            if SCContext.vW != nil && SCContext.vW?.status == .writing, SCContext.startTime == nil {
-                SCContext.startTime = Date.now
-                SCContext.vW.startSession(atSourceTime: CMSampleBufferGetPresentationTimeStamp(SampleBuffer))
-            }
-            if (SCContext.timeOffset.value > 0) { SampleBuffer = SCContext.adjustTime(sample: SampleBuffer, by: SCContext.timeOffset) ?? sampleBuffer }
-            var pts = CMSampleBufferGetPresentationTimeStamp(SampleBuffer)
-            let dur = CMSampleBufferGetDuration(SampleBuffer)
-            if (dur.value > 0) { pts = CMTimeAdd(pts, dur) }
-            if frameQueue.getArray().contains(where: { $0 >= pts }) { print("Skip this frame"); return } else { frameQueue.append(pts) }
-            SCContext.lastPTS = pts
-            if SCContext.vwInput.isReadyForMoreMediaData {
-                if #available(macOS 14.2, *) {
-                    if let rect = attachments[.presenterOverlayContentRect] as? [String: Any]{
-                        var type = "np"
-                        let off = (rect["X"] as! CGFloat == .infinity)
-                        let small = (rect["X"] as! CGFloat == 0.0)
-                        let big = (!off && !small)
-                        if off { type = "OFF" } else if small { type = "Small" } else if big { type = "Big" }
-                        if type != presenterType {
-                            print("Presenter Overlay set to \"\(type)\"!")
-                            isCameraReady = false
-                            DispatchQueue.main.asyncAfter(deadline: .now() + TimeInterval(poSafeDelay)) {
-                                self.isCameraReady = true
-                            }
-                            presenterType = type
-                        }
-                    }
-                }
-                if isPresenterON && !isCameraReady { break }
-                if SCContext.firstFrame == nil { SCContext.firstFrame = SampleBuffer }
-                SCContext.vwInput.append(SampleBuffer)
-            }
-            break
-        case .audio:
-            if SCContext.streamType == .systemaudio { // write directly to file if not video recording
-                hideMousePointer = true
-                if SCContext.vW != nil && SCContext.vW?.status == .writing, SCContext.startTime == nil {
-                    SCContext.vW.startSession(atSourceTime: CMSampleBufferGetPresentationTimeStamp(SampleBuffer))
-                }
-                if SCContext.startTime == nil { SCContext.startTime = Date.now }
-                guard let samples = SampleBuffer.asPCMBuffer else { return }
-                do { try SCContext.audioFile?.write(from: samples) }
-                catch { assertionFailure("audio file writing issue".local) }
-            } else {
-                if SCContext.lastPTS == nil { return }
-                if SCContext.awInput.isReadyForMoreMediaData { SCContext.awInput.append(SampleBuffer) }
-            }
-#if compiler(>=6.0)
-        case .microphone:
-            break
-#endif
-        @unknown default:
-            assertionFailure("unknown stream type".local)
+        } catch {
+            SCContext.showNotification(
+                title: "Failed to save file".local,
+                body: error.localizedDescription,
+                id: "quickrecorder.error.\(UUID().uuidString)"
+            )
         }
     }
+
+    func outputVideoEffectDidStart(for stream: SCStream) {
+        guard let outputSession = captureOutputCore.handlePresenterStarted(from: stream) else { return }
+        DispatchQueue.main.async {
+            guard self.captureOutputSessions.session(for: stream) === outputSession else { return }
+            camWindow.close()
+        }
+        print("[Presenter Overlay ON]")
+        DispatchQueue.main.asyncAfter(deadline: .now() + TimeInterval(poSafeDelay)) {
+            self.captureOutputCore.markPresenterReady(outputSession)
+        }
+    }
+
+    func outputVideoEffectDidStop(for stream: SCStream) {
+        guard let outputSession = captureOutputCore.handlePresenterStopped(from: stream) else { return }
+        print("[Presenter Overlay OFF]")
+        DispatchQueue.main.async {
+            guard self.captureOutputSessions.session(for: stream) === outputSession else { return }
+            camWindow.orderFront(self)
+        }
+    }
+
+    func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of outputType: SCStreamOutputType) {
+        let kind: CaptureSampleKind
+        switch outputType {
+        case .screen:
+            let attachments = (CMSampleBufferGetSampleAttachmentsArray(
+                sampleBuffer,
+                createIfNecessary: false
+            ) as? [[SCStreamFrameInfo: Any]])?.first
+            let status = (attachments?[.status] as? Int).flatMap(SCFrameStatus.init(rawValue:))
+            let presenterOverlayX: CGFloat?
+            if #available(macOS 14.2, *) {
+                presenterOverlayX = (attachments?[.presenterOverlayContentRect] as? [String: Any])?["X"] as? CGFloat
+            } else {
+                presenterOverlayX = nil
+            }
+            kind = .screen(isComplete: status == .complete, presenterOverlayX: presenterOverlayX)
+        case .audio:
+            kind = .audio
+#if compiler(>=6.0)
+        case .microphone:
+            return
+#endif
+        @unknown default:
+            return
+        }
+        _ = captureStreamCallbackAdapter.handleSample(
+            from: stream,
+            sampleBuffer: sampleBuffer,
+            kind: kind
+        )
+    }
+
 
     func stream(_ stream: SCStream, didStopWithError error: Error) { // stream error
         print("closing stream with error:\n".local, error,
               "\nthis might be due to the window closing or the user stopping from the sonoma ui".local)
-        DispatchQueue.main.async {
-            SCContext.stream = nil
-            SCContext.stopRecording()
-        }
+        _ = captureStreamCallbackAdapter.handleStop(from: stream)
     }
 }
 
@@ -721,8 +959,21 @@ class AudioRecorder: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate {
     private var captureSession: AVCaptureSession!
     private var audioInput: AVCaptureDeviceInput!
     private var audioDataOutput: AVCaptureAudioDataOutput!
+    private let audioQueue: DispatchQueue
+    private let callbackRoute: CaptureMicrophoneCallbackRoute
 
-    func setupAudioCapture() {
+    override init() {
+        let audioQueue = DispatchQueue(label: "dev.clickai.grabrabbit.external-microphone")
+        self.audioQueue = audioQueue
+        callbackRoute = CaptureMicrophoneCallbackRoute(callbackQueue: audioQueue)
+        super.init()
+    }
+
+    func setupAudioCapture(
+        session: CaptureOutputSession,
+        callbackAdapter: CaptureStreamCallbackAdapter
+    ) {
+        callbackRoute.configure(session: session, callbackAdapter: callbackAdapter)
         captureSession = AVCaptureSession()
 
         // Get the default audio device (microphone)
@@ -749,7 +1000,6 @@ class AudioRecorder: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate {
 
         // Create audio data output
         audioDataOutput = AVCaptureAudioDataOutput()
-        let audioQueue = DispatchQueue(label: "audioQueue")
         audioDataOutput.setSampleBufferDelegate(self, queue: audioQueue)
         
         // Add audio data output to capture session
@@ -771,13 +1021,12 @@ class AudioRecorder: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate {
         if let session = captureSession {
             if session.isRunning { session.stopRunning() }
         }
+        audioDataOutput?.setSampleBufferDelegate(nil, queue: nil)
+        callbackRoute.drainAndClear()
     }
 
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
-        if SCContext.isPaused || SCContext.startTime == nil { return }
-        if SCContext.micInput.isReadyForMoreMediaData {
-            SCContext.micInput.append(sampleBuffer)
-        }
+        _ = callbackRoute.handle(sampleBuffer)
     }
 }
 

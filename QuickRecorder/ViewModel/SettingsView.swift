@@ -248,6 +248,8 @@ struct OutputView: View {
 }
 
 struct HotkeyView: View {
+    @AppStorage("windowCaptureMode") private var windowCaptureMode: WindowCaptureMode = .transparent
+
     var body: some View {
         SForm(spacing: 10) {
             SGroupBox(label: "Hotkey") {
@@ -266,6 +268,17 @@ struct HotkeyView: View {
                 SItem(label: "Record Topmost Window") { KeyboardShortcuts.Recorder("", name: .startWithWindow) }
                 SDivider()
                 SItem(label: "Select Area to Record") { KeyboardShortcuts.Recorder("", name: .startWithArea) }
+            }
+            SGroupBox(label: "Quick Topmost Window") {
+                SPicker("Exterior", selection: $windowCaptureMode) {
+                    ForEach(WindowCaptureMode.allCases, id: \.self) { mode in
+                        Text(mode.title).tag(mode)
+                    }
+                }
+                SDivider()
+                Text(windowCaptureMode.tradeoff)
+                    .font(.footnote)
+                    .foregroundColor(.secondary)
             }
             SGroupBox {
                 SItem(label: "Save Current Frame") { KeyboardShortcuts.Recorder("", name: .saveFrame) }

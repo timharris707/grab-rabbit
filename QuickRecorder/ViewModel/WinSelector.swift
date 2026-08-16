@@ -24,6 +24,17 @@ struct WinSelector: View {
     @State private var autoStop = 0
     @AppStorage("windowCaptureMode") private var windowCaptureMode: WindowCaptureMode = .transparent
     var appDelegate = AppDelegate.shared
+
+    private var controlAvailability: WindowSelectorControlAvailability {
+        WindowSelectorControlAvailability(
+            hasSelection: !selected.isEmpty,
+            status: WindowSelectorRefreshStatus(
+                isReady: viewModel.isReady,
+                isRefreshing: viewModel.isRefreshing,
+                errorMessage: viewModel.refreshErrorMessage
+            )
+        )
+    }
     
     var body: some View {
         ZStack {
@@ -187,7 +198,7 @@ struct WinSelector: View {
                         
                     })
                     .buttonStyle(.plain)
-                    .disabled(viewModel.isRefreshing)
+                    .disabled(!controlAvailability.canRefresh)
                     Button(action: {
                         isPopoverShowing2 = true
                     }, label: {
@@ -201,7 +212,7 @@ struct WinSelector: View {
                         VStack(alignment: .leading) {
                             Toggle(isOn: $disableFilter) { Text("Show Windows with No Title") }
                                 .toggleStyle(.checkbox)
-                                .disabled(viewModel.isRefreshing)
+                                .disabled(!controlAvailability.canChangeSelectorOptions)
                                 .onChange(of: disableFilter) { _ in
                                     self.viewModel.setupStreams(
                                         filter: !disableFilter,
@@ -212,7 +223,7 @@ struct WinSelector: View {
                                 }
                             Toggle(isOn: $donotCapture) { Text("Don't Create Thumbnails") }
                                 .toggleStyle(.checkbox)
-                                .disabled(viewModel.isRefreshing)
+                                .disabled(!controlAvailability.canChangeSelectorOptions)
                                 .onChange(of: donotCapture) { _ in
                                     self.viewModel.setupStreams(
                                         filter: !disableFilter,
@@ -262,7 +273,7 @@ struct WinSelector: View {
                         }
                     })
                     .buttonStyle(.plain)
-                    .disabled(selected.count < 1 || viewModel.isRefreshing)
+                    .disabled(!controlAvailability.canStart)
                 }.padding(.horizontal, 40)
                 Spacer()
             }.padding(.top, -5)

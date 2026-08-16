@@ -28,7 +28,6 @@ final class WindowSelectorRefreshAdapterTests: XCTestCase {
         XCTAssertEqual(selector.components(separatedBy: "updateSelection: { selected = $0 }").count - 1, 3)
         XCTAssertTrue(selector.contains("updateSelection: updateSelection"))
         XCTAssertTrue(selector.contains("currentSelection: @escaping () -> [SCWindow]"))
-        XCTAssertEqual(selector.components(separatedBy: ".disabled(viewModel.isRefreshing)").count - 1, 3)
         XCTAssertTrue(selector.contains("dispatchPrecondition(condition: .onQueue(DispatchQueue.main))"))
         XCTAssertTrue(adapter.contains("let liveSelection = currentSelection()"))
         XCTAssertTrue(adapter.contains("selection: []"))
@@ -309,7 +308,6 @@ final class WindowSelectorRefreshAdapterTests: XCTestCase {
         XCTAssertTrue(selector.contains("self?.windowThumbnails = model"))
         XCTAssertEqual(selector.components(separatedBy: "self?.windowThumbnails =").count - 1, 1)
         XCTAssertTrue(selector.contains("accessibilityIdentifier(\"window-refresh-error\")"))
-        XCTAssertTrue(selector.contains(".disabled(viewModel.isRefreshing)"))
         XCTAssertFalse(selector.contains("windowThumbnails[d]"))
         XCTAssertFalse(selector.contains("sampleHandlerQueue: .main"))
         XCTAssertTrue(provider.contains("sampleHandlerQueue: stateQueue"))
@@ -324,35 +322,125 @@ final class WindowSelectorRefreshAdapterTests: XCTestCase {
     }
 
     func testShippingProviderCapsCaptureFanoutAndFallsBackPerWindow() throws {
-        let provider = try projectSource("QuickRecorder/WindowSelectorThumbnailProvider.swift")
-        var batch = WindowSelectorThumbnailBatch<Int>()
+        var batch = WindowSelectorThumbnailBatch<Int, String>()
         [1, 2, 3].forEach { batch.register($0) }
-        let plan = WindowSelectorThumbnailCapturePlan.make(
+        let plan = WindowSelectorThumbnailCapturePolicy.plan(
             windows: Array(0..<20),
-            captureThumbnails: true,
-            maximumCaptures: 12
+            captureThumbnails: true
         )
-        let placeholdersOnly = WindowSelectorThumbnailCapturePlan.make(
+        let placeholdersOnly = WindowSelectorThumbnailCapturePolicy.plan(
             windows: Array(0..<20),
-            captureThumbnails: false,
-            maximumCaptures: 12
+            captureThumbnails: false
         )
 
         XCTAssertEqual(plan.captured, Array(0..<12))
         XCTAssertEqual(plan.placeholders, Array(12..<20))
         XCTAssertEqual(placeholdersOnly.captured, [])
         XCTAssertEqual(placeholdersOnly.placeholders, Array(0..<20))
-        XCTAssertEqual(batch.resolve(1), false)
-        XCTAssertEqual(batch.resolve(2), false)
-        XCTAssertEqual(batch.resolve(3), true)
-        XCTAssertNil(batch.resolve(2), "A stale stream callback must not resolve twice")
-        XCTAssertTrue(provider.contains("private static let maximumConcurrentThumbnailCaptures = 12"))
-        XCTAssertTrue(provider.contains("maximumCaptures: Self.maximumConcurrentThumbnailCaptures"))
-        XCTAssertTrue(provider.contains("self?.recordFallback(for: stream)"))
-        XCTAssertTrue(provider.contains("self.recordFallback(for: stream)"))
-        XCTAssertTrue(provider.contains("let isComplete = batch.resolve(identifier)"))
-        XCTAssertTrue(provider.contains("appendPlaceholder(for: window, in: content)"))
-        XCTAssertFalse(provider.contains("self?.fail(error.localizedDescription)"))
+        batch.append("placeholder-over-cap")
+        guard case .pending? = batch.resolve(1, outcome: .thumbnail("thumbnail-1")) else {
+            return XCTFail("The first successful stream must remain pending")
+        }
+        guard case .pending? = batch.resolve(2, outcome: .placeholder("placeholder-failed-stream")) else {
+            return XCTFail("A failed stream placeholder must preserve the successful result")
+        }
+        guard case .complete(let publication)? = batch.resolve(3, outcome: .thumbnail("thumbnail-3")) else {
+            return XCTFail("The final stream must publish the mixed-success batch")
+        }
+        XCTAssertEqual(
+            publication,
+            ["placeholder-over-cap", "thumbnail-1", "placeholder-failed-stream", "thumbnail-3"]
+        )
+        XCTAssertNil(
+            batch.resolve(2, outcome: .thumbnail("stale")),
+            "A stale stream callback must not publish twice"
+        )
+    }
+
+    func testSuccessfulRefreshKeepsEveryRecordingControlDisabledUntilCleanupFinishes() {
+        struct TestSnapshot {
+            let windows: [Int]
+        }
+
+        let providerStarted = expectation(description: "provider started")
+        let published = expectation(description: "successful snapshot published after cleanup")
+        let lock = NSLock()
+        var providerCompletion: WindowSelectorRefreshAdapter<TestSnapshot>.Completion?
+        var cleanupAcknowledgement: (() -> Void)?
+        var statuses = [WindowSelectorRefreshStatus]()
+        let coordinator = WindowSelectorRefreshCoordinator<Int, TestSnapshot, [Int], Int, Int>(
+            timeout: 1,
+            candidateModel: { $0.windows },
+            candidateItems: { $0.windows },
+            identifier: { $0 },
+            isModelEmpty: { $0.isEmpty },
+            providerFactory: { _ in
+                { completion in
+                    lock.lock()
+                    providerCompletion = completion
+                    lock.unlock()
+                    providerStarted.fulfill()
+                    return { cleanupFinished in
+                        lock.lock()
+                        cleanupAcknowledgement = cleanupFinished
+                        lock.unlock()
+                    }
+                }
+            }
+        )
+
+        XCTAssertEqual(
+            coordinator.refresh(
+                request: 0,
+                currentModel: { [] },
+                currentSelection: { [7] },
+                applySnapshot: { _ in },
+                applyModel: { _ in },
+                updateSelection: { _ in },
+                publishStatus: { status in
+                    statuses.append(status)
+                    if !status.isRefreshing { published.fulfill() }
+                }
+            ),
+            .started
+        )
+        wait(for: [providerStarted], timeout: 1)
+
+        lock.lock()
+        let completion = providerCompletion
+        lock.unlock()
+        completion?(.success(TestSnapshot(windows: [7])))
+
+        XCTAssertEqual(statuses, [
+            WindowSelectorRefreshStatus(isReady: false, isRefreshing: true, errorMessage: nil),
+        ])
+        XCTAssertEqual(
+            WindowSelectorControlAvailability(hasSelection: true, status: statuses[0]),
+            WindowSelectorControlAvailability(
+                canStart: false,
+                canRefresh: false,
+                canChangeSelectorOptions: false
+            )
+        )
+
+        lock.lock()
+        let acknowledgeCleanup = cleanupAcknowledgement
+        lock.unlock()
+        acknowledgeCleanup?()
+        wait(for: [published], timeout: 1)
+
+        XCTAssertEqual(statuses, [
+            WindowSelectorRefreshStatus(isReady: false, isRefreshing: true, errorMessage: nil),
+            WindowSelectorRefreshStatus(isReady: true, isRefreshing: false, errorMessage: nil),
+        ])
+        XCTAssertEqual(
+            WindowSelectorControlAvailability(hasSelection: true, status: statuses[1]),
+            WindowSelectorControlAvailability(
+                canStart: true,
+                canRefresh: true,
+                canChangeSelectorOptions: true
+            )
+        )
     }
 
     func testRefreshProviderCannotStartRecordingOrCreatePermissionAndOutputResidue() throws {

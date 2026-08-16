@@ -11,7 +11,6 @@ struct WindowSelectorRefreshSnapshot {
 
 final class WindowSelectorThumbnailProvider: NSObject, SCStreamDelegate, SCStreamOutput, @unchecked Sendable {
     typealias Completion = WindowSelectorRefreshAdapter<WindowSelectorRefreshSnapshot>.Completion
-    private static let maximumConcurrentThumbnailCaptures = 12
 
     private struct StreamEntry {
         let window: SCWindow
@@ -33,7 +32,7 @@ final class WindowSelectorThumbnailProvider: NSObject, SCStreamDelegate, SCStrea
     private var content: SCShareableContent?
     private var streams = [SCStream]()
     private var entries = [ObjectIdentifier: StreamEntry]()
-    private var batch = WindowSelectorThumbnailBatch<ObjectIdentifier>()
+    private var batch = WindowSelectorThumbnailBatch<ObjectIdentifier, (StreamEntry, NSImage)>()
     private var windows = [SCWindow]()
     private var thumbnails = [SCDisplay: [WindowThumbnail]]()
     private var finished = false
@@ -87,7 +86,7 @@ final class WindowSelectorThumbnailProvider: NSObject, SCStreamDelegate, SCStrea
               CMSampleBufferGetImageBuffer(sampleBuffer) != nil else { return }
         guard resolve(
             stream,
-            image: sampleBuffer.nsImage ?? NSImage(named: "unknowScreen")!
+            outcome: .thumbnail(sampleBuffer.nsImage ?? NSImage(named: "unknowScreen")!)
         ) else { return }
         startRegistry.stop(stream)
     }
@@ -103,10 +102,9 @@ final class WindowSelectorThumbnailProvider: NSObject, SCStreamDelegate, SCStrea
         guard !finished else { return }
         self.content = content
         windows = eligibleWindows(from: content)
-        let plan = WindowSelectorThumbnailCapturePlan.make(
+        let plan = WindowSelectorThumbnailCapturePolicy.plan(
             windows: windows,
-            captureThumbnails: captureThumbnails,
-            maximumCaptures: Self.maximumConcurrentThumbnailCaptures
+            captureThumbnails: captureThumbnails
         )
 
         for window in plan.placeholders {
@@ -114,7 +112,7 @@ final class WindowSelectorThumbnailProvider: NSObject, SCStreamDelegate, SCStrea
         }
 
         guard !plan.captured.isEmpty else {
-            succeed()
+            publishCompletedBatch()
             return
         }
 
@@ -139,7 +137,7 @@ final class WindowSelectorThumbnailProvider: NSObject, SCStreamDelegate, SCStrea
         }
 
         guard !streams.isEmpty else {
-            succeed()
+            publishCompletedBatch()
             return
         }
 
@@ -175,25 +173,39 @@ final class WindowSelectorThumbnailProvider: NSObject, SCStreamDelegate, SCStrea
     }
 
     private func recordFallback(for stream: SCStream) {
-        _ = resolve(stream, image: NSImage(named: "unknowScreen")!)
+        _ = resolve(stream, outcome: .placeholder(NSImage(named: "unknowScreen")!))
     }
 
-    private func resolve(_ stream: SCStream, image: NSImage) -> Bool {
+    private func resolve(
+        _ stream: SCStream,
+        outcome: WindowSelectorThumbnailOutcome<NSImage>
+    ) -> Bool {
         let identifier = ObjectIdentifier(stream)
         guard !finished,
               let entry = entries[identifier],
-              let isComplete = batch.resolve(identifier) else { return false }
-        appendThumbnail(image, for: entry)
-        if isComplete {
+              let resolution = batch.resolve(
+                identifier,
+                outcome: outcome.map { (entry, $0) }
+              ) else { return false }
+        if case .complete(let resolved) = resolution {
+            resolved.forEach { appendThumbnail($0.1, for: $0.0) }
             succeed()
         }
         return true
     }
 
+    private func publishCompletedBatch() {
+        guard let resolved = batch.completedValues() else { return }
+        resolved.forEach { appendThumbnail($0.1, for: $0.0) }
+        succeed()
+    }
+
     private func appendPlaceholder(for window: SCWindow, in content: SCShareableContent) {
-        appendThumbnail(
-            NSImage(named: "unknowScreen")!,
-            for: StreamEntry(window: window, displays: displays(for: window, in: content))
+        batch.append(
+            (
+                StreamEntry(window: window, displays: displays(for: window, in: content)),
+                NSImage(named: "unknowScreen")!
+            )
         )
     }
 
@@ -311,6 +323,17 @@ final class WindowSelectorThumbnailProvider: NSObject, SCStreamDelegate, SCStrea
             completion?(result)
         }
         cleanupCompletions.forEach { $0() }
+    }
+}
+
+private extension WindowSelectorThumbnailOutcome {
+    func map<Mapped>(_ transform: (Value) -> Mapped) -> WindowSelectorThumbnailOutcome<Mapped> {
+        switch self {
+        case .thumbnail(let value):
+            return .thumbnail(transform(value))
+        case .placeholder(let value):
+            return .placeholder(transform(value))
+        }
     }
 }
 

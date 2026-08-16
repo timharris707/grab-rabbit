@@ -61,20 +61,63 @@ struct WindowSelectorThumbnailCapturePlan<Item> {
     }
 }
 
-struct WindowSelectorThumbnailBatch<Identifier: Hashable> {
+struct WindowSelectorThumbnailCapturePolicy {
+    private static let maximumConcurrentCaptures = 12
+
+    static func plan<Item>(windows: [Item], captureThumbnails: Bool) -> WindowSelectorThumbnailCapturePlan<Item> {
+        WindowSelectorThumbnailCapturePlan.make(
+            windows: windows,
+            captureThumbnails: captureThumbnails,
+            maximumCaptures: maximumConcurrentCaptures
+        )
+    }
+}
+
+enum WindowSelectorThumbnailBatchResolution<Value> {
+    case pending
+    case complete([Value])
+}
+
+enum WindowSelectorThumbnailOutcome<Value> {
+    case thumbnail(Value)
+    case placeholder(Value)
+
+    var value: Value {
+        switch self {
+        case .thumbnail(let value), .placeholder(let value):
+            return value
+        }
+    }
+}
+
+struct WindowSelectorThumbnailBatch<Identifier: Hashable, Value> {
     private var pending = Set<Identifier>()
+    private var values = [Value]()
 
     mutating func register(_ identifier: Identifier) {
         pending.insert(identifier)
     }
 
-    mutating func resolve(_ identifier: Identifier) -> Bool? {
+    mutating func append(_ value: Value) {
+        values.append(value)
+    }
+
+    mutating func resolve(
+        _ identifier: Identifier,
+        outcome: WindowSelectorThumbnailOutcome<Value>
+    ) -> WindowSelectorThumbnailBatchResolution<Value>? {
         guard pending.remove(identifier) != nil else { return nil }
-        return pending.isEmpty
+        values.append(outcome.value)
+        return pending.isEmpty ? .complete(values) : .pending
+    }
+
+    func completedValues() -> [Value]? {
+        pending.isEmpty ? values : nil
     }
 
     mutating func removeAll() {
         pending.removeAll()
+        values.removeAll()
     }
 }
 
@@ -214,6 +257,24 @@ struct WindowSelectorRefreshStatus: Equatable {
     let isReady: Bool
     let isRefreshing: Bool
     let errorMessage: String?
+}
+
+struct WindowSelectorControlAvailability: Equatable {
+    let canStart: Bool
+    let canRefresh: Bool
+    let canChangeSelectorOptions: Bool
+
+    init(canStart: Bool, canRefresh: Bool, canChangeSelectorOptions: Bool) {
+        self.canStart = canStart
+        self.canRefresh = canRefresh
+        self.canChangeSelectorOptions = canChangeSelectorOptions
+    }
+
+    init(hasSelection: Bool, status: WindowSelectorRefreshStatus) {
+        canStart = hasSelection && !status.isRefreshing
+        canRefresh = !status.isRefreshing
+        canChangeSelectorOptions = !status.isRefreshing
+    }
 }
 
 final class WindowSelectorThumbnailStartRegistry<Stream: AnyObject>: @unchecked Sendable {

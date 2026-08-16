@@ -596,6 +596,172 @@ final class WindowCapturePrivacyTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(decodedFrames, 3)
     }
 
+    func testOpaqueCaptureKeepsClearBackgroundUntilTheSessionOwnedSanitizer() throws {
+        let configuration = SCStreamConfiguration()
+        let owner = CaptureConfigurationOwner(windowMode: .opaque, fallbackBackgroundColor: nil)
+
+        owner.apply(to: configuration)
+
+        XCTAssertEqual(configuration.backgroundColor.alpha, 0)
+        XCTAssertEqual(owner.windowSanitizer?.mode, .opaque)
+        XCTAssertEqual(owner.windowSanitizer?.matte, WindowCapturePrivacy.opaqueMatte)
+        let outputMatte = WindowCapturePrivacy.backgroundColor(
+            mode: .opaque,
+            matte: WindowCapturePrivacy.opaqueMatte
+        )
+        XCTAssertEqual(outputMatte.alpha, 1)
+        XCTAssertEqual(outputMatte.components, [0, 0, 0, 1])
+    }
+
+    func testProductionOpaqueH264SanitizesPrivateFramesBeforeEveryDecodedFrame() throws {
+        let frameWidth = 1280
+        let frameHeight = 904
+        let frameCornerRadius = 36
+        let frameCount = 9
+        let profile = WindowCapturePrivacy.outputProfile(
+            mode: .opaque,
+            compatibilityFileType: .mp4,
+            compatibilityCodec: .h264
+        )
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("window-production-opaque-\(UUID().uuidString)")
+            .appendingPathExtension(profile.fileExtension)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let writer = try AVAssetWriter(outputURL: url, fileType: profile.fileType)
+        var videoSettings = WindowCapturePrivacy.videoSettings(
+            profile: profile,
+            width: frameWidth,
+            height: frameHeight,
+            compressionProperties: [
+                AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel,
+                AVVideoAverageBitRateKey: 4_000_000,
+                AVVideoExpectedSourceFrameRateKey: 30,
+            ]
+        )
+        videoSettings[AVVideoColorPropertiesKey] = [
+            AVVideoTransferFunctionKey: AVVideoTransferFunction_ITU_R_709_2,
+            AVVideoColorPrimariesKey: AVVideoColorPrimaries_ITU_R_709_2,
+            AVVideoYCbCrMatrixKey: AVVideoYCbCrMatrix_ITU_R_709_2,
+        ]
+        let input = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
+        input.expectsMediaDataInRealTime = true
+        XCTAssertTrue(writer.canAdd(input))
+        writer.add(input)
+        XCTAssertTrue(writer.startWriting(), writer.error?.localizedDescription ?? "writer did not start")
+
+        let stream = NSObject()
+        let store = CaptureOutputSessionStore()
+        var firstPrivateBuffer: CVPixelBuffer?
+        let session = CaptureOutputSession(
+            stream: stream,
+            outputJob: nil,
+            writer: writer,
+            videoInput: input,
+            systemAudioInput: nil,
+            standaloneAudioFile: nil,
+            configurationOwner: CaptureConfigurationOwner(windowMode: .opaque, fallbackBackgroundColor: nil),
+            sampleQueue: DispatchQueue(label: "WindowCapturePrivacyTests.production-opaque-writer"),
+            isAudioOnly: false,
+            firstFrameHandler: { firstPrivateBuffer = $0.imageBuffer }
+        )
+        let core = CaptureOutputCore(
+            store: store,
+            failureHandler: { _ in XCTFail("opaque sample processing should not fail") },
+            stopHandler: { stoppedSession in store.release(stoppedSession) }
+        )
+        let adapter = CaptureStreamCallbackAdapter(core: core)
+        XCTAssertTrue(store.install(session))
+
+        var firstSourceBuffer: CVPixelBuffer?
+        for index in 0..<frameCount {
+            let sentinel = sentinels[index % sentinels.count]
+            let sourceBuffer = try makeRoundedWindow(
+                width: frameWidth,
+                height: frameHeight,
+                cornerRadius: frameCornerRadius,
+                over: sentinel
+            )
+            if firstSourceBuffer == nil { firstSourceBuffer = sourceBuffer }
+            XCTAssertNotNil(CVPixelBufferGetIOSurface(sourceBuffer))
+            XCTAssertTrue(waitUntilReady(input, timeout: 2), "writer remained backpressured before frame \(index)")
+            XCTAssertEqual(
+                adapter.handleSample(
+                    from: stream,
+                    sampleBuffer: try makeSampleBuffer(
+                        imageBuffer: sourceBuffer,
+                        presentationTime: CMTime(value: Int64(index), timescale: 30)
+                    ),
+                    kind: .screen(isComplete: true, presenterOverlayX: nil)
+                ),
+                .appended
+            )
+            XCTAssertGreaterThan(
+                try inspectExterior(
+                    of: sourceBuffer,
+                    mode: .transparent,
+                    sentinel: sentinel,
+                    width: frameWidth,
+                    height: frameHeight,
+                    cornerRadius: frameCornerRadius
+                ).sentinelPixels,
+                0,
+                "the production path must not mutate source IOSurface frame \(index)"
+            )
+        }
+
+        let privateBuffer = try XCTUnwrap(firstPrivateBuffer)
+        let sourceBuffer = try XCTUnwrap(firstSourceBuffer)
+        XCTAssertFalse(privateBuffer === sourceBuffer)
+        let sanitized = try inspectExterior(
+            of: privateBuffer,
+            mode: .opaque,
+            sentinel: sentinels[0],
+            width: frameWidth,
+            height: frameHeight,
+            cornerRadius: frameCornerRadius
+        )
+        XCTAssertEqual(sanitized.sentinelPixels, 0)
+        XCTAssertEqual(sanitized.invalidPixels, 0, "the private pre-encode frame must be exact #000000/A255")
+
+        input.markAsFinished()
+        let finished = expectation(description: "finish production-path opaque H.264")
+        writer.finishWriting { finished.fulfill() }
+        wait(for: [finished], timeout: 15)
+        XCTAssertEqual(writer.status, .completed, writer.error?.localizedDescription ?? "writer failed")
+
+        let asset = AVURLAsset(url: url)
+        let track = try XCTUnwrap(asset.tracks(withMediaType: .video).first)
+        let reader = try AVAssetReader(asset: asset)
+        let output = AVAssetReaderTrackOutput(
+            track: track,
+            outputSettings: [
+                kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+            ]
+        )
+        XCTAssertTrue(reader.canAdd(output))
+        reader.add(output)
+        XCTAssertTrue(reader.startReading(), reader.error?.localizedDescription ?? "reader did not start")
+
+        var decodedFrames = 0
+        var previousPTS = CMTime.invalid
+        while let decodedSample = output.copyNextSampleBuffer() {
+            let pts = CMSampleBufferGetPresentationTimeStamp(decodedSample)
+            if previousPTS.isValid { XCTAssertGreaterThan(pts, previousPTS) }
+            previousPTS = pts
+            for pixel in try exteriorCornerBGRA(of: XCTUnwrap(decodedSample.imageBuffer)) {
+                XCTAssertLessThanOrEqual(pixel.blue, 24, "decoded frame \(decodedFrames) exceeded the codec black bound")
+                XCTAssertLessThanOrEqual(pixel.green, 24, "decoded frame \(decodedFrames) exceeded the codec black bound")
+                XCTAssertLessThanOrEqual(pixel.red, 24, "decoded frame \(decodedFrames) exceeded the codec black bound")
+                XCTAssertEqual(pixel.alpha, 255)
+            }
+            decodedFrames += 1
+        }
+        XCTAssertEqual(reader.status, .completed, reader.error?.localizedDescription ?? "reader failed")
+        XCTAssertEqual(decodedFrames, frameCount)
+        XCTAssertTrue(adapter.handleStop(from: stream))
+    }
+
     func testProductionStopUsesGuaranteedSameStoreReleaseForEveryFinalizationExit() throws {
         let contextSource = try projectSource("QuickRecorder/SCContext.swift")
 
@@ -1959,6 +2125,20 @@ final class WindowCapturePrivacyTests: XCTestCase {
     }
 
     private func makeRoundedWindow(over sentinel: WindowCaptureMatte) throws -> CVPixelBuffer {
+        try makeRoundedWindow(
+            width: width,
+            height: height,
+            cornerRadius: cornerRadius,
+            over: sentinel
+        )
+    }
+
+    private func makeRoundedWindow(
+        width: Int,
+        height: Int,
+        cornerRadius: Int,
+        over sentinel: WindowCaptureMatte
+    ) throws -> CVPixelBuffer {
         var optionalBuffer: CVPixelBuffer?
         let attributes = [kCVPixelBufferIOSurfacePropertiesKey: [:]] as CFDictionary
         let status = CVPixelBufferCreate(
@@ -1984,7 +2164,13 @@ final class WindowCapturePrivacyTests: XCTestCase {
             let row = baseAddress.advanced(by: y * bytesPerRow).assumingMemoryBound(to: UInt8.self)
             for x in 0..<width {
                 let offset = x * 4
-                if isExterior(x: x, y: y) {
+                if isExterior(
+                    x: x,
+                    y: y,
+                    width: width,
+                    height: height,
+                    cornerRadius: cornerRadius
+                ) {
                     row[offset] = sentinel.blue
                     row[offset + 1] = sentinel.green
                     row[offset + 2] = sentinel.red
@@ -2092,6 +2278,25 @@ final class WindowCapturePrivacyTests: XCTestCase {
             baseAddress
                 .advanced(by: y * bytesPerRow + x * 4)
                 .assumingMemoryBound(to: UInt8.self)[3]
+        }
+    }
+
+    private func exteriorCornerBGRA(
+        of buffer: CVPixelBuffer
+    ) throws -> [(blue: UInt8, green: UInt8, red: UInt8, alpha: UInt8)] {
+        CVPixelBufferLockBaseAddress(buffer, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
+        guard let baseAddress = CVPixelBufferGetBaseAddress(buffer) else {
+            throw WindowCapturePrivacyError.unavailableBaseAddress
+        }
+        let bufferWidth = CVPixelBufferGetWidth(buffer)
+        let bufferHeight = CVPixelBufferGetHeight(buffer)
+        let bytesPerRow = CVPixelBufferGetBytesPerRow(buffer)
+        return [(0, 0), (bufferWidth - 1, 0), (0, bufferHeight - 1), (bufferWidth - 1, bufferHeight - 1)].map { x, y in
+            let pixel = baseAddress
+                .advanced(by: y * bytesPerRow + x * 4)
+                .assumingMemoryBound(to: UInt8.self)
+            return (pixel[0], pixel[1], pixel[2], pixel[3])
         }
     }
 
@@ -2226,6 +2431,24 @@ final class WindowCapturePrivacyTests: XCTestCase {
         mode: WindowCaptureMode,
         sentinel: WindowCaptureMatte
     ) throws -> (sentinelPixels: Int, invalidPixels: Int) {
+        try inspectExterior(
+            of: buffer,
+            mode: mode,
+            sentinel: sentinel,
+            width: width,
+            height: height,
+            cornerRadius: cornerRadius
+        )
+    }
+
+    private func inspectExterior(
+        of buffer: CVPixelBuffer,
+        mode: WindowCaptureMode,
+        sentinel: WindowCaptureMatte,
+        width: Int,
+        height: Int,
+        cornerRadius: Int
+    ) throws -> (sentinelPixels: Int, invalidPixels: Int) {
         CVPixelBufferLockBaseAddress(buffer, .readOnly)
         defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
         guard let baseAddress = CVPixelBufferGetBaseAddress(buffer) else {
@@ -2237,7 +2460,13 @@ final class WindowCapturePrivacyTests: XCTestCase {
         var invalidPixels = 0
         for y in 0..<height {
             let row = baseAddress.advanced(by: y * bytesPerRow).assumingMemoryBound(to: UInt8.self)
-            for x in 0..<width where isExterior(x: x, y: y) {
+            for x in 0..<width where isExterior(
+                x: x,
+                y: y,
+                width: width,
+                height: height,
+                cornerRadius: cornerRadius
+            ) {
                 let offset = x * 4
                 let blue = row[offset]
                 let green = row[offset + 1]
@@ -2262,6 +2491,22 @@ final class WindowCapturePrivacyTests: XCTestCase {
     }
 
     private func isExterior(x: Int, y: Int) -> Bool {
+        isExterior(
+            x: x,
+            y: y,
+            width: width,
+            height: height,
+            cornerRadius: cornerRadius
+        )
+    }
+
+    private func isExterior(
+        x: Int,
+        y: Int,
+        width: Int,
+        height: Int,
+        cornerRadius: Int
+    ) -> Bool {
         let left = x < cornerRadius
         let right = x >= width - cornerRadius
         let bottom = y < cornerRadius

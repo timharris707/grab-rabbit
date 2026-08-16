@@ -53,6 +53,7 @@ enum WindowCapturePrivacy {
     // Opaque window capture uses one fixed sRGB black privacy matte so no desktop
     // color can enter the compatibility encode path.
     static let opaqueMatte = WindowCaptureMatte(red: 0, green: 0, blue: 0)
+    static let clearCaptureBackground = CGColor(red: 0, green: 0, blue: 0, alpha: 0)
 
     static func outputProfile(
         mode: WindowCaptureMode,
@@ -198,12 +199,10 @@ extension AVAssetWriterInput: CaptureVideoSampleDestination {}
 final class WindowCaptureFrameSanitizer {
     let mode: WindowCaptureMode
     let matte: WindowCaptureMatte
-    let backgroundColor: CGColor
 
     init(mode: WindowCaptureMode, matte: WindowCaptureMatte) {
         self.mode = mode
         self.matte = matte
-        backgroundColor = WindowCapturePrivacy.backgroundColor(mode: mode, matte: matte)
     }
 
     func sanitize(_ sampleBuffer: CMSampleBuffer) throws {
@@ -331,7 +330,9 @@ final class CaptureConfigurationOwner {
         windowSanitizer = windowMode.map {
             WindowCaptureFrameSanitizer(mode: $0, matte: WindowCapturePrivacy.opaqueMatte)
         }
-        backgroundColor = windowSanitizer?.backgroundColor ?? fallbackBackgroundColor
+        backgroundColor = windowSanitizer == nil
+            ? fallbackBackgroundColor
+            : WindowCapturePrivacy.clearCaptureBackground
     }
 
     func apply(to configuration: SCStreamConfiguration) {

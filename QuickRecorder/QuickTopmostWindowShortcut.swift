@@ -6,6 +6,70 @@ enum QuickTopmostWindowShortcutFailure: Equatable {
     case topmostWindowUnavailable
 }
 
+struct QuickTopmostContentPreflightPolicy {
+    func refresh<Content>(
+        preflightAuthorized: Bool,
+        fetch: (@escaping (Result<Content, ScreenRecordingContentError>) -> Void) -> Void,
+        completion: @escaping (Result<Content, ScreenRecordingContentError>) -> Void
+    ) {
+        guard preflightAuthorized else {
+            completion(.failure(.permissionDenied))
+            return
+        }
+        fetch(completion)
+    }
+}
+
+struct QuickTopmostWindowFailurePresenter {
+    private let activateApplication: () -> Void
+    private let showAlert: (_ title: String, _ message: String) -> Void
+
+    init(
+        activateApplication: @escaping () -> Void,
+        showAlert: @escaping (_ title: String, _ message: String) -> Void
+    ) {
+        self.activateApplication = activateApplication
+        self.showAlert = showAlert
+    }
+
+    func present(_ failure: QuickTopmostWindowShortcutFailure) {
+        let message: String
+        switch failure {
+        case .contentUnavailable:
+            message = "Grab Rabbit could not load the available windows. Make sure the display is awake, then try Quick Topmost Window again."
+        case .permissionDenied:
+            message = "Screen recording access is unavailable. Grant Grab Rabbit access in System Settings, then try Quick Topmost Window again."
+        case .topmostWindowUnavailable:
+            message = "Grab Rabbit could not find an eligible window in the current frontmost app. Bring the window forward, then try again."
+        }
+        activateApplication()
+        showAlert("Quick Topmost Window Unavailable", message)
+    }
+}
+
+struct QuickTopmostWindowFailureHandler {
+    private let captureStateIsIdle: () -> Bool
+    private let clearStaleTargets: () -> Void
+    private let presenter: QuickTopmostWindowFailurePresenter
+
+    init(
+        captureStateIsIdle: @escaping () -> Bool,
+        clearStaleTargets: @escaping () -> Void,
+        presenter: QuickTopmostWindowFailurePresenter
+    ) {
+        self.captureStateIsIdle = captureStateIsIdle
+        self.clearStaleTargets = clearStaleTargets
+        self.presenter = presenter
+    }
+
+    func handle(_ failure: QuickTopmostWindowShortcutFailure) {
+        if captureStateIsIdle() {
+            clearStaleTargets()
+        }
+        presenter.present(failure)
+    }
+}
+
 final class QuickTopmostWindowShortcutAdapter<Content, Target> {
     typealias ContentResult = Result<Content, ScreenRecordingContentError>
     typealias RefreshContent = (@escaping (ContentResult) -> Void) -> Void

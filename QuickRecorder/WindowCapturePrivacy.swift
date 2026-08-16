@@ -1195,6 +1195,12 @@ final class CaptureOutputSessionStore {
     private var retiredSessions = [UUID: CaptureOutputSession]()
     private var pendingSessionID: UUID?
 
+    var isIdle: Bool {
+        lock.withLock {
+            currentSession == nil && retiredSessions.isEmpty && pendingSessionID == nil
+        }
+    }
+
     @discardableResult
     func reserve(_ sessionID: UUID) -> Bool {
         lock.withLock {

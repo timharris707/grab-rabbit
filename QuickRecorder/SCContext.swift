@@ -78,6 +78,7 @@ class SCContext {
             dismiss()
         }
     }
+    private static let quickTopmostContentPreflightPolicy = QuickTopmostContentPreflightPolicy()
     
     static func updateAvailableContentSync() -> SCShareableContent? {
         let semaphore = DispatchSemaphore(value: 0)
@@ -112,7 +113,10 @@ class SCContext {
     static func refreshAvailableContentForQuickTopmost(
         completion: @escaping (Result<SCShareableContent, ScreenRecordingContentError>) -> Void
     ) {
-        fetchAvailableContent { result in
+        quickTopmostContentPreflightPolicy.refresh(
+            preflightAuthorized: CGPreflightScreenCaptureAccess(),
+            fetch: fetchAvailableContent
+        ) { result in
             applyAvailableContentResult(result)
             completion(result)
         }

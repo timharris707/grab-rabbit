@@ -176,6 +176,29 @@ class AppDelegate: NSObject, NSApplicationDelegate, SCStreamDelegate, SCStreamOu
     }
     var captureOutputCore: CaptureOutputCore { captureOutputInfrastructure.core }
     var captureStreamCallbackAdapter: CaptureStreamCallbackAdapter { captureOutputInfrastructure.adapter }
+    private lazy var quickTopmostWindowFailureHandler = QuickTopmostWindowFailureHandler(
+        captureStateIsIdle: { [weak self] in
+            self?.captureOutputSessions.isIdle == true && SCContext.stream == nil
+        },
+        clearStaleTargets: {
+            SCContext.screen = nil
+            SCContext.window = nil
+            SCContext.application = nil
+            SCContext.filter = nil
+        },
+        presenter: QuickTopmostWindowFailurePresenter(
+            activateApplication: {
+                NSApp.activate(ignoringOtherApps: true)
+            },
+            showAlert: { title, message in
+                _ = createAlert(
+                    title: title,
+                    message: message,
+                    button1: "OK"
+                ).runModal()
+            }
+        )
+    )
     private lazy var quickTopmostWindowShortcut = QuickTopmostWindowShortcutAdapter<SCShareableContent, QuickTopmostCaptureTarget>(
         maximumAttempts: 3,
         refreshContent: { completion in
@@ -217,7 +240,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, SCStreamDelegate, SCStreamOu
             )
         },
         showFailure: { [weak self] failure in
-            self?.showQuickTopmostWindowFailure(failure)
+            self?.quickTopmostWindowFailureHandler.handle(failure)
         }
     )
     
@@ -461,23 +484,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, SCStreamDelegate, SCStreamOu
         updateStatusBar()
     }
 
-    private func showQuickTopmostWindowFailure(_ failure: QuickTopmostWindowShortcutFailure) {
-        let message: String
-        switch failure {
-        case .contentUnavailable:
-            message = "Grab Rabbit could not load the available windows. Make sure the display is awake, then try Quick Topmost Window again."
-        case .permissionDenied:
-            message = "Screen recording access is unavailable. Grant Grab Rabbit access in System Settings, then try Quick Topmost Window again."
-        case .topmostWindowUnavailable:
-            message = "Grab Rabbit could not find an eligible window in the current frontmost app. Bring the window forward, then try again."
-        }
-        _ = createAlert(
-            title: "Quick Topmost Window Unavailable",
-            message: message,
-            button1: "OK"
-        ).runModal()
-    }
-    
     func applicationDidFinishLaunching(_ aNotification: Notification) {
         closeAllWindow()
         if showOnDock { _ = applicationShouldHandleReopen(NSApp, hasVisibleWindows: true) }

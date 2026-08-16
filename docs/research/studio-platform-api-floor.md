@@ -318,7 +318,7 @@ This is a floor contract, not an implementation design:
 | Determine detection/control for Background Replacement, Presenter Overlay, Center Stage, and Studio Light | Effects matrix distinguishes readonly state, writable Center Stage mode, positive Presenter detection after `SCStream` starts but before writing, missing direct controls, and the non-conclusive bounded-negative limit. | Met, with explicit Tim tradeoff |
 | Evidence-backed Tahoe point recommendation and named quality/product tradeoff | Tahoe 26.0 + arm64 recommendation; Presenter Overlay question stated verbatim; quality/performance deferred to prototypes. | Met |
 | Separate Tim's Apple-silicon ruling from technical requirements | Hardware matrix separates OS/API, effect, camera-model, optional HDR, and product constraints. | Met |
-| Link findings from ticket; one-line verdict in map; no deployment change | Map carries the one-line verdict and retains the [#44](https://github.com/timharris707/grab-rabbit/issues/44) pointer. A ready-to-post ticket summary accompanies the lane handoff because the orchestrator owns tracker close-out. Repository settings are untouched. | Lane portion met; ticket comment pending orchestrator |
+| Link findings from ticket; one-line verdict in map; no deployment change | Map carries the one-line verdict and retains the [#44](https://github.com/timharris707/grab-rabbit/issues/44) pointer. The [ticket summary](https://github.com/timharris707/grab-rabbit/issues/44#issuecomment-5309709048) links these findings and records the feature-level verdict. Repository settings are untouched. | Met |
 
 ## Remaining uncertainties (not hidden as facts)
 

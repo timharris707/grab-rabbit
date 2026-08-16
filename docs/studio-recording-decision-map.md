@@ -240,7 +240,7 @@ local availability with the earliest supportable release.
 **Gates.** Deployment settings, availability checks, camera discovery, foreground prototype,
 render prototype, effect preflight, and every later Studio build brief.
 
-**Research verdict:** Tahoe 26.0 + arm64 is the earliest recommended Studio floor; every required public symbol predates Tahoe, while Presenter Overlay has no public pre-stream state/off control through SDK 26.5, so Tim must decide whether user-confirmed preflight plus fail-closed in-stream detection satisfies Q16 ([findings](research/studio-platform-api-floor.md)).
+**Research verdict:** Tahoe 26.0 + arm64 is the earliest recommended Studio floor; every required public symbol predates Tahoe, while Presenter Overlay has no direct public pre-stream state/off control through SDK 26.5; a no-writer observation stream can catch positive signals, but bounded silence is not documented as conclusive, so Tim must choose user confirmation, bounded non-conclusive observation, or a stronger enforcement guarantee for Q16 ([findings](research/studio-platform-api-floor.md)).
 
 **Ticket.** [#44 — STUDIO RESEARCH: Pin the Tahoe API and hardware floor](https://github.com/timharris707/grab-rabbit/issues/44)
 

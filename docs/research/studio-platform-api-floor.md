@@ -19,16 +19,21 @@ hardware contracts: Presenter Overlay requires Apple silicon; ScreenCaptureKit H
 Apple-silicon-only; and Continuity Camera effects depend on the attached iPhone model. Those
 facts support Tim's ruling without rewriting it as an API requirement.
 
-**Unresolved product tradeoff for Tim:** public APIs can detect Presenter Overlay only after an
-`SCStream` starts—through delegate start/stop callbacks (macOS 14.0) and per-frame metadata
-(macOS 14.2). The public 26.5 interfaces expose neither a pre-stream enabled/active property nor
-an off switch. Raising the floor within Tahoe does not close that gap.
+**Unresolved product tradeoff for Tim:** the public 26.5 interfaces expose neither a direct
+pre-stream Presenter Overlay enabled/active property nor an off switch. Once an `SCStream`
+starts, delegate callbacks (macOS 14.0) and per-frame metadata (macOS 14.2) can positively report
+the effect.[^presenter-start][^presenter-rect] **Inference:** a no-writer `SCStream` can therefore
+provide a pre-recording observation phase that fails closed on a positive signal.[^scstream]
+Apple does not document callback/metadata timing or a bounded observation interval whose silence
+conclusively establishes that the effect is off. Raising the floor within Tahoe does not close
+that gap.
 
-> **Exact adjudication question:** Does Q16 permit a user-confirmed “Presenter Overlay is off”
-> preflight followed by an immediate fail-closed stop if ScreenCaptureKit reports the effect,
-> or must Grab Rabbit automatically prove the effect is off before capture starts? The latter
-> contract is not implementable with the public AVFoundation/ScreenCaptureKit surface present
-> through the macOS 26.5 SDK.
+> **Exact adjudication question:** Which Q16 enforcement contract should Studio use: user
+> confirmation; bounded automatic no-writer observation that fails closed on a positive signal
+> while treating no signal as non-conclusive; or a stronger guarantee requiring additional
+> evidence or a different enforcement route? The public 26.5 surface supports positive
+> pre-recording detection after `SCStream` starts, but documents neither a conclusive bounded
+> negative nor direct off control.
 
 ## How to read the findings
 
@@ -153,7 +158,7 @@ The macOS API surface is narrower than the iPhone's in-process capture surface.
 | Can the Mac app read sensor ISO and exposure duration? | `AVCaptureDevice.ISO`, `.exposureDuration`, and `.lensPosition` each end in `API_UNAVAILABLE(macos, visionos)`. | **Source fact:** no public macOS property for these numeric sensor values on the Continuity Camera capture device.[^camera-iso] |
 | Can it read device white-balance gains? | `deviceWhiteBalanceGains ... API_UNAVAILABLE(macos, visionos)`. | **Source fact:** no public macOS gains value.[^camera-white-balance] |
 | Can it request live depth from the Mac camera input? | `activeDepthDataFormat` and `AVCaptureDevice.Format.supportedDepthDataFormats` are `API_UNAVAILABLE(macos, visionos)`. `AVCaptureDepthDataOutput` is also unavailable on macOS. | **Source fact:** the iOS live-depth negotiation path is not a macOS capture contract.[^depth-format] |
-| Can it request camera calibration delivery? | `AVCaptureConnection.cameraIntrinsicMatrixDeliverySupported/Enabled` and `AVCapturePhotoOutput.cameraCalibrationDataDeliverySupported/Enabled` are `API_UNAVAILABLE(macos, visionos)`. | **Source fact:** public AVFoundation does not expose the enablement path on macOS. |
+| Can it request camera calibration delivery? | `AVCaptureConnection.cameraIntrinsicMatrixDeliverySupported/Enabled`, `AVCapturePhotoOutput.cameraCalibrationDataDeliverySupported`, and `AVCapturePhotoSettings.cameraCalibrationDataDeliveryEnabled` are unavailable on macOS. | **Source fact:** public AVFoundation does not expose the video-connection or photo-settings enablement path on macOS. |
 | Does Core Media define an intrinsic-matrix attachment? | `kCMSampleBufferAttachmentKey_CameraIntrinsicMatrix API_AVAILABLE(macos(10.13))`. | **Source fact:** the generic key exists. **Inference:** its existence does not guarantee that Continuity Camera frames carry it, because AVFoundation's delivery controls are unavailable on macOS. Code may inspect optional attachments but must not require one. |
 | What metadata is usable? | `uniqueID`, `localizedName`, `modelID`, `manufacturer`, `transportType`, `activeFormat`, format descriptions, frame timing, dimensions, and color attachments are public. | **Source fact:** identity, format, timing, and color metadata can drive source selection and pixel interpretation. They do not describe room-light direction, brightness, color temperature, or depth. |
 
@@ -166,7 +171,7 @@ which pixel-analysis method meets the realism bar in [#49](https://github.com/ti
 
 | Material symbol | Exact installed declaration | State, hardware, permission, and role |
 |---|---|---|
-| `CIImage(cvPixelBuffer:)` | `initWithCVPixelBuffer: ... NS_AVAILABLE(10_11, 5_0)`. | **Source fact:** public zero/low-copy image ingress from capture and mask buffers.[^ci-image] |
+| `CIImage(cvPixelBuffer:)` | `initWithCVPixelBuffer: ... NS_AVAILABLE(10_11, 5_0)`. | **Source fact:** public pixel-buffer-backed image ingress from capture and mask buffers.[^ci-image] The declaration does not promise copy behavior; allocation and performance remain [#48](https://github.com/timharris707/grab-rabbit/issues/48) measurements. |
 | `CIContext(mtlDevice:)` | `contextWithMTLDevice: ... NS_AVAILABLE(10_11, 9_0)`. | **Source fact:** a context binds rendering to a chosen Metal device.[^ci-context] Contexts are reusable state/caches; they do not own Studio's media clock. |
 | `CIBlendWithMask` / `blendWithMaskFilter` | Typed built-ins are under `NS_CLASS_AVAILABLE(10_15, 13_0)`; the filter interpolates foreground and background by mask. | **Source fact:** public local composition primitive. It makes no mask-quality promise. |
 | `CIContext.render(...toCVPixelBuffer:)` / `...toMTLTexture:` | Both render paths are `NS_AVAILABLE(10_11, ...)`. | **Source fact:** public output to an asset-writer pixel buffer or Metal texture. |
@@ -217,16 +222,17 @@ backpressure under load.
 | Effect | Public state/control surface and exact floor | What Studio can and cannot promise |
 |---|---|---|
 | Background Replacement | `AVCaptureDevice.backgroundReplacementEnabled` and per-device `.backgroundReplacementActive` are readonly, public, and `API_AVAILABLE(macos(15.0))`; format support/rate range is also 15.0.[^background-enabled] | **Source fact:** detect user enablement, active application to a configured device, and format support. **Inference:** no public setter or background-image payload exists in AVFoundation, so Studio cannot turn it off or supply its generated image to the system feature. It can block start until the user disables it and observe active state. |
-| Presenter Overlay | `SCStreamDelegate.outputVideoEffectDidStart/Stop` are macOS 14.0; `SCStreamFrameInfoPresenterOverlayContentRect` is 14.2; `presenterOverlayPrivacyAlertSetting` is 14.0.[^presenter-start][^presenter-rect][^presenter-alert] | **Source fact:** detect an overlay effect after the stream starts and identify overlay content in frames; configure only the privacy-alert policy. **Inference:** the alert property is not effect control. No pre-stream enabled/active getter or enable/disable method appears in the public AVFoundation or ScreenCaptureKit 26.5 interfaces. This is the Tim adjudication above. |
+| Presenter Overlay | `SCStreamDelegate.outputVideoEffectDidStart/Stop` are macOS 14.0; `SCStreamFrameInfoPresenterOverlayContentRect` is 14.2; `presenterOverlayPrivacyAlertSetting` is 14.0.[^presenter-start][^presenter-rect][^presenter-alert] | **Source fact:** after the stream starts, callbacks report the overlay effect and frame metadata identifies Presenter Overlay content; only the privacy-alert policy is configurable. **Inference:** Studio can start an `SCStream` without starting `AVAssetWriter` or adding `SCRecordingOutput`, observe before recording, and fail closed on a positive signal.[^scstream] No direct pre-stream enabled/active getter or off method appears in the public 26.5 interfaces, and Apple does not document bounded silence as a conclusive negative. This is the Tim adjudication above. |
 | Center Stage | `centerStageControlMode`, class `.centerStageEnabled`, and per-device `.centerStageActive` are `API_AVAILABLE(macos(12.3))`; enabled is settable only in app/cooperative mode and observable in user/cooperative mode.[^center-stage-api] | **Source fact:** Studio can inspect support/active state and can control enablement only after explicitly choosing an app/cooperative control contract. **Product recommendation:** honor the Q16 user choice, snapshot it before lighting calibration, and treat a later state change as invalidating calibration rather than silently accepting changed framing. |
 | Studio Light | class `.studioLightEnabled`, device `.studioLightActive`, and format `.studioLightSupported` are readonly and `API_AVAILABLE(macos(13.0))`.[^studio-light-api] | **Source fact:** detect user enablement, activity, and format support; no public setter. **Product recommendation:** permit it only when selected before calibration, then invalidate calibration visibly if state changes. |
 | Portrait Effect | class `.portraitEffectEnabled`, device `.portraitEffectActive`, and format support are readonly and macOS 12.0. | **Source fact:** Portrait blur is a separate system effect, not Background Replacement and not Grab Rabbit's generated-background compositor. Studio preflight should not conflate the two. |
 
-The negative Presenter Overlay/control finding came from a case-insensitive audit of every public
-header and Swift interface in AVFoundation, ScreenCaptureKit, and CoreMediaIO. The only relevant
-Presenter Overlay surface was the privacy-alert enum/property, the delegate start/stop callbacks,
-and the frame content-rect key. The absence claim is limited to that public installed 26.5 SDK;
-it is not a claim about private frameworks or future Apple releases.
+The direct-state/control finding came from a case-insensitive audit of every public header and
+Swift interface in AVFoundation, ScreenCaptureKit, and CoreMediaIO. The only relevant Presenter
+Overlay surface was the privacy-alert enum/property, the delegate start/stop callbacks, and the
+frame content-rect key. That supports the absence of a direct public getter or off switch in the
+installed 26.5 SDK; it does not make bounded no-signal observation conclusive, or claim anything
+about private frameworks or future Apple releases.
 
 ### 8. Hardware and camera-path matrix
 
@@ -282,8 +288,10 @@ This is a floor contract, not an implementation design:
    buffer adaptor.
 6. **Effects:** Background Replacement enabled/active/support; Center Stage enabled/active/
    support and chosen control mode; Studio Light enabled/active/support; Presenter Overlay
-   stream callbacks plus frame metadata. The last item cannot satisfy an automatic pre-start
-   proof without Tim accepting the user-confirmed/fail-closed contract.
+   stream callbacks plus frame metadata. The last item supports positive fail-closed detection
+   during a no-writer pre-recording observation stream, but Apple does not document bounded
+   silence as conclusive; Tim must choose user confirmation, bounded non-conclusive observation,
+   or a stronger enforcement guarantee.
 
 ## Acceptance-criteria matrix
 
@@ -292,7 +300,7 @@ This is a floor contract, not an implementation design:
 | Findings file with Apple primary documentation and installed SDK interfaces | This file cites Apple Documentation/Support inline and quotes exact installed declarations with SDK provenance. | Met |
 | Inventory Continuity Camera, masks, tracking/flow, metadata/depth, composition, ScreenCaptureKit, writer timing, and effects | Sections 1–8 cover all eight requested categories and name the minimum API set. | Met |
 | For every material symbol: availability/change, architecture/device constraints, statefulness, entitlement/permission, public status | Per-category tables plus hardware and permission matrices; all selected symbols are public SDK/API. | Met |
-| Determine detection/control for Background Replacement, Presenter Overlay, Center Stage, and Studio Light | Effects matrix distinguishes readonly state, writable Center Stage mode, post-start Presenter detection, and missing controls. | Met, with explicit Tim tradeoff |
+| Determine detection/control for Background Replacement, Presenter Overlay, Center Stage, and Studio Light | Effects matrix distinguishes readonly state, writable Center Stage mode, positive Presenter detection after `SCStream` starts but before writing, missing direct controls, and the non-conclusive bounded-negative limit. | Met, with explicit Tim tradeoff |
 | Evidence-backed Tahoe point recommendation and named quality/product tradeoff | Tahoe 26.0 + arm64 recommendation; Presenter Overlay question stated verbatim; quality/performance deferred to prototypes. | Met |
 | Separate Tim's Apple-silicon ruling from technical requirements | Hardware matrix separates OS/API, effect, camera-model, optional HDR, and product constraints. | Met |
 | Link findings from ticket; one-line verdict in map; no deployment change | Map carries the one-line verdict and retains the [#44](https://github.com/timharris707/grab-rabbit/issues/44) pointer. A ready-to-post ticket summary accompanies the lane handoff because the orchestrator owns tracker close-out. Repository settings are untouched. | Lane portion met; ticket comment pending orchestrator |
@@ -320,7 +328,7 @@ xcodebuild -version
 sdk=$(xcrun --sdk macosx --show-sdk-path)
 xcrun --sdk macosx --show-sdk-version
 
-rg -n 'ContinuityCamera|ForegroundInstance|PersonInstance|PersonSegmentation|OpticalFlow|TrackObject|CenterStage|StudioLight|BackgroundReplacement|PresenterOverlay|outputVideoEffect|captureMicrophone|CameraIntrinsicMatrix|supportedDepthDataFormats|activeDepthDataFormat' \
+rg -n 'ContinuityCamera|ForegroundInstance|PersonInstance|PersonSegmentation|OpticalFlow|TrackObject|CenterStage|StudioLight|BackgroundReplacement|PresenterOverlay|outputVideoEffect|startCapture|addRecordingOutput|captureMicrophone|CameraIntrinsicMatrix|cameraCalibrationDataDelivery|supportedDepthDataFormats|activeDepthDataFormat' \
   "$sdk/System/Library/Frameworks" --glob '*.{h,swiftinterface}'
 
 rg -n 'API_AVAILABLE\(macosx?\(26\.[1-9]' \

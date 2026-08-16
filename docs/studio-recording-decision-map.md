@@ -263,6 +263,12 @@ differences are meaningful test dimensions.
 
 **Ticket.** [#45 — STUDIO RESEARCH: Establish chair and microphone foreground feasibility](https://github.com/timharris707/grab-rabbit/issues/45)
 
+**Verdict.** Require a native person-only baseline and class-agnostic foreground-instance
+comparison on shared camera clips; Apple does not promise chair/microphone semantics,
+cross-frame identity, live depth, portrait/semantic matte delivery, or calibration, so SAM 2.1
+Tiny remains a conditional prompted challenger after native failure and explicit download
+approval. [Cited findings](research/studio-foreground-feasibility.md)
+
 ### C. Q11 chair-back and Shure-microphone support envelope
 
 **Question.** On real camera feeds, can any researched path retain Tim's chair back and Shure

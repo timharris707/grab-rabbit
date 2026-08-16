@@ -11,6 +11,7 @@ struct WindowSelectorRefreshSnapshot {
 
 final class WindowSelectorThumbnailProvider: NSObject, SCStreamDelegate, SCStreamOutput, @unchecked Sendable {
     typealias Completion = WindowSelectorRefreshAdapter<WindowSelectorRefreshSnapshot>.Completion
+    private static let maximumConcurrentThumbnailCaptures = 12
 
     private struct StreamEntry {
         let window: SCWindow
@@ -26,7 +27,7 @@ final class WindowSelectorThumbnailProvider: NSObject, SCStreamDelegate, SCStrea
     private let stateQueueKey = DispatchSpecificKey<Void>()
     private let startRegistry = WindowSelectorThumbnailStartRegistry<SCStream>(
         start: { try await $0.startCapture() },
-        stop: { $0.stopCapture() }
+        stop: { try await $0.stopCapture() }
     )
     private var completion: Completion?
     private var content: SCShareableContent?
@@ -36,6 +37,10 @@ final class WindowSelectorThumbnailProvider: NSObject, SCStreamDelegate, SCStrea
     private var windows = [SCWindow]()
     private var thumbnails = [SCDisplay: [WindowThumbnail]]()
     private var finished = false
+    private var cleanupStarted = false
+    private var cleanupComplete = false
+    private var pendingTerminalResult: Result<WindowSelectorRefreshSnapshot, WindowSelectorRefreshError>?
+    private var cleanupCompletions = [() -> Void]()
 
     init(filterUntitledWindows: Bool, captureThumbnails: Bool) {
         self.filterUntitledWindows = filterUntitledWindows
@@ -63,12 +68,12 @@ final class WindowSelectorThumbnailProvider: NSObject, SCStreamDelegate, SCStrea
         }
     }
 
-    func cancel() {
+    func cancel(completion: @escaping () -> Void) {
         if DispatchQueue.getSpecific(key: stateQueueKey) != nil {
-            cancelOnStateQueue()
+            cancelOnStateQueue(completion: completion)
         } else {
-            stateQueue.sync {
-                self.cancelOnStateQueue()
+            stateQueue.async {
+                self.cancelOnStateQueue(completion: completion)
             }
         }
     }
@@ -85,24 +90,20 @@ final class WindowSelectorThumbnailProvider: NSObject, SCStreamDelegate, SCStrea
               pendingStreams.remove(identifier) != nil,
               let entry = entries[identifier] else { return }
 
-        let thumbnail = WindowThumbnail(
-            image: sampleBuffer.nsImage ?? NSImage(named: "unknowScreen")!,
-            window: entry.window
+        appendThumbnail(
+            sampleBuffer.nsImage ?? NSImage(named: "unknowScreen")!,
+            for: entry
         )
-        entry.displays.forEach { display in
-            thumbnails[display, default: []].append(thumbnail)
-        }
-        stream.stopCapture()
+        startRegistry.stop(stream)
         if pendingStreams.isEmpty {
             succeed()
         }
     }
 
-    func stream(_ stream: SCStream, didStopWithError error: Error) {
+    func stream(_ stream: SCStream, didStopWithError _: Error) {
         stateQueue.async {
-            guard !self.finished,
-                  self.pendingStreams.contains(ObjectIdentifier(stream)) else { return }
-            self.fail(error.localizedDescription)
+            self.startRegistry.confirmStopped(stream)
+            self.recordFallback(for: stream)
         }
     }
 
@@ -110,28 +111,28 @@ final class WindowSelectorThumbnailProvider: NSObject, SCStreamDelegate, SCStrea
         guard !finished else { return }
         self.content = content
         windows = eligibleWindows(from: content)
+        let plan = WindowSelectorThumbnailCapturePlan.make(
+            windows: windows,
+            captureThumbnails: captureThumbnails,
+            maximumCaptures: Self.maximumConcurrentThumbnailCaptures
+        )
 
-        guard captureThumbnails else {
-            for window in windows {
-                let thumbnail = WindowThumbnail(
-                    image: NSImage(named: "unknowScreen")!,
-                    window: window
-                )
-                displays(for: window, in: content).forEach { display in
-                    thumbnails[display, default: []].append(thumbnail)
-                }
-            }
+        for window in plan.placeholders {
+            appendPlaceholder(for: window, in: content)
+        }
+
+        guard !plan.captured.isEmpty else {
             succeed()
             return
         }
 
-        do {
-            for window in windows {
-                let stream = SCStream(
-                    filter: SCContentFilter(desktopIndependentWindow: window),
-                    configuration: thumbnailConfiguration(for: window),
-                    delegate: self
-                )
+        for window in plan.captured {
+            let stream = SCStream(
+                filter: SCContentFilter(desktopIndependentWindow: window),
+                configuration: thumbnailConfiguration(for: window),
+                delegate: self
+            )
+            do {
                 try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: stateQueue)
                 let identifier = ObjectIdentifier(stream)
                 entries[identifier] = StreamEntry(
@@ -140,10 +141,9 @@ final class WindowSelectorThumbnailProvider: NSObject, SCStreamDelegate, SCStrea
                 )
                 pendingStreams.insert(identifier)
                 streams.append(stream)
+            } catch {
+                appendPlaceholder(for: window, in: content)
             }
-        } catch {
-            fail(error.localizedDescription)
-            return
         }
 
         guard !streams.isEmpty else {
@@ -154,7 +154,7 @@ final class WindowSelectorThumbnailProvider: NSObject, SCStreamDelegate, SCStrea
         for stream in streams {
             startRegistry.start(stream) { [weak self] error in
                 self?.stateQueue.async {
-                    self?.fail(error.localizedDescription)
+                    self?.recordFallback(for: stream)
                 }
             }
         }
@@ -182,6 +182,31 @@ final class WindowSelectorThumbnailProvider: NSObject, SCStreamDelegate, SCStrea
         content.displays.filter { NSIntersectsRect(window.frame, $0.frame) }
     }
 
+    private func recordFallback(for stream: SCStream) {
+        let identifier = ObjectIdentifier(stream)
+        guard !finished,
+              pendingStreams.remove(identifier) != nil,
+              let entry = entries[identifier] else { return }
+        appendThumbnail(NSImage(named: "unknowScreen")!, for: entry)
+        if pendingStreams.isEmpty {
+            succeed()
+        }
+    }
+
+    private func appendPlaceholder(for window: SCWindow, in content: SCShareableContent) {
+        appendThumbnail(
+            NSImage(named: "unknowScreen")!,
+            for: StreamEntry(window: window, displays: displays(for: window, in: content))
+        )
+    }
+
+    private func appendThumbnail(_ image: NSImage, for entry: StreamEntry) {
+        let thumbnail = WindowThumbnail(image: image, window: entry.window)
+        entry.displays.forEach { display in
+            thumbnails[display, default: []].append(thumbnail)
+        }
+    }
+
     private func thumbnailConfiguration(for window: SCWindow) -> SCStreamConfiguration {
         let configuration = SCStreamConfiguration()
         let factor = window.frame.width < 200 && window.frame.height < 200 ? 1.0 : 0.5
@@ -200,17 +225,12 @@ final class WindowSelectorThumbnailProvider: NSObject, SCStreamDelegate, SCStrea
 
     private func succeed() {
         guard !finished, let content else { return }
-        finished = true
-        let completion = self.completion
         let snapshot = WindowSelectorRefreshSnapshot(
             content: content,
             windows: windows,
             thumbnails: thumbnails
         )
-        stopAllStreams()
-        self.completion = nil
-        self.content = nil
-        completion?(.success(snapshot))
+        finish(with: .success(snapshot))
     }
 
     private func fail(_ message: String) {
@@ -220,29 +240,80 @@ final class WindowSelectorThumbnailProvider: NSObject, SCStreamDelegate, SCStrea
     private func finish(with result: Result<WindowSelectorRefreshSnapshot, WindowSelectorRefreshError>) {
         guard !finished else { return }
         finished = true
-        let completion = self.completion
-        stopAllStreams()
+        pendingTerminalResult = result
+        beginCleanup()
+        deliverPendingFailure()
+    }
+
+    private func cancelOnStateQueue(completion: @escaping () -> Void) {
+        if cleanupComplete {
+            completion()
+            return
+        }
+        cleanupCompletions.append(completion)
+        if !finished {
+            finished = true
+            pendingTerminalResult = nil
+            self.completion = nil
+        }
+        beginCleanup()
+    }
+
+    private func beginCleanup() {
+        guard !cleanupStarted else { return }
+        cleanupStarted = true
+        startRegistry.stopAll(
+            onFailure: { [self] error in
+                stateQueue.async {
+                    self.cleanupFailed(error)
+                }
+            },
+            completion: { [self] in
+                stateQueue.async {
+                    self.completeCleanup()
+                }
+            }
+        )
+    }
+
+    private func cleanupFailed(_ error: Error) {
+        guard !cleanupComplete else { return }
+        if case .success? = pendingTerminalResult {
+            pendingTerminalResult = .failure(.unavailable(error.localizedDescription))
+        }
+        deliverPendingFailure()
+    }
+
+    private func deliverPendingFailure() {
+        guard case .failure = pendingTerminalResult,
+              let result = pendingTerminalResult,
+              let completion else { return }
+        pendingTerminalResult = nil
         self.completion = nil
-        content = nil
-        windows.removeAll()
-        completion?(result)
+        completion(result)
     }
 
-    private func cancelOnStateQueue() {
-        guard !finished else { return }
-        finished = true
-        stopAllStreams()
-        completion = nil
-        content = nil
-        windows.removeAll()
-        thumbnails.removeAll()
-    }
+    private func completeCleanup() {
+        guard !cleanupComplete else { return }
+        cleanupComplete = true
+        let result = pendingTerminalResult
+        let completion = self.completion
+        let cleanupCompletions = self.cleanupCompletions
+        pendingTerminalResult = nil
+        self.completion = nil
+        self.cleanupCompletions.removeAll()
 
-    private func stopAllStreams() {
-        startRegistry.cancelAll(streams)
         streams.removeAll()
         entries.removeAll()
         pendingStreams.removeAll()
+        content = nil
+        windows.removeAll()
+        thumbnails.removeAll()
+
+        if let result {
+            completion?(result)
+        }
+        cleanupCompletions.forEach { $0() }
     }
 }
 

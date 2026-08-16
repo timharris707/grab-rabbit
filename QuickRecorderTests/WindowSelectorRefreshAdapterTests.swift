@@ -14,6 +14,7 @@ final class WindowSelectorRefreshAdapterTests: XCTestCase {
 
         XCTAssertTrue(fetchSeam.contains("CGPreflightScreenCaptureAccess()"))
         XCTAssertTrue(fetchSeam.contains("WindowSelectorContentAccessPolicy"))
+        XCTAssertTrue(fetchSeam.contains("captureReadiness.updateRecoveryActionAvailability(true)"))
     }
 
     func testRefreshClearsKnownUnavailableSelectionAndUsesIdentityReconciliation() throws {
@@ -27,7 +28,7 @@ final class WindowSelectorRefreshAdapterTests: XCTestCase {
         XCTAssertEqual(selector.components(separatedBy: "updateSelection: { selected = $0 }").count - 1, 3)
         XCTAssertTrue(selector.contains("updateSelection: updateSelection"))
         XCTAssertTrue(selector.contains("currentSelection: @escaping () -> [SCWindow]"))
-        XCTAssertEqual(selector.components(separatedBy: ".disabled(viewModel.isRefreshing)").count - 1, 1)
+        XCTAssertEqual(selector.components(separatedBy: ".disabled(viewModel.isRefreshing)").count - 1, 3)
         XCTAssertTrue(selector.contains("dispatchPrecondition(condition: .onQueue(DispatchQueue.main))"))
         XCTAssertTrue(adapter.contains("let liveSelection = currentSelection()"))
         XCTAssertTrue(adapter.contains("selection: []"))
@@ -36,6 +37,7 @@ final class WindowSelectorRefreshAdapterTests: XCTestCase {
 
     func testDeniedPreflightReturnsTypedFailureWithoutCallingProvider() {
         var providerCount = 0
+        var recoveryCount = 0
         var results = [Result<Int, ScreenRecordingContentError>]()
 
         WindowSelectorContentAccessPolicy().fetch(
@@ -44,10 +46,12 @@ final class WindowSelectorRefreshAdapterTests: XCTestCase {
                 providerCount += 1
                 completion(.success(1))
             },
+            permissionDenied: { recoveryCount += 1 },
             completion: { results.append($0) }
         )
 
         XCTAssertEqual(providerCount, 0)
+        XCTAssertEqual(recoveryCount, 1)
         XCTAssertEqual(results, [.failure(.permissionDenied)])
         XCTAssertEqual(
             WindowSelectorRefreshError.permissionDenied.userMessage,
@@ -59,7 +63,7 @@ final class WindowSelectorRefreshAdapterTests: XCTestCase {
         var messages = [String]()
         adapter.refresh(using: { completion in
             completion(.failure(.permissionDenied))
-            return {}
+            return { $0() }
         }, publish: { result in
             if case .failure(let error) = result {
                 messages.append(error.userMessage)
@@ -68,6 +72,23 @@ final class WindowSelectorRefreshAdapterTests: XCTestCase {
         })
         wait(for: [failurePublished], timeout: 1)
         XCTAssertEqual(messages, ["Screen recording access is required to refresh windows."])
+    }
+
+    func testProviderPermissionDenialAlsoExposesRecovery() {
+        var recoveryCount = 0
+        var results = [Result<Int, ScreenRecordingContentError>]()
+
+        WindowSelectorContentAccessPolicy().fetch(
+            preflightAuthorized: true,
+            provider: { completion in
+                completion(.failure(.permissionDenied))
+            },
+            permissionDenied: { recoveryCount += 1 },
+            completion: { results.append($0) }
+        )
+
+        XCTAssertEqual(recoveryCount, 1)
+        XCTAssertEqual(results, [.failure(.permissionDenied)])
     }
 
     func testSelectionTransactionPreservesSameIdentityAndRejectsMissingTarget() {
@@ -145,7 +166,7 @@ final class WindowSelectorRefreshAdapterTests: XCTestCase {
                 providerCompletion = completion
                 stateLock.unlock()
                 providerStarted.fulfill()
-                return {}
+                return { $0() }
             }, publish: { result in
                 XCTAssertTrue(Thread.isMainThread)
                 guard case .success(let snapshot) = result else {
@@ -210,7 +231,7 @@ final class WindowSelectorRefreshAdapterTests: XCTestCase {
                     providerCompletion = completion
                     stateLock.unlock()
                     providerStarted.fulfill()
-                    return {}
+                    return { $0() }
                 }
             }
         )
@@ -294,9 +315,37 @@ final class WindowSelectorRefreshAdapterTests: XCTestCase {
         XCTAssertTrue(provider.contains("sampleHandlerQueue: stateQueue"))
         XCTAssertTrue(provider.contains("private let stateQueue = DispatchQueue("))
         XCTAssertTrue(provider.contains("startRegistry.start(stream)"))
+        XCTAssertTrue(provider.contains("startRegistry.stop(stream)"))
+        XCTAssertTrue(provider.contains("stop: { try await $0.stopCapture() }"))
+        XCTAssertFalse(provider.contains("stream.stopCapture()"))
         XCTAssertFalse(provider.contains("Task { [weak self]"))
         XCTAssertTrue(provider.contains("@unchecked Sendable"))
         XCTAssertGreaterThanOrEqual(provider.components(separatedBy: "stateQueue.async").count - 1, 4)
+    }
+
+    func testShippingProviderCapsCaptureFanoutAndFallsBackPerWindow() throws {
+        let provider = try projectSource("QuickRecorder/WindowSelectorThumbnailProvider.swift")
+        let plan = WindowSelectorThumbnailCapturePlan.make(
+            windows: Array(0..<20),
+            captureThumbnails: true,
+            maximumCaptures: 12
+        )
+        let placeholdersOnly = WindowSelectorThumbnailCapturePlan.make(
+            windows: Array(0..<20),
+            captureThumbnails: false,
+            maximumCaptures: 12
+        )
+
+        XCTAssertEqual(plan.captured, Array(0..<12))
+        XCTAssertEqual(plan.placeholders, Array(12..<20))
+        XCTAssertEqual(placeholdersOnly.captured, [])
+        XCTAssertEqual(placeholdersOnly.placeholders, Array(0..<20))
+        XCTAssertTrue(provider.contains("private static let maximumConcurrentThumbnailCaptures = 12"))
+        XCTAssertTrue(provider.contains("maximumCaptures: Self.maximumConcurrentThumbnailCaptures"))
+        XCTAssertTrue(provider.contains("self?.recordFallback(for: stream)"))
+        XCTAssertTrue(provider.contains("self.recordFallback(for: stream)"))
+        XCTAssertTrue(provider.contains("appendPlaceholder(for: window, in: content)"))
+        XCTAssertFalse(provider.contains("self?.fail(error.localizedDescription)"))
     }
 
     func testRefreshProviderCannotStartRecordingOrCreatePermissionAndOutputResidue() throws {
@@ -353,7 +402,7 @@ final class WindowSelectorRefreshAdapterTests: XCTestCase {
                     complete(.success(TestSnapshot(windows: (0..<12).map {
                         TestWindow(id: $0, revision: 1)
                     })))
-                    return {}
+                    return { $0() }
                 }
             }
         )
@@ -407,6 +456,56 @@ final class WindowSelectorRefreshAdapterTests: XCTestCase {
         ])
     }
 
+    func testCoordinatorOrdersRefreshingBeforeTerminalStatusOnPublicationQueue() {
+        struct TestSnapshot {
+            let windows: [Int]
+        }
+
+        let publicationQueue = DispatchQueue(label: "window-refresh-status-order-test")
+        let queueKey = DispatchSpecificKey<Void>()
+        publicationQueue.setSpecific(key: queueKey, value: ())
+        let statusesPublished = expectation(description: "ordered statuses published")
+        statusesPublished.expectedFulfillmentCount = 2
+        var statuses = [WindowSelectorRefreshStatus]()
+        let coordinator = WindowSelectorRefreshCoordinator<Int, TestSnapshot, [Int], Int, Int>(
+            timeout: 1,
+            publicationQueue: publicationQueue,
+            candidateModel: { $0.windows },
+            candidateItems: { $0.windows },
+            identifier: { $0 },
+            isModelEmpty: { $0.isEmpty },
+            providerFactory: { _ in
+                { completion in
+                    completion(.success(TestSnapshot(windows: [7])))
+                    return { $0() }
+                }
+            }
+        )
+
+        XCTAssertEqual(
+            coordinator.refresh(
+                request: 0,
+                currentModel: { [] },
+                currentSelection: { [] },
+                applySnapshot: { _ in },
+                applyModel: { _ in },
+                updateSelection: { _ in },
+                publishStatus: { status in
+                    XCTAssertNotNil(DispatchQueue.getSpecific(key: queueKey))
+                    statuses.append(status)
+                    statusesPublished.fulfill()
+                }
+            ),
+            .started
+        )
+
+        wait(for: [statusesPublished], timeout: 1)
+        XCTAssertEqual(statuses, [
+            WindowSelectorRefreshStatus(isReady: false, isRefreshing: true, errorMessage: nil),
+            WindowSelectorRefreshStatus(isReady: true, isRefreshing: false, errorMessage: nil),
+        ])
+    }
+
     func testRepeatedRefreshIsCoalescedWithoutDuplicateProviderWork() {
         let providerStarted = expectation(description: "provider started")
         let published = expectation(description: "published")
@@ -421,7 +520,7 @@ final class WindowSelectorRefreshAdapterTests: XCTestCase {
             finish = complete
             lock.unlock()
             providerStarted.fulfill()
-            return {}
+            return { $0() }
         }, publish: { result in
             XCTAssertEqual(try? result.get(), [1, 2])
             published.fulfill()
@@ -430,7 +529,7 @@ final class WindowSelectorRefreshAdapterTests: XCTestCase {
         wait(for: [providerStarted], timeout: 1)
         let second = adapter.refresh(using: { _ in
             XCTFail("Coalesced refresh must not invoke a second provider")
-            return {}
+            return { $0() }
         }, publish: { _ in
             XCTFail("Coalesced refresh must not publish")
         })
@@ -449,21 +548,28 @@ final class WindowSelectorRefreshAdapterTests: XCTestCase {
 
     func testTimeoutCancelsOnceAndCorrectedSameProcessRetryIgnoresStaleCompletion() {
         let timedOut = expectation(description: "timed out")
+        let teardownFinished = expectation(description: "teardown finished")
         let retryPublished = expectation(description: "retry published")
         let adapter = WindowSelectorRefreshAdapter<[Int]>(timeout: 0.05)
         let lock = NSLock()
         var firstCompletion: WindowSelectorRefreshAdapter<[Int]>.Completion?
+        var finishCleanup: (() -> Void)?
         var cancellationCount = 0
         var results = [Result<[Int], WindowSelectorRefreshError>]()
+        let startedAt = Date()
 
         XCTAssertEqual(
             adapter.refresh(using: { complete in
                 firstCompletion = complete
-                return {
+                return { cleanupFinished in
                     lock.lock()
                     cancellationCount += 1
+                    finishCleanup = cleanupFinished
                     lock.unlock()
                 }
+            }, teardownCompletion: { error in
+                XCTAssertEqual(error, .timedOut)
+                teardownFinished.fulfill()
             }, publish: { result in
                 results.append(result)
                 timedOut.fulfill()
@@ -472,14 +578,30 @@ final class WindowSelectorRefreshAdapterTests: XCTestCase {
         )
 
         wait(for: [timedOut], timeout: 1)
+        XCTAssertLessThan(Date().timeIntervalSince(startedAt), 0.5)
         XCTAssertEqual(results, [.failure(.timedOut)])
         XCTAssertEqual(WindowSelectorRefreshError.timedOut.userMessage, "Window refresh timed out. Please try again.")
+        XCTAssertEqual(
+            adapter.refresh(using: { _ in
+                XCTFail("Retry must not start before prior cleanup acknowledgement")
+                return { $0() }
+            }, publish: { _ in
+                XCTFail("A cleanup-blocked retry must not publish")
+            }),
+            .coalesced
+        )
+
+        firstCompletion?(.success([-1]))
+        lock.lock()
+        let cleanup = finishCleanup
+        lock.unlock()
+        cleanup?()
+        wait(for: [teardownFinished], timeout: 1)
 
         XCTAssertEqual(
             adapter.refresh(using: { complete in
-                firstCompletion?(.success([-1]))
                 complete(.success([7, 8, 9]))
-                return {}
+                return { $0() }
             }, publish: { result in
                 results.append(result)
                 retryPublished.fulfill()
@@ -495,12 +617,13 @@ final class WindowSelectorRefreshAdapterTests: XCTestCase {
         XCTAssertEqual(results, [.failure(.timedOut), .success([7, 8, 9])])
     }
 
-    func testTimeoutCancelsProductionCoordinatorProviderBeforeVisibleFailure() {
+    func testTimeoutKeepsProductionCoordinatorDisabledUntilCleanupFinishes() {
         struct TestSnapshot {
             let windows: [Int]
         }
 
-        let timedOut = expectation(description: "timed out")
+        let timedOut = expectation(description: "timeout visible during cleanup")
+        let teardownFinished = expectation(description: "timeout teardown finished")
         let cancelled = expectation(description: "provider cancelled")
         let quietPeriodElapsed = expectation(description: "quiet period elapsed")
         let workQueue = DispatchQueue(label: "window-refresh-cancellable-work-test")
@@ -508,6 +631,7 @@ final class WindowSelectorRefreshAdapterTests: XCTestCase {
         let workLock = NSLock()
         var workCount = 0
         var cancellationCount = 0
+        var statuses = [WindowSelectorRefreshStatus]()
         let coordinator = WindowSelectorRefreshCoordinator<Int, TestSnapshot, [Int], Int, Int>(
             timeout: 0.08,
             candidateModel: { $0.windows },
@@ -523,12 +647,13 @@ final class WindowSelectorRefreshAdapterTests: XCTestCase {
                         workLock.unlock()
                     }
                     workTimer.resume()
-                    return {
+                    return { cleanupFinished in
                         workLock.lock()
                         cancellationCount += 1
                         workLock.unlock()
                         workTimer.cancel()
                         cancelled.fulfill()
+                        cleanupFinished()
                     }
                 }
             }
@@ -549,19 +674,25 @@ final class WindowSelectorRefreshAdapterTests: XCTestCase {
                     XCTFail("Timed-out provider must not change the selection")
                 },
                 publishStatus: { status in
+                    statuses.append(status)
                     if status.errorMessage == WindowSelectorRefreshError.timedOut.userMessage {
                         workLock.lock()
-                        let cleanupFinishedBeforePublication = cancellationCount == 1
+                        let cleanupRequestedBeforePublication = cancellationCount == 1
                         workLock.unlock()
-                        XCTAssertTrue(cleanupFinishedBeforePublication)
-                        timedOut.fulfill()
+                        XCTAssertTrue(cleanupRequestedBeforePublication)
+                        if status.isRefreshing {
+                            XCTAssertFalse(status.isReady)
+                            timedOut.fulfill()
+                        } else {
+                            teardownFinished.fulfill()
+                        }
                     }
                 }
             ),
             .started
         )
 
-        wait(for: [timedOut, cancelled], timeout: 1)
+        wait(for: [timedOut, teardownFinished, cancelled], timeout: 1)
         workQueue.sync {}
         workLock.lock()
         let workAtCancellation = workCount
@@ -579,14 +710,27 @@ final class WindowSelectorRefreshAdapterTests: XCTestCase {
         XCTAssertGreaterThan(workAtCancellation, 0)
         XCTAssertEqual(workAfterQuietPeriod, workAtCancellation)
         XCTAssertEqual(observedCancellationCount, 1)
+        XCTAssertEqual(statuses, [
+            WindowSelectorRefreshStatus(isReady: false, isRefreshing: true, errorMessage: nil),
+            WindowSelectorRefreshStatus(
+                isReady: false,
+                isRefreshing: true,
+                errorMessage: WindowSelectorRefreshError.timedOut.userMessage
+            ),
+            WindowSelectorRefreshStatus(
+                isReady: false,
+                isRefreshing: false,
+                errorMessage: WindowSelectorRefreshError.timedOut.userMessage
+            ),
+        ])
     }
 
-    func testShippingThumbnailStartRegistryStopsACaptureThatFinishesStartingAfterCancellation() {
+    func testShippingThumbnailStartRegistryStopsLateStartExactlyOnceBeforeRemoval() {
         final class TestStream {}
 
         let startEntered = expectation(description: "start entered")
-        let stopped = expectation(description: "stream stopped before and after late start")
-        stopped.expectedFulfillmentCount = 2
+        let stopped = expectation(description: "late-start stream stopped")
+        let cleanupFinished = expectation(description: "late-start cleanup finished")
         let releaseStart = WindowSelectorTestAsyncGate()
         let activity = WindowSelectorTestCaptureActivity()
         let stream = TestStream()
@@ -607,17 +751,135 @@ final class WindowSelectorRefreshAdapterTests: XCTestCase {
         }
         wait(for: [startEntered], timeout: 1)
 
-        registry.cancelAll([stream])
+        registry.stopAll(onFailure: { error in
+            XCTFail("Late-start cleanup unexpectedly failed: \(error)")
+        }, completion: {
+            cleanupFinished.fulfill()
+        })
         let stateAtCancellationReturn = activity.snapshot()
         XCTAssertFalse(stateAtCancellationReturn.0)
-        XCTAssertEqual(stateAtCancellationReturn.1, 1)
+        XCTAssertEqual(stateAtCancellationReturn.1, 0)
+        XCTAssertEqual(registry.ownedStreamCount, 1)
 
         releaseStart.open()
-        wait(for: [stopped], timeout: 1)
+        wait(for: [stopped, cleanupFinished], timeout: 1)
         let finalState = activity.snapshot()
         XCTAssertFalse(finalState.0)
-        XCTAssertEqual(finalState.1, 2)
+        XCTAssertEqual(finalState.1, 1)
         XCTAssertTrue(finalState.2.isEmpty)
+        XCTAssertEqual(registry.ownedStreamCount, 0)
+    }
+
+    func testSuccessfulRefreshWaitsForCleanupBeforePublicationAndNextProvider() {
+        let providerStarted = expectation(description: "provider started")
+        let cleanupRequested = expectation(description: "cleanup requested")
+        let published = expectation(description: "result published after cleanup")
+        let earlyPublication = expectation(description: "result published before cleanup")
+        earlyPublication.isInverted = true
+        let adapter = WindowSelectorRefreshAdapter<Int>(timeout: 1)
+        let lock = NSLock()
+        var providerCompletion: WindowSelectorRefreshAdapter<Int>.Completion?
+        var cleanupAcknowledgement: (() -> Void)?
+        var cleanupAcknowledged = false
+
+        XCTAssertEqual(
+            adapter.refresh(using: { completion in
+                providerCompletion = completion
+                providerStarted.fulfill()
+                return { acknowledgeCleanup in
+                    lock.lock()
+                    cleanupAcknowledgement = acknowledgeCleanup
+                    lock.unlock()
+                    cleanupRequested.fulfill()
+                }
+            }, publish: { result in
+                lock.lock()
+                let stoppedBeforePublication = cleanupAcknowledged
+                lock.unlock()
+                if !stoppedBeforePublication {
+                    earlyPublication.fulfill()
+                }
+                XCTAssertTrue(stoppedBeforePublication)
+                XCTAssertEqual(try? result.get(), 7)
+                published.fulfill()
+            }),
+            .started
+        )
+        wait(for: [providerStarted], timeout: 1)
+        providerCompletion?(.success(7))
+        wait(for: [cleanupRequested], timeout: 1)
+
+        XCTAssertEqual(
+            adapter.refresh(using: { _ in
+                XCTFail("A second provider must not overlap prior cleanup")
+                return { $0() }
+            }, publish: { _ in
+                XCTFail("A cleanup-blocked refresh must not publish")
+            }),
+            .coalesced
+        )
+        wait(for: [earlyPublication], timeout: 0.05)
+
+        lock.lock()
+        cleanupAcknowledged = true
+        let acknowledgeCleanup = cleanupAcknowledgement
+        lock.unlock()
+        acknowledgeCleanup?()
+        wait(for: [published], timeout: 1)
+    }
+
+    func testStopFailureRetainsRegistryOwnershipUntilDelegateTerminalSignal() {
+        final class TestStream {}
+        enum TestStopError: Error {
+            case rejected
+        }
+
+        let startFinished = expectation(description: "stream start returned")
+        let stopFailed = expectation(description: "stop failure surfaced")
+        let cleanupFinished = expectation(description: "delegate-confirmed cleanup finished")
+        let lock = NSLock()
+        var cleanupCount = 0
+        let activity = WindowSelectorTestCaptureActivity()
+        let stream = TestStream()
+        let registry = WindowSelectorThumbnailStartRegistry<TestStream>(
+            start: { _ in
+                startFinished.fulfill()
+            },
+            stop: { _ in
+                activity.stop()
+                throw TestStopError.rejected
+            }
+        )
+
+        registry.start(stream) { error in
+            XCTFail("Stream start unexpectedly failed: \(error)")
+        }
+        wait(for: [startFinished], timeout: 1)
+        registry.stopAll(onFailure: { error in
+            XCTAssertTrue(error is TestStopError)
+            stopFailed.fulfill()
+        }, completion: {
+            lock.lock()
+            cleanupCount += 1
+            lock.unlock()
+            cleanupFinished.fulfill()
+        })
+
+        wait(for: [stopFailed], timeout: 1)
+        lock.lock()
+        let cleanupBeforeTerminalSignal = cleanupCount
+        lock.unlock()
+        XCTAssertEqual(activity.snapshot().1, 1)
+        XCTAssertEqual(cleanupBeforeTerminalSignal, 0)
+        XCTAssertEqual(registry.ownedStreamCount, 1)
+
+        registry.stop(stream)
+        XCTAssertEqual(activity.snapshot().1, 1)
+        XCTAssertEqual(registry.ownedStreamCount, 1)
+
+        registry.confirmStopped(stream)
+        wait(for: [cleanupFinished], timeout: 1)
+        XCTAssertEqual(registry.ownedStreamCount, 0)
     }
 
     func testExplicitCancellationRejectsStalePublicationAndAllowsRetry() {
@@ -635,10 +897,11 @@ final class WindowSelectorRefreshAdapterTests: XCTestCase {
             staleCompletion = completion
             lock.unlock()
             providerStarted.fulfill()
-            return {
+            return { cleanupFinished in
                 lock.lock()
                 cancellationCount += 1
                 lock.unlock()
+                cleanupFinished()
             }
         }, publish: { _ in
             cancelledPublication.fulfill()
@@ -653,7 +916,7 @@ final class WindowSelectorRefreshAdapterTests: XCTestCase {
         XCTAssertEqual(
             adapter.refresh(using: { completion in
                 completion(.success(42))
-                return {}
+                return { $0() }
             }, publish: { result in
                 XCTAssertEqual(try? result.get(), 42)
                 retryPublished.fulfill()
@@ -672,15 +935,49 @@ final class WindowSelectorRefreshAdapterTests: XCTestCase {
         )
     }
 
+    func testAdapterDeinitRequestsCleanupExactlyOnceAndRejectsLatePublication() {
+        let providerStarted = expectation(description: "provider started")
+        let cleanupRequested = expectation(description: "deinit cleanup requested")
+        let stalePublication = expectation(description: "stale deinit publication")
+        stalePublication.isInverted = true
+        let lock = NSLock()
+        var adapter: WindowSelectorRefreshAdapter<Int>? = WindowSelectorRefreshAdapter(timeout: 1)
+        var staleCompletion: WindowSelectorRefreshAdapter<Int>.Completion?
+        var acknowledgeCleanup: (() -> Void)?
+        var cleanupCount = 0
+
+        adapter?.refresh(using: { completion in
+            staleCompletion = completion
+            providerStarted.fulfill()
+            return { acknowledgement in
+                lock.lock()
+                cleanupCount += 1
+                acknowledgeCleanup = acknowledgement
+                lock.unlock()
+                cleanupRequested.fulfill()
+            }
+        }, publish: { _ in
+            stalePublication.fulfill()
+        })
+        wait(for: [providerStarted], timeout: 1)
+
+        adapter = nil
+        wait(for: [cleanupRequested], timeout: 1)
+        staleCompletion?(.success(99))
+        lock.lock()
+        let cleanup = acknowledgeCleanup
+        let observedCleanupCount = cleanupCount
+        lock.unlock()
+        cleanup?()
+
+        wait(for: [stalePublication], timeout: 0.05)
+        XCTAssertEqual(observedCleanupCount, 1)
+    }
+
     func testRefreshDuringQueuedPublicationIsCoalescedWithoutDuplicateProviderWork() {
         let publicationQueue = DispatchQueue(label: "window-refresh-publication-test")
         let publicationQueueBlocked = DispatchSemaphore(value: 0)
         let releasePublicationQueue = DispatchSemaphore(value: 0)
-        publicationQueue.async {
-            publicationQueueBlocked.signal()
-            releasePublicationQueue.wait()
-        }
-        XCTAssertEqual(publicationQueueBlocked.wait(timeout: .now() + 1), .success)
 
         let firstProviderFinished = expectation(description: "first provider finished")
         let firstPublished = expectation(description: "first published")
@@ -700,7 +997,12 @@ final class WindowSelectorRefreshAdapterTests: XCTestCase {
                 lock.unlock()
                 complete(.success(1))
                 firstProviderFinished.fulfill()
-                return {}
+                return { $0() }
+            }, started: {
+                publicationQueue.async {
+                    publicationQueueBlocked.signal()
+                    releasePublicationQueue.wait()
+                }
             }, publish: { result in
                 if case .success(let value) = result {
                     lock.lock()
@@ -711,12 +1013,13 @@ final class WindowSelectorRefreshAdapterTests: XCTestCase {
             }),
             .started
         )
+        XCTAssertEqual(publicationQueueBlocked.wait(timeout: .now() + 1), .success)
         wait(for: [firstProviderFinished], timeout: 1)
 
         XCTAssertEqual(
             adapter.refresh(using: { _ in
                 XCTFail("A refresh awaiting publication must not start another provider")
-                return {}
+                return { $0() }
             }, publish: { _ in
                 XCTFail("A coalesced refresh must not publish")
             }),
@@ -732,7 +1035,7 @@ final class WindowSelectorRefreshAdapterTests: XCTestCase {
                 providerCount += 1
                 lock.unlock()
                 complete(.success(3))
-                return {}
+                return { $0() }
             }, publish: { result in
                 if case .success(let value) = result {
                     lock.lock()
@@ -766,11 +1069,6 @@ final class WindowSelectorRefreshAdapterTests: XCTestCase {
         let publicationQueue = DispatchQueue(label: "window-refresh-live-selection-generation-test")
         let publicationQueueBlocked = DispatchSemaphore(value: 0)
         let releasePublicationQueue = DispatchSemaphore(value: 0)
-        publicationQueue.async {
-            publicationQueueBlocked.signal()
-            releasePublicationQueue.wait()
-        }
-        XCTAssertEqual(publicationQueueBlocked.wait(timeout: .now() + 1), .success)
 
         let firstProviderFinished = expectation(description: "first provider finished")
         let firstPublished = expectation(description: "first generation published")
@@ -804,7 +1102,12 @@ final class WindowSelectorRefreshAdapterTests: XCTestCase {
                         windows: [TestWindow(id: 7, revision: 2), TestWindow(id: 9, revision: 2)]
                     )))
                     firstProviderFinished.fulfill()
-                    return {}
+                    return { $0() }
+                }, started: {
+                    publicationQueue.async {
+                        publicationQueueBlocked.signal()
+                        releasePublicationQueue.wait()
+                    }
                 }, publish: { result in
                 guard case .success(let publication) = result else { return }
                 stateLock.lock()
@@ -815,6 +1118,7 @@ final class WindowSelectorRefreshAdapterTests: XCTestCase {
             }),
             .started
         )
+        XCTAssertEqual(publicationQueueBlocked.wait(timeout: .now() + 1), .success)
         wait(for: [firstProviderFinished], timeout: 1)
 
         stateLock.lock()
@@ -826,7 +1130,7 @@ final class WindowSelectorRefreshAdapterTests: XCTestCase {
                 currentSelection: { [] },
                 using: { _ in
                     XCTFail("A queued publication must coalesce another provider request")
-                    return {}
+                    return { $0() }
                 }, publish: { _ in
                 XCTFail("A coalesced request must not publish")
             }),
@@ -851,7 +1155,7 @@ final class WindowSelectorRefreshAdapterTests: XCTestCase {
 
     func testPublicationCallbackRunsAfterAdapterUnlock() throws {
         let adapter = try projectSource("QuickRecorder/WindowSelectorRefreshAdapter.swift")
-        guard let methodStart = adapter.range(of: "private func publishIfCurrent"),
+        guard let methodStart = adapter.range(of: "private func publishSuccessIfCurrent"),
               let methodEnd = adapter.range(
                 of: "deinit",
                 range: methodStart.upperBound..<adapter.endIndex
@@ -890,7 +1194,7 @@ final class WindowSelectorRefreshAdapterTests: XCTestCase {
                 providerCount += 1
                 lock.unlock()
                 complete(.success(1))
-                return {}
+                return { $0() }
             }, publish: { result in
                 if case .success(let value) = result {
                     lock.lock()
@@ -900,7 +1204,7 @@ final class WindowSelectorRefreshAdapterTests: XCTestCase {
                 XCTAssertEqual(
                     adapter.refresh(using: { _ in
                         XCTFail("A refresh inside publication must not start another provider")
-                        return {}
+                        return { $0() }
                     }, publish: { _ in
                         XCTFail("A coalesced refresh must not publish")
                     }),
@@ -918,7 +1222,7 @@ final class WindowSelectorRefreshAdapterTests: XCTestCase {
                 providerCount += 1
                 lock.unlock()
                 complete(.success(2))
-                return {}
+                return { $0() }
             }, publish: { result in
                 if case .success(let value) = result {
                     lock.lock()
@@ -950,7 +1254,7 @@ final class WindowSelectorRefreshAdapterTests: XCTestCase {
         XCTAssertEqual(
             adapter.refresh(using: { complete in
                 complete(.success(1))
-                return {}
+                return { $0() }
             }, publish: { _ in
                 adapter.cancel()
                 published.fulfill()

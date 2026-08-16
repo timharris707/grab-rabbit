@@ -201,6 +201,7 @@ struct WinSelector: View {
                         VStack(alignment: .leading) {
                             Toggle(isOn: $disableFilter) { Text("Show Windows with No Title") }
                                 .toggleStyle(.checkbox)
+                                .disabled(viewModel.isRefreshing)
                                 .onChange(of: disableFilter) { _ in
                                     self.viewModel.setupStreams(
                                         filter: !disableFilter,
@@ -211,6 +212,7 @@ struct WinSelector: View {
                                 }
                             Toggle(isOn: $donotCapture) { Text("Don't Create Thumbnails") }
                                 .toggleStyle(.checkbox)
+                                .disabled(viewModel.isRefreshing)
                                 .onChange(of: donotCapture) { _ in
                                     self.viewModel.setupStreams(
                                         filter: !disableFilter,
@@ -321,7 +323,9 @@ class WindowSelectorViewModel: NSObject, ObservableObject {
                     captureThumbnails: request.captureThumbnails
                 )
                 provider.start(completion: completion)
-                return { provider.cancel() }
+                return { cleanupFinished in
+                    provider.cancel(completion: cleanupFinished)
+                }
             }
         }
     )

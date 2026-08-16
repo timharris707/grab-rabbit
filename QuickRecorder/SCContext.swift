@@ -126,6 +126,11 @@ class SCContext {
         WindowSelectorContentAccessPolicy().fetch(
             preflightAuthorized: CGPreflightScreenCaptureAccess(),
             provider: { fetchAvailableContent(completion: $0) },
+            permissionDenied: {
+                DispatchQueue.main.async {
+                    captureReadiness.updateRecoveryActionAvailability(true)
+                }
+            },
             completion: completion
         )
     }

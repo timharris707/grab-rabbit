@@ -506,6 +506,9 @@ extension AppDelegate {
             }
             sessionInstalled = true
             SCContext.stream = stream
+            if captureOutputSessions.consumeTerminationRequest(for: session) {
+                throw RecordingExportError.cancelled(stage: .first)
+            }
             if recordMic { try startMicRecording(session: session) }
             try await stream.startCapture()
         } catch {

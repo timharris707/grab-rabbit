@@ -688,12 +688,21 @@ final class AssetWriterFinalizer: CaptureWriterFinalizing {
 }
 
 final class CaptureApplicationTerminationCoordinator {
+    typealias ReplyScheduler = (@escaping () -> Void) -> Void
+
     private let store: CaptureOutputSessionStore
+    private let scheduleReply: ReplyScheduler
     private let lock = NSLock()
     private var isWaiting = false
 
-    init(store: CaptureOutputSessionStore) {
+    init(
+        store: CaptureOutputSessionStore,
+        scheduleReply: @escaping ReplyScheduler = { reply in
+            DispatchQueue.main.async(execute: reply)
+        }
+    ) {
         self.store = store
+        self.scheduleReply = scheduleReply
     }
 
     func prepareForTermination(
@@ -706,14 +715,19 @@ final class CaptureApplicationTerminationCoordinator {
             return true
         }
         guard shouldRegister else { return true }
-        guard store.notifyWhenIdle({ [weak self] in
+        let idleHandler = { [weak self, scheduleReply] in
             self?.lock.withLock { self?.isWaiting = false }
-            replyWhenFinished()
-        }) else {
+            scheduleReply(replyWhenFinished)
+        }
+        switch store.prepareForApplicationTermination(idleHandler) {
+        case .idle:
             lock.withLock { isWaiting = false }
             return false
+        case .stopActiveCapture:
+            stopActiveCapture()
+        case .waitForIdle:
+            break
         }
-        stopActiveCapture()
         return true
     }
 }
@@ -1291,11 +1305,18 @@ final class CaptureOutputSessionStore {
         case unmatched
     }
 
+    enum TerminationPreparation {
+        case idle
+        case stopActiveCapture
+        case waitForIdle
+    }
+
     private let lock = NSLock()
     private var currentSession: CaptureOutputSession?
     private var retiredSessions = [UUID: CaptureOutputSession]()
     private var pendingSessionID: UUID?
     private var finalizingSessionIDs = Set<UUID>()
+    private var terminationRequestedSessionID: UUID?
     private var idleHandlers = [() -> Void]()
 
     var isIdle: Bool {
@@ -1317,7 +1338,12 @@ final class CaptureOutputSessionStore {
 
     func cancelReservation(_ sessionID: UUID) {
         let handlers = lock.withLock { () -> [() -> Void] in
-            if pendingSessionID == sessionID { pendingSessionID = nil }
+            if pendingSessionID == sessionID {
+                pendingSessionID = nil
+                if terminationRequestedSessionID == sessionID {
+                    terminationRequestedSessionID = nil
+                }
+            }
             return takeIdleHandlersIfNeeded()
         }
         handlers.forEach { $0() }
@@ -1432,10 +1458,28 @@ final class CaptureOutputSessionStore {
         return didRelease
     }
 
-    func notifyWhenIdle(_ handler: @escaping () -> Void) -> Bool {
+    func prepareForApplicationTermination(
+        _ handler: @escaping () -> Void
+    ) -> TerminationPreparation {
         lock.withLock {
-            guard !isIdle else { return false }
+            guard !isIdle else { return .idle }
             idleHandlers.append(handler)
+            if let pendingSessionID {
+                terminationRequestedSessionID = pendingSessionID
+                return .waitForIdle
+            }
+            guard let currentSession else { return .waitForIdle }
+            terminationRequestedSessionID = currentSession.id
+            return .stopActiveCapture
+        }
+    }
+
+    func consumeTerminationRequest(for session: CaptureOutputSession) -> Bool {
+        lock.withLock {
+            guard terminationRequestedSessionID == session.id else {
+                return false
+            }
+            terminationRequestedSessionID = nil
             return true
         }
     }
@@ -1446,6 +1490,7 @@ final class CaptureOutputSessionStore {
 
     private func takeIdleHandlersIfNeeded() -> [() -> Void] {
         guard isIdle else { return [] }
+        terminationRequestedSessionID = nil
         defer { idleHandlers.removeAll() }
         return idleHandlers
     }

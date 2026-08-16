@@ -343,6 +343,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, SCStreamDelegate, SCStreamOu
                 if SCContext.stream != nil { SCContext.stopRecording() }
             },
             replyWhenFinished: {
+                dispatchPrecondition(condition: .onQueue(.main))
                 sender.reply(toApplicationShouldTerminate: true)
             }
         )

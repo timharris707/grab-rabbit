@@ -951,7 +951,10 @@ final class WindowCapturePrivacyTests: XCTestCase {
             writerFinalizer: writer
         )
         let finalizer = CaptureSessionFinalizationCoordinator(store: store)
-        let termination = CaptureApplicationTerminationCoordinator(store: store)
+        let termination = CaptureApplicationTerminationCoordinator(
+            store: store,
+            scheduleReply: { $0() }
+        )
         var stopCount = 0
         var replyCount = 0
 
@@ -987,11 +990,149 @@ final class WindowCapturePrivacyTests: XCTestCase {
         XCTAssertTrue(appSource.contains(".terminateLater"))
         XCTAssertTrue(appSource.contains("reply(toApplicationShouldTerminate: true)"))
 
-        let idleTermination = CaptureApplicationTerminationCoordinator(store: store)
+        let idleTermination = CaptureApplicationTerminationCoordinator(
+            store: store,
+            scheduleReply: { $0() }
+        )
         XCTAssertFalse(idleTermination.prepareForTermination(
             stopActiveCapture: { XCTFail("An idle app has nothing to stop.") },
             replyWhenFinished: { XCTFail("An idle app terminates immediately.") }
         ))
+    }
+
+    func testApplicationTerminationDuringPendingPreparationIsObservedAfterInstallation() throws {
+        let engineSource = try projectSource("QuickRecorder/RecordEngine.swift")
+        let appSource = try projectSource("QuickRecorder/QuickRecorderApp.swift")
+        let lifecycleSource = try projectSource("QuickRecorder/WindowCapturePrivacy.swift")
+        let store = CaptureOutputSessionStore()
+        let session = makeCaptureSession(
+            stream: NSObject(),
+            mode: .transparent,
+            sink: TestVideoDestination()
+        )
+        let termination = CaptureApplicationTerminationCoordinator(
+            store: store,
+            scheduleReply: { $0() }
+        )
+        var stopAttemptCount = 0
+        var cancelledSessionCount = 0
+        var replyCount = 0
+
+        XCTAssertTrue(store.reserve(session.id))
+        XCTAssertTrue(termination.prepareForTermination(
+            stopActiveCapture: { stopAttemptCount += 1 },
+            replyWhenFinished: { replyCount += 1 }
+        ))
+        XCTAssertEqual(stopAttemptCount, 0, "A pending preparation has no active stream to stop yet.")
+        XCTAssertEqual(replyCount, 0)
+
+        XCTAssertTrue(store.install(session))
+        XCTAssertTrue(store.consumeTerminationRequest(for: session))
+        cancelledSessionCount += 1
+        XCTAssertTrue(store.deactivate(session))
+        XCTAssertTrue(store.release(session))
+
+        XCTAssertEqual(cancelledSessionCount, 1)
+        XCTAssertFalse(store.consumeTerminationRequest(for: session), "Cancellation is one-shot.")
+        XCTAssertEqual(replyCount, 1, "Termination must reply after the exact preparation becomes idle.")
+        XCTAssertTrue(engineSource.contains("captureOutputSessions.consumeTerminationRequest(for: session)"))
+        XCTAssertTrue(engineSource.contains("throw RecordingExportError.cancelled(stage: .first)"))
+        XCTAssertTrue(appSource.contains("dispatchPrecondition(condition: .onQueue(.main))"))
+        XCTAssertTrue(lifecycleSource.contains("DispatchQueue.main.async(execute: reply)"))
+    }
+
+    func testApplicationTerminationDuringPendingCancellationOrFailureRepliesExactlyOnce() {
+        for usesFailureCleanup in [false, true] {
+            let store = CaptureOutputSessionStore()
+            let sessionID = UUID()
+            let termination = CaptureApplicationTerminationCoordinator(
+                store: store,
+                scheduleReply: { $0() }
+            )
+            var stopCount = 0
+            var cleanupCount = 0
+            var replyCount = 0
+
+            XCTAssertTrue(store.reserve(sessionID))
+            XCTAssertTrue(termination.prepareForTermination(
+                stopActiveCapture: { stopCount += 1 },
+                replyWhenFinished: { replyCount += 1 }
+            ))
+            XCTAssertTrue(termination.prepareForTermination(
+                stopActiveCapture: { stopCount += 1 },
+                replyWhenFinished: { replyCount += 1 }
+            ))
+
+            if usesFailureCleanup {
+                CapturePreparationFailureCoordinator(store: store).cleanup(sessionID: sessionID) {
+                    cleanupCount += 1
+                }
+            } else {
+                store.cancelReservation(sessionID)
+            }
+            store.cancelReservation(sessionID)
+
+            XCTAssertEqual(stopCount, 0)
+            XCTAssertEqual(cleanupCount, usesFailureCleanup ? 1 : 0)
+            XCTAssertEqual(replyCount, 1)
+            XCTAssertFalse(termination.prepareForTermination(
+                stopActiveCapture: { XCTFail("An idle store has no capture to stop.") },
+                replyWhenFinished: { XCTFail("Idle termination does not need a deferred reply.") }
+            ))
+        }
+    }
+
+    func testApplicationTerminationBetweenInstallationAndStreamPublicationIsConsumedOnce() {
+        let store = CaptureOutputSessionStore()
+        let session = makeCaptureSession(
+            stream: NSObject(),
+            mode: .transparent,
+            sink: TestVideoDestination()
+        )
+        let termination = CaptureApplicationTerminationCoordinator(
+            store: store,
+            scheduleReply: { $0() }
+        )
+        var stopAttemptCount = 0
+        var replyCount = 0
+
+        XCTAssertTrue(store.reserve(session.id))
+        XCTAssertTrue(store.install(session))
+        XCTAssertTrue(termination.prepareForTermination(
+            stopActiveCapture: { stopAttemptCount += 1 },
+            replyWhenFinished: { replyCount += 1 }
+        ))
+
+        XCTAssertEqual(stopAttemptCount, 1, "The active-session Stop still runs once.")
+        XCTAssertTrue(
+            store.consumeTerminationRequest(for: session),
+            "The exact installed session must retain Quit until its stream is published."
+        )
+        XCTAssertFalse(store.consumeTerminationRequest(for: session))
+        XCTAssertTrue(store.deactivate(session))
+        XCTAssertTrue(store.release(session))
+        XCTAssertEqual(replyCount, 1)
+    }
+
+    func testApplicationTerminationReplyReturnsToMainQueueAfterBackgroundIdleTransition() {
+        let store = CaptureOutputSessionStore()
+        let sessionID = UUID()
+        let termination = CaptureApplicationTerminationCoordinator(store: store)
+        let reply = expectation(description: "termination reply on main queue")
+
+        XCTAssertTrue(store.reserve(sessionID))
+        XCTAssertTrue(termination.prepareForTermination(
+            stopActiveCapture: { XCTFail("Pending preparation has no active capture to stop.") },
+            replyWhenFinished: {
+                XCTAssertTrue(Thread.isMainThread)
+                reply.fulfill()
+            }
+        ))
+        DispatchQueue.global(qos: .userInitiated).async {
+            store.cancelReservation(sessionID)
+        }
+
+        wait(for: [reply], timeout: 2)
     }
 
     func testTransparentAndOpaqueOutputProfilesAreExplicit() {

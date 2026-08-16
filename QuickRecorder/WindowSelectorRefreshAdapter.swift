@@ -77,7 +77,7 @@ struct WindowSelectorRefreshTransaction {
             identifier: identifier
         ) else {
             return WindowSelectorRefreshResolution(
-                model: currentModel,
+                model: candidateModel,
                 selection: [],
                 acceptedCandidate: false
             )
@@ -152,6 +152,179 @@ final class WindowSelectorRefreshPipeline<Snapshot, Model, Item, Identifier: Has
 
     func cancel() {
         adapter.cancel()
+    }
+}
+
+struct WindowSelectorRefreshRequest: Equatable {
+    let filterUntitledWindows: Bool
+    let captureThumbnails: Bool
+}
+
+struct WindowSelectorRefreshStatus: Equatable {
+    let isReady: Bool
+    let isRefreshing: Bool
+    let errorMessage: String?
+}
+
+final class WindowSelectorThumbnailStartRegistry<Stream: AnyObject>: @unchecked Sendable {
+    typealias Start = (Stream) async throws -> Void
+    typealias Stop = (Stream) -> Void
+
+    private let lock = NSLock()
+    private let startOperation: Start
+    private let stopOperation: Stop
+    private var tasks = [ObjectIdentifier: Task<Void, Never>]()
+    private var isCancelled = false
+
+    init(
+        start: @escaping Start,
+        stop: @escaping Stop
+    ) {
+        startOperation = start
+        stopOperation = stop
+    }
+
+    func start(
+        _ stream: Stream,
+        failure: @escaping (Error) -> Void
+    ) {
+        let identifier = ObjectIdentifier(stream)
+        lock.lock()
+        guard !isCancelled else {
+            lock.unlock()
+            stopOperation(stream)
+            return
+        }
+        let task = Task { [self, stream] in
+            do {
+                try Task.checkCancellation()
+                try await startOperation(stream)
+                finish(stream, identifier: identifier, error: nil, failure: failure)
+            } catch {
+                finish(stream, identifier: identifier, error: error, failure: failure)
+            }
+        }
+        tasks[identifier] = task
+        lock.unlock()
+    }
+
+    func cancelAll(_ streams: [Stream]) {
+        lock.lock()
+        isCancelled = true
+        let activeTasks = Array(tasks.values)
+        tasks.removeAll()
+        lock.unlock()
+
+        activeTasks.forEach { $0.cancel() }
+        streams.forEach(stopOperation)
+    }
+
+    private func finish(
+        _ stream: Stream,
+        identifier: ObjectIdentifier,
+        error: Error?,
+        failure: @escaping (Error) -> Void
+    ) {
+        lock.lock()
+        tasks[identifier] = nil
+        let wasCancelled = isCancelled
+        lock.unlock()
+
+        if wasCancelled {
+            stopOperation(stream)
+        } else if let error {
+            failure(error)
+        }
+    }
+}
+
+final class WindowSelectorRefreshCoordinator<Request, Snapshot, Model, Item, Identifier: Hashable> {
+    typealias Publication = WindowSelectorRefreshPublication<Snapshot, Model, Item>
+    typealias Provider = WindowSelectorRefreshAdapter<Snapshot>.Provider
+    typealias ProviderFactory = (Request) -> Provider
+
+    private let pipeline: WindowSelectorRefreshPipeline<Snapshot, Model, Item, Identifier>
+    private let providerFactory: ProviderFactory
+    private let isModelEmpty: (Model) -> Bool
+
+    init(
+        timeout: TimeInterval = 10,
+        workerQueue: DispatchQueue = DispatchQueue(
+            label: "dev.clickai.grabrabbit.window-refresh",
+            qos: .userInitiated
+        ),
+        publicationQueue: DispatchQueue = .main,
+        timeoutQueue: DispatchQueue = DispatchQueue(
+            label: "dev.clickai.grabrabbit.window-refresh-timeout"
+        ),
+        candidateModel: @escaping (Snapshot) -> Model,
+        candidateItems: @escaping (Snapshot) -> [Item],
+        identifier: @escaping (Item) -> Identifier,
+        isModelEmpty: @escaping (Model) -> Bool,
+        providerFactory: @escaping ProviderFactory
+    ) {
+        pipeline = WindowSelectorRefreshPipeline(
+            timeout: timeout,
+            workerQueue: workerQueue,
+            publicationQueue: publicationQueue,
+            timeoutQueue: timeoutQueue,
+            candidateModel: candidateModel,
+            candidateItems: candidateItems,
+            identifier: identifier
+        )
+        self.providerFactory = providerFactory
+        self.isModelEmpty = isModelEmpty
+    }
+
+    @discardableResult
+    func refresh(
+        request: Request,
+        currentModel: @escaping () -> Model,
+        currentSelection: @escaping () -> [Item],
+        applySnapshot: @escaping (Snapshot) -> Void,
+        applyModel: @escaping (Model) -> Void,
+        updateSelection: @escaping ([Item]) -> Void,
+        publishStatus: @escaping (WindowSelectorRefreshStatus) -> Void
+    ) -> WindowSelectorRefreshDisposition {
+        let disposition = pipeline.refresh(
+            currentModel: currentModel,
+            currentSelection: currentSelection,
+            using: providerFactory(request)
+        ) { [isModelEmpty] result in
+            switch result {
+            case .success(let publication):
+                let resolution = publication.resolution
+                applySnapshot(publication.snapshot)
+                applyModel(resolution.model)
+                updateSelection(resolution.selection)
+                publishStatus(WindowSelectorRefreshStatus(
+                    isReady: !isModelEmpty(resolution.model),
+                    isRefreshing: false,
+                    errorMessage: resolution.acceptedCandidate
+                        ? nil
+                        : WindowSelectorRefreshError.selectedTargetUnavailable.userMessage
+                ))
+            case .failure(let error):
+                publishStatus(WindowSelectorRefreshStatus(
+                    isReady: !isModelEmpty(currentModel()),
+                    isRefreshing: false,
+                    errorMessage: error.userMessage
+                ))
+            }
+        }
+
+        if disposition == .started {
+            publishStatus(WindowSelectorRefreshStatus(
+                isReady: false,
+                isRefreshing: true,
+                errorMessage: nil
+            ))
+        }
+        return disposition
+    }
+
+    func cancel() {
+        pipeline.cancel()
     }
 }
 

@@ -303,7 +303,8 @@ class WindowSelectorViewModel: NSObject, ObservableObject {
     @Published private(set) var isReady = false
     @Published private(set) var isRefreshing = false
     @Published private(set) var refreshErrorMessage: String?
-    private let refreshPipeline = WindowSelectorRefreshPipeline<
+    private let refreshCoordinator = WindowSelectorRefreshCoordinator<
+        WindowSelectorRefreshRequest,
         WindowSelectorRefreshSnapshot,
         [SCDisplay: [WindowThumbnail]],
         SCWindow,
@@ -311,7 +312,18 @@ class WindowSelectorViewModel: NSObject, ObservableObject {
     >(
         candidateModel: { $0.thumbnails },
         candidateItems: { $0.windows },
-        identifier: \.windowID
+        identifier: \.windowID,
+        isModelEmpty: { $0.isEmpty },
+        providerFactory: { request in
+            { completion in
+                let provider = WindowSelectorThumbnailProvider(
+                    filterUntitledWindows: request.filterUntitledWindows,
+                    captureThumbnails: request.captureThumbnails
+                )
+                provider.start(completion: completion)
+                return { provider.cancel() }
+            }
+        }
     )
 
     override init() {
@@ -327,48 +339,30 @@ class WindowSelectorViewModel: NSObject, ObservableObject {
         currentSelection: @escaping () -> [SCWindow] = { [] },
         updateSelection: @escaping ([SCWindow]) -> Void = { _ in }
     ) {
-        let disposition = refreshPipeline.refresh(
+        refreshCoordinator.refresh(
+            request: WindowSelectorRefreshRequest(
+                filterUntitledWindows: filter,
+                captureThumbnails: capture
+            ),
             currentModel: { [weak self] in self?.windowThumbnails ?? [:] },
             currentSelection: currentSelection,
-            using: { completion in
-                let provider = WindowSelectorThumbnailProvider(
-                    filterUntitledWindows: filter,
-                    captureThumbnails: capture
-                )
-                provider.start(completion: completion)
-                return { provider.cancel() }
-            }, publish: { [weak self] result in
-            dispatchPrecondition(condition: .onQueue(DispatchQueue.main))
-            guard let self else { return }
-            switch result {
-            case .success(let publication):
-                let resolution = publication.resolution
-                if resolution.acceptedCandidate {
-                    SCContext.applyWindowSelectorContent(publication.snapshot.content)
-                    self.windowThumbnails = resolution.model
-                    updateSelection(resolution.selection)
-                    self.refreshErrorMessage = nil
-                    self.isReady = true
-                } else {
-                    updateSelection(resolution.selection)
-                    self.refreshErrorMessage = WindowSelectorRefreshError.selectedTargetUnavailable.userMessage
-                    self.isReady = !self.windowThumbnails.isEmpty
-                }
-            case .failure(let error):
-                self.refreshErrorMessage = error.userMessage
-                self.isReady = !self.windowThumbnails.isEmpty
+            applySnapshot: { snapshot in
+                SCContext.applyWindowSelectorContent(snapshot.content)
+            },
+            applyModel: { [weak self] model in
+                self?.windowThumbnails = model
+            },
+            updateSelection: updateSelection,
+            publishStatus: { [weak self] status in
+                dispatchPrecondition(condition: .onQueue(DispatchQueue.main))
+                self?.isReady = status.isReady
+                self?.isRefreshing = status.isRefreshing
+                self?.refreshErrorMessage = status.errorMessage
             }
-            self.isRefreshing = false
-        })
-
-        if disposition == .started {
-            isRefreshing = true
-            isReady = false
-            refreshErrorMessage = nil
-        }
+        )
     }
 
     deinit {
-        refreshPipeline.cancel()
+        refreshCoordinator.cancel()
     }
 }

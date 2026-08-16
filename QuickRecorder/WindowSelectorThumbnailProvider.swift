@@ -23,6 +23,11 @@ final class WindowSelectorThumbnailProvider: NSObject, SCStreamDelegate, SCStrea
         label: "dev.clickai.grabrabbit.window-thumbnail-provider",
         qos: .userInitiated
     )
+    private let stateQueueKey = DispatchSpecificKey<Void>()
+    private let startRegistry = WindowSelectorThumbnailStartRegistry<SCStream>(
+        start: { try await $0.startCapture() },
+        stop: { $0.stopCapture() }
+    )
     private var completion: Completion?
     private var content: SCShareableContent?
     private var streams = [SCStream]()
@@ -35,6 +40,8 @@ final class WindowSelectorThumbnailProvider: NSObject, SCStreamDelegate, SCStrea
     init(filterUntitledWindows: Bool, captureThumbnails: Bool) {
         self.filterUntitledWindows = filterUntitledWindows
         self.captureThumbnails = captureThumbnails
+        super.init()
+        stateQueue.setSpecific(key: stateQueueKey, value: ())
     }
 
     func start(completion: @escaping Completion) {
@@ -57,12 +64,12 @@ final class WindowSelectorThumbnailProvider: NSObject, SCStreamDelegate, SCStrea
     }
 
     func cancel() {
-        stateQueue.async {
-            guard !self.finished else { return }
-            self.finished = true
-            self.stopAllStreams()
-            self.completion = nil
-            self.content = nil
+        if DispatchQueue.getSpecific(key: stateQueueKey) != nil {
+            cancelOnStateQueue()
+        } else {
+            stateQueue.sync {
+                self.cancelOnStateQueue()
+            }
         }
     }
 
@@ -145,18 +152,9 @@ final class WindowSelectorThumbnailProvider: NSObject, SCStreamDelegate, SCStrea
         }
 
         for stream in streams {
-            Task { [weak self] in
-                do {
-                    try await stream.startCapture()
-                    self?.stateQueue.async {
-                        if self?.finished == true {
-                            stream.stopCapture()
-                        }
-                    }
-                } catch {
-                    self?.stateQueue.async {
-                        self?.fail(error.localizedDescription)
-                    }
+            startRegistry.start(stream) { [weak self] error in
+                self?.stateQueue.async {
+                    self?.fail(error.localizedDescription)
                 }
             }
         }
@@ -230,8 +228,18 @@ final class WindowSelectorThumbnailProvider: NSObject, SCStreamDelegate, SCStrea
         completion?(result)
     }
 
+    private func cancelOnStateQueue() {
+        guard !finished else { return }
+        finished = true
+        stopAllStreams()
+        completion = nil
+        content = nil
+        windows.removeAll()
+        thumbnails.removeAll()
+    }
+
     private func stopAllStreams() {
-        streams.forEach { $0.stopCapture() }
+        startRegistry.cancelAll(streams)
         streams.removeAll()
         entries.removeAll()
         pendingStreams.removeAll()

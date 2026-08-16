@@ -20,12 +20,12 @@ final class WindowSelectorRefreshAdapterTests: XCTestCase {
         let selector = try projectSource("QuickRecorder/ViewModel/WinSelector.swift")
         let adapter = try projectSource("QuickRecorder/WindowSelectorRefreshAdapter.swift")
 
-        XCTAssertTrue(selector.contains("WindowSelectorRefreshPipeline<"))
+        XCTAssertTrue(selector.contains("WindowSelectorRefreshCoordinator<"))
         XCTAssertTrue(adapter.contains("WindowSelectorSelectionReconciler.reconcile"))
         XCTAssertFalse(selector.contains("selectedWindows: selected"))
         XCTAssertEqual(selector.components(separatedBy: "currentSelection: { selected }").count - 1, 3)
         XCTAssertEqual(selector.components(separatedBy: "updateSelection: { selected = $0 }").count - 1, 3)
-        XCTAssertEqual(selector.components(separatedBy: "updateSelection(resolution.selection)").count - 1, 2)
+        XCTAssertTrue(selector.contains("updateSelection: updateSelection"))
         XCTAssertTrue(selector.contains("currentSelection: @escaping () -> [SCWindow]"))
         XCTAssertEqual(selector.components(separatedBy: ".disabled(viewModel.isRefreshing)").count - 1, 1)
         XCTAssertTrue(selector.contains("dispatchPrecondition(condition: .onQueue(DispatchQueue.main))"))
@@ -112,7 +112,7 @@ final class WindowSelectorRefreshAdapterTests: XCTestCase {
         )
 
         XCTAssertFalse(rejected.acceptedCandidate)
-        XCTAssertEqual(rejected.model, "prior snapshot")
+        XCTAssertEqual(rejected.model, "candidate snapshot")
         XCTAssertEqual(rejected.selection, [])
         XCTAssertEqual(currentChoices, priorChoices)
         XCTAssertEqual(
@@ -179,7 +179,7 @@ final class WindowSelectorRefreshAdapterTests: XCTestCase {
         XCTAssertEqual(observedResolution?.acceptedCandidate, true)
     }
 
-    func testSlowRefreshClearsKnownUnavailableSelectionAndRetainsPriorSnapshot() {
+    func testProductionCoordinatorPublishesFreshModelWhenSelectionDisappears() {
         struct TestWindow: Equatable {
             let id: Int
             let revision: Int
@@ -191,40 +191,46 @@ final class WindowSelectorRefreshAdapterTests: XCTestCase {
 
         let providerStarted = expectation(description: "slow provider started")
         let published = expectation(description: "missing target published")
-        let pipeline = WindowSelectorRefreshPipeline<TestSnapshot, String, TestWindow, Int>(
-            timeout: 1,
-            candidateModel: { $0.model },
-            candidateItems: { $0.windows },
-            identifier: \.id
-        )
         let stateLock = NSLock()
         var providerCompletion: WindowSelectorRefreshAdapter<TestSnapshot>.Completion?
         var liveSelection = [TestWindow(id: 7, revision: 1)]
-        var observedResolution: WindowSelectorRefreshResolution<String, TestWindow>?
-        var visibleErrors = [String]()
-
-        XCTAssertEqual(
-            pipeline.refresh(
-                currentModel: { "prior snapshot" },
-                currentSelection: { liveSelection },
-                using: { completion in
+        var visibleModel = "prior snapshot"
+        var visibleSelection = liveSelection
+        var appliedSnapshotModels = [String]()
+        var statuses = [WindowSelectorRefreshStatus]()
+        let coordinator = WindowSelectorRefreshCoordinator<Int, TestSnapshot, String, TestWindow, Int>(
+            timeout: 1,
+            candidateModel: { $0.model },
+            candidateItems: { $0.windows },
+            identifier: \.id,
+            isModelEmpty: { $0.isEmpty },
+            providerFactory: { _ in
+                { completion in
                     stateLock.lock()
                     providerCompletion = completion
                     stateLock.unlock()
                     providerStarted.fulfill()
                     return {}
-                }, publish: { result in
-                XCTAssertTrue(Thread.isMainThread)
-                guard case .success(let publication) = result else {
-                    return XCTFail("Slow refresh unexpectedly failed")
                 }
-                let resolution = publication.resolution
-                observedResolution = resolution
-                if !resolution.acceptedCandidate {
-                    visibleErrors.append(WindowSelectorRefreshError.selectedTargetUnavailable.userMessage)
+            }
+        )
+
+        XCTAssertEqual(
+            coordinator.refresh(
+                request: 0,
+                currentModel: { "prior snapshot" },
+                currentSelection: { liveSelection },
+                applySnapshot: { snapshot in
+                    XCTAssertTrue(Thread.isMainThread)
+                    appliedSnapshotModels.append(snapshot.model)
+                },
+                applyModel: { visibleModel = $0 },
+                updateSelection: { visibleSelection = $0 },
+                publishStatus: { status in
+                    statuses.append(status)
+                    if !status.isRefreshing { published.fulfill() }
                 }
-                published.fulfill()
-            }),
+            ),
             .started
         )
         wait(for: [providerStarted], timeout: 1)
@@ -239,13 +245,17 @@ final class WindowSelectorRefreshAdapterTests: XCTestCase {
         )))
 
         wait(for: [published], timeout: 1)
-        XCTAssertEqual(observedResolution?.model, "prior snapshot")
-        XCTAssertEqual(observedResolution?.selection, [])
-        XCTAssertEqual(observedResolution?.acceptedCandidate, false)
-        XCTAssertEqual(
-            visibleErrors,
-            ["The selected window is no longer available. Select a window and try again."]
-        )
+        XCTAssertEqual(appliedSnapshotModels, ["candidate snapshot"])
+        XCTAssertEqual(visibleModel, "candidate snapshot")
+        XCTAssertEqual(visibleSelection, [])
+        XCTAssertEqual(statuses, [
+            WindowSelectorRefreshStatus(isReady: false, isRefreshing: true, errorMessage: nil),
+            WindowSelectorRefreshStatus(
+                isReady: true,
+                isRefreshing: false,
+                errorMessage: "The selected window is no longer available. Select a window and try again."
+            ),
+        ])
     }
 
     func testRefreshTransactionSourceCannotMutateMediaCodecOrSaveChoices() throws {
@@ -273,17 +283,20 @@ final class WindowSelectorRefreshAdapterTests: XCTestCase {
         let selector = try projectSource("QuickRecorder/ViewModel/WinSelector.swift")
         let provider = try projectSource("QuickRecorder/WindowSelectorThumbnailProvider.swift")
 
-        XCTAssertTrue(selector.contains("WindowSelectorRefreshPipeline<"))
-        XCTAssertTrue(selector.contains("self.windowThumbnails = resolution.model"))
-        XCTAssertEqual(selector.components(separatedBy: "self.windowThumbnails =").count - 1, 1)
+        XCTAssertTrue(selector.contains("WindowSelectorRefreshCoordinator<"))
+        XCTAssertTrue(selector.contains("refreshCoordinator.refresh("))
+        XCTAssertTrue(selector.contains("self?.windowThumbnails = model"))
+        XCTAssertEqual(selector.components(separatedBy: "self?.windowThumbnails =").count - 1, 1)
         XCTAssertTrue(selector.contains("accessibilityIdentifier(\"window-refresh-error\")"))
         XCTAssertTrue(selector.contains(".disabled(viewModel.isRefreshing)"))
         XCTAssertFalse(selector.contains("windowThumbnails[d]"))
         XCTAssertFalse(selector.contains("sampleHandlerQueue: .main"))
         XCTAssertTrue(provider.contains("sampleHandlerQueue: stateQueue"))
         XCTAssertTrue(provider.contains("private let stateQueue = DispatchQueue("))
+        XCTAssertTrue(provider.contains("startRegistry.start(stream)"))
+        XCTAssertFalse(provider.contains("Task { [weak self]"))
         XCTAssertTrue(provider.contains("@unchecked Sendable"))
-        XCTAssertGreaterThanOrEqual(provider.components(separatedBy: "stateQueue.async").count - 1, 5)
+        XCTAssertGreaterThanOrEqual(provider.components(separatedBy: "stateQueue.async").count - 1, 4)
     }
 
     func testRefreshProviderCannotStartRecordingOrCreatePermissionAndOutputResidue() throws {
@@ -307,7 +320,7 @@ final class WindowSelectorRefreshAdapterTests: XCTestCase {
         }
     }
 
-    func testProductionRefreshPipelineKeepsMainRunLoopResponsiveUntilOnePublication() {
+    func testProductionRefreshCoordinatorKeepsMainRunLoopResponsiveUntilOnePublication() {
         struct TestWindow: Equatable {
             let id: Int
             let revision: Int
@@ -317,19 +330,33 @@ final class WindowSelectorRefreshAdapterTests: XCTestCase {
         }
 
         let published = expectation(description: "published")
-        let pipeline = WindowSelectorRefreshPipeline<TestSnapshot, [Int], TestWindow, Int>(
-            timeout: 1,
-            candidateModel: { $0.windows.map(\.id) },
-            candidateItems: { $0.windows },
-            identifier: \.id
-        )
         let heartbeatLock = NSLock()
         let providerLock = NSLock()
         var heartbeatCount = 0
         var providerRanOnMainThread: Bool?
-        var publicationCount = 0
+        var appliedSnapshotCount = 0
         var publishedModel = [Int]()
         var publishedSelection = [TestWindow]()
+        var statuses = [WindowSelectorRefreshStatus]()
+        let coordinator = WindowSelectorRefreshCoordinator<Int, TestSnapshot, [Int], TestWindow, Int>(
+            timeout: 1,
+            candidateModel: { $0.windows.map(\.id) },
+            candidateItems: { $0.windows },
+            identifier: \.id,
+            isModelEmpty: { $0.isEmpty },
+            providerFactory: { _ in
+                { complete in
+                    providerLock.lock()
+                    providerRanOnMainThread = Thread.isMainThread
+                    providerLock.unlock()
+                    Thread.sleep(forTimeInterval: 0.2)
+                    complete(.success(TestSnapshot(windows: (0..<12).map {
+                        TestWindow(id: $0, revision: 1)
+                    })))
+                    return {}
+                }
+            }
+        )
         let heartbeat = DispatchSource.makeTimerSource(queue: .main)
         heartbeat.schedule(deadline: .now(), repeating: 0.01)
         heartbeat.setEventHandler {
@@ -341,28 +368,21 @@ final class WindowSelectorRefreshAdapterTests: XCTestCase {
 
         DispatchQueue.main.async {
             XCTAssertEqual(
-                pipeline.refresh(
+                coordinator.refresh(
+                    request: 0,
                     currentModel: { [-1] },
                     currentSelection: { [TestWindow(id: 5, revision: 0)] },
-                    using: { complete in
-                        providerLock.lock()
-                        providerRanOnMainThread = Thread.isMainThread
-                        providerLock.unlock()
-                        Thread.sleep(forTimeInterval: 0.2)
-                        complete(.success(TestSnapshot(windows: (0..<12).map {
-                            TestWindow(id: $0, revision: 1)
-                        })))
-                        return {}
-                    }, publish: { result in
-                    XCTAssertTrue(Thread.isMainThread)
-                    if case .success(let publication) = result {
-                        publicationCount += 1
-                        publishedModel = publication.resolution.model
-                        publishedSelection = publication.resolution.selection
-                        XCTAssertTrue(publication.resolution.acceptedCandidate)
+                    applySnapshot: { _ in
+                        XCTAssertTrue(Thread.isMainThread)
+                        appliedSnapshotCount += 1
+                    },
+                    applyModel: { publishedModel = $0 },
+                    updateSelection: { publishedSelection = $0 },
+                    publishStatus: { status in
+                        statuses.append(status)
+                        if !status.isRefreshing { published.fulfill() }
                     }
-                    published.fulfill()
-                }),
+                ),
                 .started
             )
         }
@@ -378,9 +398,13 @@ final class WindowSelectorRefreshAdapterTests: XCTestCase {
 
         XCTAssertGreaterThanOrEqual(observedHeartbeats, 5)
         XCTAssertEqual(observedProviderRanOnMainThread, false)
-        XCTAssertEqual(publicationCount, 1)
+        XCTAssertEqual(appliedSnapshotCount, 1)
         XCTAssertEqual(publishedModel, Array(0..<12))
         XCTAssertEqual(publishedSelection, [TestWindow(id: 5, revision: 1)])
+        XCTAssertEqual(statuses, [
+            WindowSelectorRefreshStatus(isReady: false, isRefreshing: true, errorMessage: nil),
+            WindowSelectorRefreshStatus(isReady: true, isRefreshing: false, errorMessage: nil),
+        ])
     }
 
     func testRepeatedRefreshIsCoalescedWithoutDuplicateProviderWork() {
@@ -471,7 +495,7 @@ final class WindowSelectorRefreshAdapterTests: XCTestCase {
         XCTAssertEqual(results, [.failure(.timedOut), .success([7, 8, 9])])
     }
 
-    func testTimeoutCancelsProductionPipelineProviderWithoutContinuingWork() {
+    func testTimeoutCancelsProductionCoordinatorProviderBeforeVisibleFailure() {
         struct TestSnapshot {
             let windows: [Int]
         }
@@ -479,23 +503,19 @@ final class WindowSelectorRefreshAdapterTests: XCTestCase {
         let timedOut = expectation(description: "timed out")
         let cancelled = expectation(description: "provider cancelled")
         let quietPeriodElapsed = expectation(description: "quiet period elapsed")
-        let pipeline = WindowSelectorRefreshPipeline<TestSnapshot, [Int], Int, Int>(
-            timeout: 0.08,
-            candidateModel: { $0.windows },
-            candidateItems: { $0.windows },
-            identifier: { $0 }
-        )
         let workQueue = DispatchQueue(label: "window-refresh-cancellable-work-test")
         let workTimer = DispatchSource.makeTimerSource(queue: workQueue)
         let workLock = NSLock()
         var workCount = 0
         var cancellationCount = 0
-
-        XCTAssertEqual(
-            pipeline.refresh(
-                currentModel: { [] },
-                currentSelection: { [] },
-                using: { _ in
+        let coordinator = WindowSelectorRefreshCoordinator<Int, TestSnapshot, [Int], Int, Int>(
+            timeout: 0.08,
+            candidateModel: { $0.windows },
+            candidateItems: { $0.windows },
+            identifier: { $0 },
+            isModelEmpty: { $0.isEmpty },
+            providerFactory: { _ in
+                { _ in
                     workTimer.schedule(deadline: .now(), repeating: 0.01)
                     workTimer.setEventHandler {
                         workLock.lock()
@@ -510,13 +530,32 @@ final class WindowSelectorRefreshAdapterTests: XCTestCase {
                         workTimer.cancel()
                         cancelled.fulfill()
                     }
+                }
+            }
+        )
+
+        XCTAssertEqual(
+            coordinator.refresh(
+                request: 0,
+                currentModel: { [] },
+                currentSelection: { [] },
+                applySnapshot: { _ in
+                    XCTFail("Timed-out provider must not apply a snapshot")
                 },
-                publish: { result in
-                    guard case .failure(let error) = result else {
-                        return XCTFail("Timed-out provider unexpectedly succeeded")
+                applyModel: { _ in
+                    XCTFail("Timed-out provider must not replace the model")
+                },
+                updateSelection: { _ in
+                    XCTFail("Timed-out provider must not change the selection")
+                },
+                publishStatus: { status in
+                    if status.errorMessage == WindowSelectorRefreshError.timedOut.userMessage {
+                        workLock.lock()
+                        let cleanupFinishedBeforePublication = cancellationCount == 1
+                        workLock.unlock()
+                        XCTAssertTrue(cleanupFinishedBeforePublication)
+                        timedOut.fulfill()
                     }
-                    XCTAssertEqual(error, .timedOut)
-                    timedOut.fulfill()
                 }
             ),
             .started
@@ -540,6 +579,45 @@ final class WindowSelectorRefreshAdapterTests: XCTestCase {
         XCTAssertGreaterThan(workAtCancellation, 0)
         XCTAssertEqual(workAfterQuietPeriod, workAtCancellation)
         XCTAssertEqual(observedCancellationCount, 1)
+    }
+
+    func testShippingThumbnailStartRegistryStopsACaptureThatFinishesStartingAfterCancellation() {
+        final class TestStream {}
+
+        let startEntered = expectation(description: "start entered")
+        let stopped = expectation(description: "stream stopped before and after late start")
+        stopped.expectedFulfillmentCount = 2
+        let releaseStart = WindowSelectorTestAsyncGate()
+        let activity = WindowSelectorTestCaptureActivity()
+        let stream = TestStream()
+        let registry = WindowSelectorThumbnailStartRegistry<TestStream>(
+            start: { _ in
+                startEntered.fulfill()
+                await releaseStart.wait()
+                activity.start()
+            },
+            stop: { _ in
+                activity.stop()
+                stopped.fulfill()
+            }
+        )
+
+        registry.start(stream) { error in
+            activity.fail(error)
+        }
+        wait(for: [startEntered], timeout: 1)
+
+        registry.cancelAll([stream])
+        let stateAtCancellationReturn = activity.snapshot()
+        XCTAssertFalse(stateAtCancellationReturn.0)
+        XCTAssertEqual(stateAtCancellationReturn.1, 1)
+
+        releaseStart.open()
+        wait(for: [stopped], timeout: 1)
+        let finalState = activity.snapshot()
+        XCTAssertFalse(finalState.0)
+        XCTAssertEqual(finalState.1, 2)
+        XCTAssertTrue(finalState.2.isEmpty)
     }
 
     func testExplicitCancellationRejectsStalePublicationAndAllowsRetry() {
@@ -881,6 +959,66 @@ final class WindowSelectorRefreshAdapterTests: XCTestCase {
         )
 
         wait(for: [published], timeout: 1)
+    }
+
+    private final class WindowSelectorTestAsyncGate: @unchecked Sendable {
+        private let lock = NSLock()
+        private var isOpen = false
+        private var waiters = [CheckedContinuation<Void, Never>]()
+
+        func wait() async {
+            await withCheckedContinuation { continuation in
+                lock.lock()
+                if isOpen {
+                    lock.unlock()
+                    continuation.resume()
+                } else {
+                    waiters.append(continuation)
+                    lock.unlock()
+                }
+            }
+        }
+
+        func open() {
+            lock.lock()
+            isOpen = true
+            let currentWaiters = waiters
+            waiters.removeAll()
+            lock.unlock()
+            currentWaiters.forEach { $0.resume() }
+        }
+    }
+
+    private final class WindowSelectorTestCaptureActivity: @unchecked Sendable {
+        private let lock = NSLock()
+        private var isCapturing = false
+        private var stopCount = 0
+        private var failures = [String]()
+
+        func start() {
+            lock.lock()
+            isCapturing = true
+            lock.unlock()
+        }
+
+        func stop() {
+            lock.lock()
+            isCapturing = false
+            stopCount += 1
+            lock.unlock()
+        }
+
+        func fail(_ error: Error) {
+            lock.lock()
+            failures.append(error.localizedDescription)
+            lock.unlock()
+        }
+
+        func snapshot() -> (Bool, Int, [String]) {
+            lock.lock()
+            defer { lock.unlock() }
+            return (isCapturing, stopCount, failures)
+        }
     }
 
     private func projectSource(_ relativePath: String) throws -> String {

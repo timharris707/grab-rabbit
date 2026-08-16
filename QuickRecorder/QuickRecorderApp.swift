@@ -260,6 +260,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, SCStreamDelegate, SCStreamOu
             self?.quickTopmostWindowFailureHandler.handle(failure)
         }
     )
+    private lazy var captureTerminationCoordinator = CaptureApplicationTerminationCoordinator(
+        store: captureOutputSessions
+    )
     
     @AppStorage("showOnDock")       var showOnDock: Bool = true
     @AppStorage("showMenubar")      var showMenubar: Bool = false
@@ -334,8 +337,16 @@ class AppDelegate: NSObject, NSApplicationDelegate, SCStreamDelegate, SCStreamOu
         if let monitor = mouseMonitor { NSEvent.removeMonitor(monitor); mouseMonitor = nil }
     }
     
-    func applicationWillTerminate(_ aNotification: Notification) {
-        if SCContext.stream != nil { SCContext.stopRecording() }
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        let waitsForFinalization = captureTerminationCoordinator.prepareForTermination(
+            stopActiveCapture: {
+                if SCContext.stream != nil { SCContext.stopRecording() }
+            },
+            replyWhenFinished: {
+                sender.reply(toApplicationShouldTerminate: true)
+            }
+        )
+        return waitsForFinalization ? .terminateLater : .terminateNow
     }
     
     func application(_ application: NSApplication, open urls: [URL]) {
@@ -589,6 +600,7 @@ func findNSSplitVIew(view: NSView?) -> NSSplitView? {
 
 func getStatusBarWidth() -> CGFloat {
     @AppStorage("miniStatusBar") var miniStatusBar: Bool = false
+    if SCContext.isFinalizing { return 112 }
     var width = 158.0
     switch SCContext.streamType {
     case nil: width = miniStatusBar ? 36.0 : 36.0

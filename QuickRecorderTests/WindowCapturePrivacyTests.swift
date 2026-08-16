@@ -762,54 +762,236 @@ final class WindowCapturePrivacyTests: XCTestCase {
         XCTAssertTrue(adapter.handleStop(from: stream))
     }
 
-    func testProductionStopUsesGuaranteedSameStoreReleaseForEveryFinalizationExit() throws {
+    func testProductionFinalizationReleasesExactlyOnceForSuccessFailureAndCancellation() throws {
         let contextSource = try projectSource("QuickRecorder/SCContext.swift")
+        let outcomes: [Result<Void, RecordingExportError>] = [
+            .success(()),
+            .failure(.failed(stage: .first, message: "writer failed")),
+            .failure(.cancelled(stage: .first)),
+        ]
 
-        for variant in FinalizationExitVariant.allCases {
+        for (index, outcome) in outcomes.enumerated() {
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent("writer-outcome-\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+            defer { try? FileManager.default.removeItem(at: directory) }
+            let job = try RecordingOutputJob.reserve(
+                in: directory,
+                preferredStem: "recording-\(index)",
+                layout: .single(fileExtension: "mov")
+            )
+            XCTAssertTrue(FileManager.default.createFile(
+                atPath: job.inputURL.path,
+                contents: Data("writer output \(index)".utf8)
+            ))
             let store = CaptureOutputSessionStore()
+            let writer = DelayedCaptureWriterFinalizer()
             let sessionA = makeCaptureSession(
                 stream: NSObject(),
                 mode: .transparent,
-                sink: TestVideoDestination()
+                sink: TestVideoDestination(),
+                outputJob: job,
+                writerFinalizer: writer
             )
             let sessionB = UUID()
             let finalizer = CaptureSessionFinalizationCoordinator(store: store)
+            var terminalResult: Result<URL, RecordingExportError>?
+            var bodyCount = 0
 
             XCTAssertTrue(store.install(sessionA))
             XCTAssertTrue(store.deactivate(sessionA))
             XCTAssertFalse(store.reserve(sessionB), "B must remain blocked before A finalization")
+            XCTAssertTrue(finalizer.finalize(sessionA) { finishSession in
+                bodyCount += 1
+                XCTAssertTrue(job.beginPostprocessing())
+                sessionA.writerFinalizer?.finish { writerResult in
+                    terminalResult = job.finishExport(writerResult)
+                    finishSession()
+                    finishSession()
+                }
+            })
+            XCTAssertFalse(
+                finalizer.finalize(sessionA) { _ in bodyCount += 1 },
+                "Repeated Stop must not start a second finalization."
+            )
+            XCTAssertFalse(store.reserve(sessionB), "B must remain blocked while the writer is pending")
+            XCTAssertEqual(job.lifecycle, .postprocessing)
 
-            switch variant {
-            case .completed:
-                let result = finalizer.finalize(sessionA) {
-                    XCTAssertFalse(store.reserve(sessionB), "B must remain blocked inside A finalization")
-                    return "completed"
+            writer.complete(outcome)
+            XCTAssertEqual(bodyCount, 1)
+            XCTAssertEqual(job.lifecycle, .terminal)
+            XCTAssertFalse(store.release(sessionA), "terminal release must happen exactly once")
+            switch outcome {
+            case .success:
+                XCTAssertEqual(try terminalResult?.get(), job.finalURL)
+                XCTAssertEqual(try Data(contentsOf: job.finalURL), Data("writer output \(index)".utf8))
+            case .failure(let expectedError):
+                guard case .failure(let actualError) = terminalResult else {
+                    return XCTFail("Writer failure or cancellation must remain typed.")
                 }
-                XCTAssertEqual(result, "completed")
-            case .earlyReturn:
-                let result = finalizer.finalize(sessionA) {
-                    XCTAssertFalse(store.reserve(sessionB), "B must remain blocked before an early return")
-                    return "early"
-                }
-                XCTAssertEqual(result, "early")
-            case .thrown:
-                XCTAssertThrowsError(
-                    try finalizer.finalize(sessionA) {
-                        XCTAssertFalse(store.reserve(sessionB), "B must remain blocked before a thrown exit")
-                        throw FinalizationProbeError.injected
-                    }
-                )
+                XCTAssertEqual(actualError, expectedError)
+                XCTAssertFalse(FileManager.default.fileExists(atPath: job.finalURL.path))
+                XCTAssertFalse(FileManager.default.fileExists(atPath: job.reservationURL.path))
             }
-
-            XCTAssertTrue(store.reserve(sessionB), "B may reserve after every A finalization exit")
+            XCTAssertTrue(store.reserve(sessionB), "B may reserve after every terminal writer outcome")
             store.cancelReservation(sessionB)
         }
 
-        XCTAssertTrue(contextSource.contains("CaptureSessionFinalizationCoordinator(store: sessions)"))
-        XCTAssertTrue(contextSource.contains("finalizer.finalize(expectedSession)"))
+        XCTAssertTrue(contextSource.contains("CaptureSessionStopPipeline(store: sessions)"))
+        XCTAssertTrue(contextSource.contains("stopPipeline.stop(expectedSession, finalization: stopBody)"))
         XCTAssertFalse(
             contextSource.contains("if let sessionToRelease { sessions.release(sessionToRelease) }")
         )
+    }
+
+    func testProductionStopDoesNotSynchronouslyWaitForAssetWriter() throws {
+        let contextSource = try projectSource("QuickRecorder/SCContext.swift")
+        let engineSource = try projectSource("QuickRecorder/RecordEngine.swift")
+        let appSource = try projectSource("QuickRecorder/QuickRecorderApp.swift")
+        let statusSource = try projectSource("QuickRecorder/ViewModel/StatusBar.swift")
+
+        XCTAssertFalse(
+            contextSource.contains("dispatchGroup.wait()"),
+            "Stop must return to the main run loop while AVAssetWriter finishes."
+        )
+        XCTAssertTrue(contextSource.contains("writerFinalizer.finish { writerResult in"))
+        XCTAssertTrue(contextSource.contains("body: \"Finalizing recording...\".local"))
+        XCTAssertTrue(engineSource.contains("Another capture session is still finishing."))
+        XCTAssertTrue(statusSource.contains("Text(\"Finishing...\".local)"))
+        XCTAssertTrue(statusSource.contains("!SCContext.isFinalizing && SCContext.streamType == nil"))
+        XCTAssertTrue(appSource.contains("if SCContext.isFinalizing { return 112 }"))
+    }
+
+    func testDelayedFinalizationKeepsMainHeartbeatAndSessionReservedUntilCompletion() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("delayed-session-finalization-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let job = try RecordingOutputJob.reserve(
+            in: directory,
+            preferredStem: "recording-a",
+            layout: .single(fileExtension: "mov")
+        )
+        XCTAssertTrue(FileManager.default.createFile(
+            atPath: job.inputURL.path,
+            contents: Data("recording-a".utf8)
+        ))
+        let streamA = NSObject()
+        let store = CaptureOutputSessionStore()
+        let delayedWriter = DelayedCaptureWriterFinalizer()
+        let sessionA = makeCaptureSession(
+            stream: streamA,
+            mode: .transparent,
+            sink: TestVideoDestination(),
+            outputJob: job,
+            writerFinalizer: delayedWriter
+        )
+        let sessionB = UUID()
+        let stopPipeline = CaptureSessionStopPipeline(store: store)
+        let stopReturned = expectation(description: "Stop returned to the main run loop")
+        let heartbeat = expectation(description: "main run-loop heartbeat")
+
+        XCTAssertTrue(store.install(sessionA))
+        XCTAssertTrue(store.deactivate(sessionA))
+        DispatchQueue.main.async {
+            XCTAssertTrue(Thread.isMainThread)
+            stopPipeline.stop(
+                sessionA,
+                finalization: { finishSession in
+                    XCTAssertTrue(job.beginPostprocessing())
+                    sessionA.writerFinalizer?.finish { result in
+                        _ = job.finishExport(result)
+                        finishSession()
+                    }
+                }
+            )
+            stopReturned.fulfill()
+            DispatchQueue.main.async { heartbeat.fulfill() }
+        }
+
+        wait(for: [stopReturned, heartbeat], timeout: 2)
+        XCTAssertEqual(job.lifecycle, .postprocessing)
+        let reservedEarly = store.reserve(sessionB)
+        if reservedEarly { store.cancelReservation(sessionB) }
+        XCTAssertFalse(
+            reservedEarly,
+            "B must be visibly refused while A's delayed writer is still pending."
+        )
+
+        delayedWriter.complete(.success(()))
+        XCTAssertEqual(job.lifecycle, .terminal)
+        XCTAssertEqual(try Data(contentsOf: job.finalURL), Data("recording-a".utf8))
+        XCTAssertTrue(store.reserve(sessionB), "B may reserve only after A reaches terminal state.")
+        store.cancelReservation(sessionB)
+    }
+
+    func testApplicationTerminationWaitsForExactJobWithoutRepeatingStopOrReply() throws {
+        let appSource = try projectSource("QuickRecorder/QuickRecorderApp.swift")
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("termination-finalization-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let job = try RecordingOutputJob.reserve(
+            in: directory,
+            preferredStem: "termination-recording",
+            layout: .single(fileExtension: "mov")
+        )
+        XCTAssertTrue(FileManager.default.createFile(
+            atPath: job.inputURL.path,
+            contents: Data("complete before quit".utf8)
+        ))
+        let store = CaptureOutputSessionStore()
+        let writer = DelayedCaptureWriterFinalizer()
+        let session = makeCaptureSession(
+            stream: NSObject(),
+            mode: .transparent,
+            sink: TestVideoDestination(),
+            outputJob: job,
+            writerFinalizer: writer
+        )
+        let finalizer = CaptureSessionFinalizationCoordinator(store: store)
+        let termination = CaptureApplicationTerminationCoordinator(store: store)
+        var stopCount = 0
+        var replyCount = 0
+
+        XCTAssertTrue(store.install(session))
+        XCTAssertTrue(termination.prepareForTermination(
+            stopActiveCapture: {
+                stopCount += 1
+                XCTAssertTrue(store.deactivate(session))
+                XCTAssertTrue(finalizer.finalize(session) { finishSession in
+                    XCTAssertTrue(job.beginPostprocessing())
+                    session.writerFinalizer?.finish { result in
+                        _ = job.finishExport(result)
+                        finishSession()
+                    }
+                })
+            },
+            replyWhenFinished: { replyCount += 1 }
+        ))
+        XCTAssertTrue(termination.prepareForTermination(
+            stopActiveCapture: { stopCount += 1 },
+            replyWhenFinished: { replyCount += 1 }
+        ))
+        XCTAssertEqual(stopCount, 1)
+        XCTAssertEqual(replyCount, 0)
+        XCTAssertEqual(job.lifecycle, .postprocessing)
+
+        writer.complete(.success(()))
+        XCTAssertEqual(stopCount, 1)
+        XCTAssertEqual(replyCount, 1)
+        XCTAssertEqual(job.lifecycle, .terminal)
+        XCTAssertEqual(try Data(contentsOf: job.finalURL), Data("complete before quit".utf8))
+        XCTAssertTrue(appSource.contains("applicationShouldTerminate"))
+        XCTAssertTrue(appSource.contains(".terminateLater"))
+        XCTAssertTrue(appSource.contains("reply(toApplicationShouldTerminate: true)"))
+
+        let idleTermination = CaptureApplicationTerminationCoordinator(store: store)
+        XCTAssertFalse(idleTermination.prepareForTermination(
+            stopActiveCapture: { XCTFail("An idle app has nothing to stop.") },
+            replyWhenFinished: { XCTFail("An idle app terminates immediately.") }
+        ))
     }
 
     func testTransparentAndOpaqueOutputProfilesAreExplicit() {
@@ -2782,6 +2964,8 @@ final class WindowCapturePrivacyTests: XCTestCase {
         microphoneInput: (any CaptureVideoSampleDestination)? = nil,
         outputJob: RecordingOutputJob? = nil,
         isAudioOnly: Bool = false,
+        outputJob: RecordingOutputJob? = nil,
+        writerFinalizer: (any CaptureWriterFinalizing)? = nil,
         saveFrameHandler: ((CMSampleBuffer) -> Void)? = nil,
         firstFrameHandler: ((CMSampleBuffer) -> Void)? = nil,
         diagnostics: CaptureDiagnostics = CaptureDiagnostics(enabled: false),
@@ -2791,6 +2975,7 @@ final class WindowCapturePrivacyTests: XCTestCase {
             stream: stream,
             outputJob: outputJob,
             writer: nil,
+            writerFinalizer: writerFinalizer,
             videoInput: sink,
             systemAudioInput: nil,
             microphoneInput: microphoneInput,
@@ -3068,14 +3253,18 @@ private struct TestMicrophone {
     let name: String
 }
 
-private enum FinalizationExitVariant: CaseIterable {
-    case completed
-    case earlyReturn
-    case thrown
-}
+private final class DelayedCaptureWriterFinalizer: CaptureWriterFinalizing {
+    private var completion: ((Result<Void, RecordingExportError>) -> Void)?
 
-private enum FinalizationProbeError: Error {
-    case injected
+    func finish(_ completion: @escaping (Result<Void, RecordingExportError>) -> Void) {
+        self.completion = completion
+    }
+
+    func complete(_ result: Result<Void, RecordingExportError>) {
+        let completion = completion
+        self.completion = nil
+        completion?(result)
+    }
 }
 
 private final class TestCaptureDelegate {

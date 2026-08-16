@@ -27,7 +27,22 @@ struct StatusBarItem: View {
     
     var body: some View {
         HStack(spacing: 0) {
-            if SCContext.streamType != nil {
+            if SCContext.isFinalizing {
+                ZStack {
+                    Rectangle()
+                        .fill(Color.mypurple)
+                        .shadow(color: .black.opacity(0.3), radius: 4)
+                        .cornerRadius(4)
+                    HStack(spacing: 6) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("Finishing...".local)
+                            .foregroundStyle(.white)
+                    }
+                    .padding(.horizontal, 8)
+                }
+                .padding([.leading, .trailing], 4)
+            } else if SCContext.streamType != nil {
                 ZStack {
                     Rectangle()
                         .fill(Color.mypurple)
@@ -224,7 +239,7 @@ struct StatusBarItem: View {
 
 func updateStatusBar() {
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-        if SCContext.streamType == nil && !ud.bool(forKey: "showMenubar") {
+        if !SCContext.isFinalizing && SCContext.streamType == nil && !ud.bool(forKey: "showMenubar") {
             statusBarItem.isVisible = false
             return
         }

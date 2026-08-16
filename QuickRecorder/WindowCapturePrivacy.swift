@@ -611,12 +611,110 @@ final class CaptureSessionFinalizationCoordinator {
         self.store = store
     }
 
-    func finalize<Result>(
+    @discardableResult
+    func finalize(
         _ session: CaptureOutputSession,
-        _ body: () throws -> Result
-    ) rethrows -> Result {
-        defer { store.release(session) }
-        return try body()
+        _ body: (@escaping () -> Void) -> Void
+    ) -> Bool {
+        guard store.beginFinalization(session) else { return false }
+        let release = OneShotAction { [store] in
+            store.release(session)
+        }
+        body { release.run() }
+        return true
+    }
+}
+
+final class CaptureSessionStopPipeline {
+    private let finalizer: CaptureSessionFinalizationCoordinator
+
+    init(store: CaptureOutputSessionStore) {
+        finalizer = CaptureSessionFinalizationCoordinator(store: store)
+    }
+
+    @discardableResult
+    func stop(
+        _ session: CaptureOutputSession,
+        finalization: (@escaping () -> Void) -> Void
+    ) -> Bool {
+        finalizer.finalize(session, finalization)
+    }
+}
+
+private final class OneShotAction {
+    private let lock = NSLock()
+    private var action: (() -> Void)?
+
+    init(_ action: @escaping () -> Void) {
+        self.action = action
+    }
+
+    func run() {
+        let action = lock.withLock { () -> (() -> Void)? in
+            defer { self.action = nil }
+            return self.action
+        }
+        action?()
+    }
+}
+
+protocol CaptureWriterFinalizing: AnyObject {
+    func finish(_ completion: @escaping (Result<Void, RecordingExportError>) -> Void)
+}
+
+final class AssetWriterFinalizer: CaptureWriterFinalizing {
+    private let writer: AVAssetWriter
+
+    init(writer: AVAssetWriter) {
+        self.writer = writer
+    }
+
+    func finish(_ completion: @escaping (Result<Void, RecordingExportError>) -> Void) {
+        writer.finishWriting { [writer] in
+            switch writer.status {
+            case .completed:
+                completion(.success(()))
+            case .cancelled:
+                completion(.failure(.cancelled(stage: .first)))
+            default:
+                completion(.failure(.failed(
+                    stage: .first,
+                    message: writer.error?.localizedDescription
+                        ?? "The recording writer ended with status \(writer.status.rawValue)."
+                )))
+            }
+        }
+    }
+}
+
+final class CaptureApplicationTerminationCoordinator {
+    private let store: CaptureOutputSessionStore
+    private let lock = NSLock()
+    private var isWaiting = false
+
+    init(store: CaptureOutputSessionStore) {
+        self.store = store
+    }
+
+    func prepareForTermination(
+        stopActiveCapture: () -> Void,
+        replyWhenFinished: @escaping () -> Void
+    ) -> Bool {
+        let shouldRegister = lock.withLock { () -> Bool in
+            guard !isWaiting else { return false }
+            isWaiting = true
+            return true
+        }
+        guard shouldRegister else { return true }
+        guard store.notifyWhenIdle({ [weak self] in
+            self?.lock.withLock { self?.isWaiting = false }
+            replyWhenFinished()
+        }) else {
+            lock.withLock { isWaiting = false }
+            return false
+        }
+        stopActiveCapture()
+        return true
     }
 }
 
@@ -789,6 +887,7 @@ final class CaptureOutputSession {
     let id: UUID
     let outputJob: RecordingOutputJob?
     let writer: AVAssetWriter?
+    let writerFinalizer: (any CaptureWriterFinalizing)?
     let videoInput: (any CaptureVideoSampleDestination)?
     let systemAudioInput: (any CaptureVideoSampleDestination)?
     let microphoneInput: (any CaptureVideoSampleDestination)?
@@ -830,6 +929,7 @@ final class CaptureOutputSession {
         stream: AnyObject,
         outputJob: RecordingOutputJob?,
         writer: AVAssetWriter?,
+        writerFinalizer: (any CaptureWriterFinalizing)? = nil,
         videoInput: (any CaptureVideoSampleDestination)?,
         systemAudioInput: (any CaptureVideoSampleDestination)?,
         microphoneInput: (any CaptureVideoSampleDestination)? = nil,
@@ -848,6 +948,7 @@ final class CaptureOutputSession {
         streamIdentifier = ObjectIdentifier(stream)
         self.outputJob = outputJob
         self.writer = writer
+        self.writerFinalizer = writerFinalizer ?? writer.map(AssetWriterFinalizer.init(writer:))
         self.videoInput = videoInput
         self.systemAudioInput = systemAudioInput
         self.microphoneInput = microphoneInput
@@ -1194,6 +1295,8 @@ final class CaptureOutputSessionStore {
     private var currentSession: CaptureOutputSession?
     private var retiredSessions = [UUID: CaptureOutputSession]()
     private var pendingSessionID: UUID?
+    private var finalizingSessionIDs = Set<UUID>()
+    private var idleHandlers = [() -> Void]()
 
     var isIdle: Bool {
         lock.withLock {
@@ -1213,9 +1316,11 @@ final class CaptureOutputSessionStore {
     }
 
     func cancelReservation(_ sessionID: UUID) {
-        lock.withLock {
+        let handlers = lock.withLock { () -> [() -> Void] in
             if pendingSessionID == sessionID { pendingSessionID = nil }
+            return takeIdleHandlersIfNeeded()
         }
+        handlers.forEach { $0() }
     }
 
     @discardableResult
@@ -1303,8 +1408,46 @@ final class CaptureOutputSessionStore {
         return true
     }
 
-    func release(_ session: CaptureOutputSession) {
-        lock.withLock { retiredSessions[session.id] = nil }
+    func beginFinalization(_ session: CaptureOutputSession) -> Bool {
+        lock.withLock {
+            guard retiredSessions[session.id] === session,
+                  finalizingSessionIDs.insert(session.id).inserted else {
+                return false
+            }
+            return true
+        }
+    }
+
+    @discardableResult
+    func release(_ session: CaptureOutputSession) -> Bool {
+        var didRelease = false
+        let handlers = lock.withLock { () -> [() -> Void] in
+            guard retiredSessions[session.id] === session else { return [] }
+            retiredSessions[session.id] = nil
+            finalizingSessionIDs.remove(session.id)
+            didRelease = true
+            return takeIdleHandlersIfNeeded()
+        }
+        handlers.forEach { $0() }
+        return didRelease
+    }
+
+    func notifyWhenIdle(_ handler: @escaping () -> Void) -> Bool {
+        lock.withLock {
+            guard !isIdle else { return false }
+            idleHandlers.append(handler)
+            return true
+        }
+    }
+
+    private var isIdle: Bool {
+        currentSession == nil && retiredSessions.isEmpty && pendingSessionID == nil
+    }
+
+    private func takeIdleHandlersIfNeeded() -> [() -> Void] {
+        guard isIdle else { return [] }
+        defer { idleHandlers.removeAll() }
+        return idleHandlers
     }
 }
 

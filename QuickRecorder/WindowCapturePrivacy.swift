@@ -1346,6 +1346,49 @@ final class CaptureStreamCallbackAdapter {
     }
 }
 
+final class CaptureMicrophoneCallbackRoute {
+    private weak var outputSession: CaptureOutputSession?
+    private var callbackAdapter: CaptureStreamCallbackAdapter?
+
+    func configure(
+        session: CaptureOutputSession,
+        callbackAdapter: CaptureStreamCallbackAdapter
+    ) {
+        outputSession = session
+        self.callbackAdapter = callbackAdapter
+    }
+
+    func handle(_ sampleBuffer: CMSampleBuffer) -> CaptureSampleResult {
+        guard let outputSession, let callbackAdapter else { return .rejected }
+        return callbackAdapter.handleMicrophone(
+            for: outputSession,
+            sampleBuffer: sampleBuffer
+        )
+    }
+
+    func clear() {
+        outputSession = nil
+        callbackAdapter = nil
+    }
+}
+
+enum CaptureMissingWriterFinalizer {
+    static func discard(
+        _ finishedJob: RecordingOutputJob?,
+        currentJob: inout RecordingOutputJob?,
+        firstFrame: inout CMSampleBuffer?
+    ) {
+        if let finishedJob {
+            _ = finishedJob.discardOutputs(reason: .preparation(
+                stage: .first,
+                message: "The recording writer is unavailable."
+            ))
+            if currentJob === finishedJob { currentJob = nil }
+        }
+        firstFrame = nil
+    }
+}
+
 struct CaptureOutputInfrastructure {
     let core: CaptureOutputCore
     let adapter: CaptureStreamCallbackAdapter

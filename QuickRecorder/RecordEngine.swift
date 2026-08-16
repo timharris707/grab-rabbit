@@ -817,7 +817,10 @@ extension AppDelegate {
                 try! SCContext.audioEngine.start()
             }
         } else {
-            AudioRecorder.shared.setupAudioCapture(session: session)
+            AudioRecorder.shared.setupAudioCapture(
+                session: session,
+                callbackAdapter: captureStreamCallbackAdapter
+            )
             AudioRecorder.shared.start()
         }
     }
@@ -956,10 +959,13 @@ class AudioRecorder: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate {
     private var captureSession: AVCaptureSession!
     private var audioInput: AVCaptureDeviceInput!
     private var audioDataOutput: AVCaptureAudioDataOutput!
-    private weak var outputSession: CaptureOutputSession?
+    private let callbackRoute = CaptureMicrophoneCallbackRoute()
 
-    func setupAudioCapture(session: CaptureOutputSession) {
-        outputSession = session
+    func setupAudioCapture(
+        session: CaptureOutputSession,
+        callbackAdapter: CaptureStreamCallbackAdapter
+    ) {
+        callbackRoute.configure(session: session, callbackAdapter: callbackAdapter)
         captureSession = AVCaptureSession()
 
         // Get the default audio device (microphone)
@@ -1008,15 +1014,11 @@ class AudioRecorder: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate {
         if let session = captureSession {
             if session.isRunning { session.stopRunning() }
         }
-        outputSession = nil
+        callbackRoute.clear()
     }
 
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
-        guard let outputSession else { return }
-        _ = AppDelegate.shared.captureStreamCallbackAdapter.handleMicrophone(
-            for: outputSession,
-            sampleBuffer: sampleBuffer
-        )
+        _ = callbackRoute.handle(sampleBuffer)
     }
 }
 

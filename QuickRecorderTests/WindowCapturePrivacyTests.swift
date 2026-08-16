@@ -1923,6 +1923,110 @@ final class WindowCapturePrivacyTests: XCTestCase {
         XCTAssertEqual(cleanedSessions, [session.id])
     }
 
+    func testExternalMicrophoneCallbackUsesInjectedRouteOffMain() throws {
+        let stream = NSObject()
+        let videoSink = TestVideoDestination()
+        let microphoneSink = TestVideoDestination()
+        let store = CaptureOutputSessionStore()
+        let session = makeCaptureSession(
+            stream: stream,
+            mode: .transparent,
+            sink: videoSink,
+            microphoneInput: microphoneSink
+        )
+        let core = CaptureOutputCore(
+            store: store,
+            failureHandler: { _ in XCTFail("sample processing should not fail") },
+            stopHandler: { _ in XCTFail("stream should not stop") }
+        )
+        let adapter = CaptureStreamCallbackAdapter(core: core)
+        let sample = try makeSampleBuffer(imageBuffer: makeRoundedWindow(over: sentinels[0]))
+        let route = CaptureMicrophoneCallbackRoute()
+        let results = LockedCaptureSampleResults()
+        let forwarded = expectation(description: "off-main microphone sample forwarded")
+        let rejectedAfterStop = expectation(description: "stopped route rejects microphone sample")
+
+        XCTAssertTrue(store.install(session))
+        XCTAssertEqual(
+            adapter.handleSample(
+                from: stream,
+                sampleBuffer: sample,
+                kind: .screen(isComplete: true, presenterOverlayX: nil)
+            ),
+            .appended
+        )
+        XCTAssertTrue(Thread.isMainThread, "capture setup is expected to run on the main thread")
+        route.configure(session: session, callbackAdapter: adapter)
+        DispatchQueue(label: "WindowCapturePrivacyTests.external-microphone").async {
+            XCTAssertFalse(Thread.isMainThread)
+            results.append(route.handle(sample))
+            forwarded.fulfill()
+        }
+        wait(for: [forwarded], timeout: 2)
+        XCTAssertEqual(microphoneSink.appendCount, 1, "the injected route must forward to its exact session")
+
+        route.clear()
+        DispatchQueue(label: "WindowCapturePrivacyTests.external-microphone-after-stop").async {
+            results.append(route.handle(sample))
+            rejectedAfterStop.fulfill()
+        }
+        wait(for: [rejectedAfterStop], timeout: 2)
+        XCTAssertEqual(results.values, [.appended, .rejected])
+        XCTAssertEqual(microphoneSink.appendCount, 1, "stop must clear the callback route")
+    }
+
+    func testMissingWriterFinalizationClearsOnlyItsFinishedJob() throws {
+        let contextSource = try projectSource("QuickRecorder/SCContext.swift")
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("missing-writer-finalization-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let finishedA = try RecordingOutputJob.reserve(
+            in: directory,
+            preferredStem: "finished-a",
+            layout: .single(fileExtension: "mov")
+        )
+        let newerB = try RecordingOutputJob.reserve(
+            in: directory,
+            preferredStem: "newer-b",
+            layout: .single(fileExtension: "mov")
+        )
+        let lateA = try RecordingOutputJob.reserve(
+            in: directory,
+            preferredStem: "late-a",
+            layout: .single(fileExtension: "mov")
+        )
+        defer {
+            _ = newerB.discardOutputs(reason: .cancelled(stage: .first))
+        }
+        let sample = try makeSampleBuffer(imageBuffer: makeRoundedWindow(over: sentinels[0]))
+
+        var currentA: RecordingOutputJob? = finishedA
+        var firstFrameA: CMSampleBuffer? = sample
+        CaptureMissingWriterFinalizer.discard(
+            finishedA,
+            currentJob: &currentA,
+            firstFrame: &firstFrameA
+        )
+        XCTAssertNil(currentA, "a terminal job must not remain globally current")
+        XCTAssertNil(firstFrameA, "the missing-writer exit must perform shared frame cleanup")
+        XCTAssertEqual(finishedA.lifecycle, .terminal)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: finishedA.reservationURL.path))
+
+        var currentB: RecordingOutputJob? = newerB
+        var firstFrameB: CMSampleBuffer? = sample
+        CaptureMissingWriterFinalizer.discard(
+            lateA,
+            currentJob: &currentB,
+            firstFrame: &firstFrameB
+        )
+        XCTAssertTrue(currentB === newerB, "late cleanup for A must preserve newer job B")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: newerB.reservationURL.path))
+        XCTAssertNil(firstFrameB, "the early return must clear retained frame state")
+        XCTAssertTrue(contextSource.contains("CaptureMissingWriterFinalizer.discard("))
+    }
+
     func testCaptureDelegatesAndUIStopUseTheProductionCallbackAdapter() throws {
         let engineSource = try projectSource("QuickRecorder/RecordEngine.swift")
         let contextSource = try projectSource("QuickRecorder/SCContext.swift")
@@ -1932,9 +2036,18 @@ final class WindowCapturePrivacyTests: XCTestCase {
         XCTAssertTrue(engineSource.contains("session.releaseStandaloneAudioResources()"))
         XCTAssertEqual(
             engineSource.components(separatedBy: "captureStreamCallbackAdapter.handleMicrophone(").count - 1,
-            3,
-            "AEC, default-device, and AVCapture microphone callbacks must all use the adapter"
+            2,
+            "AEC and default-device microphone callbacks must use the owning delegate's adapter"
         )
+        XCTAssertTrue(engineSource.contains("callbackAdapter: captureStreamCallbackAdapter"))
+        XCTAssertTrue(engineSource.contains("callbackRoute.configure(session: session, callbackAdapter: callbackAdapter)"))
+        XCTAssertTrue(engineSource.contains("_ = callbackRoute.handle(sampleBuffer)"))
+        XCTAssertTrue(engineSource.contains("callbackRoute.clear()"))
+        let audioRecorderSource = try XCTUnwrap(
+            engineSource.components(separatedBy: "class AudioRecorder").last?
+                .components(separatedBy: "extension CMSampleBuffer").first
+        )
+        XCTAssertFalse(audioRecorderSource.contains("AppDelegate.shared"))
         XCTAssertTrue(engineSource.contains("captureStreamCallbackAdapter.handleStartFailure("))
         XCTAssertTrue(contextSource.contains("captureStreamCallbackAdapter.handleStop(from: activeStream)"))
     }
@@ -2557,6 +2670,17 @@ private final class LockedSessionIDs {
 
     func append(_ id: UUID) {
         lock.withLock { storage.append(id) }
+    }
+}
+
+private final class LockedCaptureSampleResults {
+    private let lock = NSLock()
+    private var storage = [CaptureSampleResult]()
+
+    var values: [CaptureSampleResult] { lock.withLock { storage } }
+
+    func append(_ result: CaptureSampleResult) {
+        lock.withLock { storage.append(result) }
     }
 }
 

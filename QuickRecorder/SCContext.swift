@@ -399,7 +399,7 @@ class SCContext {
             startTime = Date.now.addingTimeInterval(-1) - SCContext.timePassed
         }
     }
-    
+
     static func stopRecording(session expectedSession: CaptureOutputSession? = nil) {
         let sessions = AppDelegate.shared.captureOutputSessions
         if expectedSession == nil, let activeStream = stream {
@@ -450,12 +450,11 @@ class SCContext {
         audioFile2 = nil // close audio file2
         if !finalizesAudioOnly {
             guard let finalWriter, let finalVideoInput else {
-                if let finishedJob {
-                    _ = finishedJob.discardOutputs(reason: .preparation(
-                        stage: .first,
-                        message: "The recording writer is unavailable."
-                    ))
-                }
+                CaptureMissingWriterFinalizer.discard(
+                    finishedJob,
+                    currentJob: &outputJob,
+                    firstFrame: &firstFrame
+                )
                 streamType = nil
                 return
             }

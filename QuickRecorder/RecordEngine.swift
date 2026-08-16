@@ -498,7 +498,7 @@ extension AppDelegate {
             }
             sessionInstalled = true
             SCContext.stream = stream
-            if recordMic { startMicRecording(session: session) }
+            if recordMic { try startMicRecording(session: session) }
             try await stream.startCapture()
         } catch {
             let recordingError = (error as? RecordingExportError)
@@ -571,24 +571,27 @@ extension AppDelegate {
         error: RecordingExportError,
         stopsMicrophone: Bool
     ) {
-        stream.stopCapture()
-        if stopsMicrophone { session.stopMicrophoneCapture() }
-        session.writer?.cancelWriting()
-        session.releaseStandaloneAudioResources()
-        if SCContext.stream === stream { SCContext.stream = nil }
-        if let job = session.outputJob {
-            _ = job.discardOutputs(reason: error)
-            if SCContext.outputJob === job { SCContext.outputJob = nil }
-        }
-        if SCContext.vW === session.writer { SCContext.vW = nil }
-        if SCContext.vwInput === session.videoInput as? AVAssetWriterInput { SCContext.vwInput = nil }
-        if SCContext.awInput === session.systemAudioInput as? AVAssetWriterInput { SCContext.awInput = nil }
-        if SCContext.micInput === session.microphoneInput as? AVAssetWriterInput { SCContext.micInput = nil }
-        SCContext.streamType = nil
-        SCContext.showNotification(
-            title: "Failed to Record".local,
-            body: error.localizedDescription,
-            id: "quickrecorder.error.\(UUID().uuidString)"
+        CaptureFailedStartCleanup.run(
+            session: session,
+            error: error,
+            stopsMicrophone: stopsMicrophone,
+            stopStream: { stream.stopCapture() },
+            clearSharedResources: {
+                if SCContext.stream === stream { SCContext.stream = nil }
+                if let job = session.outputJob, SCContext.outputJob === job { SCContext.outputJob = nil }
+                if SCContext.vW === session.writer { SCContext.vW = nil }
+                if SCContext.vwInput === session.videoInput as? AVAssetWriterInput { SCContext.vwInput = nil }
+                if SCContext.awInput === session.systemAudioInput as? AVAssetWriterInput { SCContext.awInput = nil }
+                if SCContext.micInput === session.microphoneInput as? AVAssetWriterInput { SCContext.micInput = nil }
+                SCContext.streamType = nil
+            },
+            notify: { message in
+                SCContext.showNotification(
+                    title: "Failed to Record".local,
+                    body: message,
+                    id: "quickrecorder.error.\(UUID().uuidString)"
+                )
+            }
         )
     }
 
@@ -788,7 +791,7 @@ extension AppDelegate {
         SCContext.vW.startWriting()
     }
 
-    func startMicRecording(session: CaptureOutputSession) {
+    func startMicRecording(session: CaptureOutputSession) throws {
         if micDevice == "default" {
             if enableAEC {
                 var level = AUVoiceIOOtherAudioDuckingLevel.mid
@@ -797,31 +800,54 @@ extension AppDelegate {
                     case "max": level = .max
                     default: level = .mid
                 }
-                try? SCContext.AECEngine.startAudioStream(enableAEC: enableAEC, duckingLevel: level, audioBufferHandler: { pcmBuffer in
-                    guard let sampleBuffer = pcmBuffer.asSampleBuffer else { return }
-                    _ = self.captureStreamCallbackAdapter.handleMicrophone(
-                        for: session,
-                        sampleBuffer: sampleBuffer
-                    )
-                })
+                try CaptureMicrophoneStartup.start(
+                    selection: .defaultDevice,
+                    session: session,
+                    install: {},
+                    start: {
+                        try SCContext.AECEngine.startAudioStream(enableAEC: enableAEC, duckingLevel: level, audioBufferHandler: { pcmBuffer in
+                            guard let sampleBuffer = pcmBuffer.asSampleBuffer else { return }
+                            _ = self.captureStreamCallbackAdapter.handleMicrophone(
+                                for: session,
+                                sampleBuffer: sampleBuffer
+                            )
+                        })
+                    }
+                )
             } else {
                 let input = SCContext.audioEngine.inputNode
                 let inputFormat = input.inputFormat(forBus: 0)
-                input.installTap(onBus: 0, bufferSize: 1024, format: inputFormat) { buffer, time in
-                    guard let sampleBuffer = buffer.asSampleBuffer else { return }
-                    _ = self.captureStreamCallbackAdapter.handleMicrophone(
-                        for: session,
-                        sampleBuffer: sampleBuffer
-                    )
-                }
-                try! SCContext.audioEngine.start()
+                try CaptureMicrophoneStartup.start(
+                    selection: .defaultDevice,
+                    session: session,
+                    install: {
+                        guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0 else {
+                            throw CaptureMicrophoneDeviceError.deviceUnavailable
+                        }
+                        input.installTap(onBus: 0, bufferSize: 1024, format: inputFormat) { buffer, _ in
+                            guard let sampleBuffer = buffer.asSampleBuffer else { return }
+                            _ = self.captureStreamCallbackAdapter.handleMicrophone(
+                                for: session,
+                                sampleBuffer: sampleBuffer
+                            )
+                        }
+                    },
+                    start: { try SCContext.audioEngine.start() }
+                )
             }
         } else {
-            AudioRecorder.shared.setupAudioCapture(
+            try CaptureMicrophoneStartup.start(
+                selection: .named(micDevice),
                 session: session,
-                callbackAdapter: captureStreamCallbackAdapter
+                install: {
+                    try AudioRecorder.shared.setupAudioCapture(
+                        deviceName: micDevice,
+                        session: session,
+                        callbackAdapter: captureStreamCallbackAdapter
+                    )
+                },
+                start: { try AudioRecorder.shared.start() }
             )
-            AudioRecorder.shared.start()
         }
     }
 
@@ -956,9 +982,9 @@ extension AppDelegate {
 
 class AudioRecorder: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate {
     static let shared = AudioRecorder()
-    private var captureSession: AVCaptureSession!
-    private var audioInput: AVCaptureDeviceInput!
-    private var audioDataOutput: AVCaptureAudioDataOutput!
+    private var captureSession: AVCaptureSession?
+    private var audioInput: AVCaptureDeviceInput?
+    private var audioDataOutput: AVCaptureAudioDataOutput?
     private let audioQueue: DispatchQueue
     private let callbackRoute: CaptureMicrophoneCallbackRoute
 
@@ -970,51 +996,39 @@ class AudioRecorder: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate {
     }
 
     func setupAudioCapture(
+        deviceName: String,
         session: CaptureOutputSession,
         callbackAdapter: CaptureStreamCallbackAdapter
-    ) {
-        callbackRoute.configure(session: session, callbackAdapter: callbackAdapter)
-        captureSession = AVCaptureSession()
+    ) throws {
+        let audioDevice = try CaptureMicrophoneDeviceResolver.resolve(
+            named: deviceName,
+            from: SCContext.getMicrophone(),
+            name: \.localizedName
+        )
+        let captureSession = AVCaptureSession()
+        let audioInput = try AVCaptureDeviceInput(device: audioDevice)
+        guard captureSession.canAddInput(audioInput) else {
+            throw CaptureMicrophoneDeviceError.inputUnavailable
+        }
+        captureSession.addInput(audioInput)
 
-        // Get the default audio device (microphone)
-        guard let audioDevice = SCContext.getCurrentMic() else {
-            print("Unable to access microphone")
-            return
+        let audioDataOutput = AVCaptureAudioDataOutput()
+        guard captureSession.canAddOutput(audioDataOutput) else {
+            throw CaptureMicrophoneDeviceError.outputUnavailable
         }
-        
-        // Create audio input
-        do {
-            audioInput = try AVCaptureDeviceInput(device: audioDevice)
-        } catch {
-            print("Unable to create audio input: \(error)")
-            return
-        }
-        
-        // Add audio input to capture session
-        if captureSession.canAddInput(audioInput) {
-            captureSession.addInput(audioInput)
-        } else {
-            print("Unable to add audio input to capture session")
-            return
-        }
-
-        // Create audio data output
-        audioDataOutput = AVCaptureAudioDataOutput()
+        captureSession.addOutput(audioDataOutput)
         audioDataOutput.setSampleBufferDelegate(self, queue: audioQueue)
-        
-        // Add audio data output to capture session
-        if captureSession.canAddOutput(audioDataOutput) {
-            captureSession.addOutput(audioDataOutput)
-        } else {
-            print("Unable to add audio data output to capture session")
-            return
-        }
+
+        self.captureSession = captureSession
+        self.audioInput = audioInput
+        self.audioDataOutput = audioDataOutput
+        callbackRoute.configure(session: session, callbackAdapter: callbackAdapter)
     }
     
-    func start() {
-        if let session = captureSession {
-            session.startRunning()
-        }
+    func start() throws {
+        guard let captureSession else { throw CaptureMicrophoneDeviceError.sessionUnavailable }
+        captureSession.startRunning()
+        guard captureSession.isRunning else { throw CaptureMicrophoneDeviceError.sessionDidNotStart }
     }
     
     func stop() {
@@ -1023,6 +1037,9 @@ class AudioRecorder: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate {
         }
         audioDataOutput?.setSampleBufferDelegate(nil, queue: nil)
         callbackRoute.drainAndClear()
+        captureSession = nil
+        audioInput = nil
+        audioDataOutput = nil
     }
 
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {

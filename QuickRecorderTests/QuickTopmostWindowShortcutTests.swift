@@ -44,6 +44,8 @@ final class QuickTopmostWindowShortcutTests: XCTestCase {
         var window: String? = "stale window"
         var application: String? = "stale application"
         var filter: String? = "stale filter"
+        var screenArea: String? = "stale area"
+        var streamType: String? = "stale type"
         var recordMicrophone = true
         var recordSystemAudio = false
         var presentationCount = 0
@@ -54,6 +56,8 @@ final class QuickTopmostWindowShortcutTests: XCTestCase {
                 window = nil
                 application = nil
                 filter = nil
+                screenArea = nil
+                streamType = nil
             },
             presenter: QuickTopmostWindowFailurePresenter(
                 activateApplication: {},
@@ -67,6 +71,8 @@ final class QuickTopmostWindowShortcutTests: XCTestCase {
         XCTAssertNil(window)
         XCTAssertNil(application)
         XCTAssertNil(filter)
+        XCTAssertNil(screenArea)
+        XCTAssertNil(streamType)
         XCTAssertTrue(sessions.isIdle)
         XCTAssertTrue(recordMicrophone)
         XCTAssertFalse(recordSystemAudio)
@@ -223,6 +229,38 @@ final class QuickTopmostWindowShortcutTests: XCTestCase {
         XCTAssertNotEqual(harness.globalTarget, stale)
     }
 
+    func testShortcutUsesFrontToBackOrderWhenFrontmostProcessHasMultipleWindows() {
+        let backWindow = TestTarget(windowID: 20, processID: 200)
+        let frontWindow = TestTarget(windowID: 21, processID: 200)
+        let otherAppWindow = TestTarget(windowID: 10, processID: 100)
+        let harness = ShortcutHarness(
+            refreshResults: [
+                .success(TestContent(targets: [backWindow, frontWindow, otherAppWindow]))
+            ],
+            frontmostProcessID: 200,
+            frontToBackWindowIDs: [otherAppWindow.windowID, frontWindow.windowID, backWindow.windowID]
+        )
+
+        harness.shortcut.trigger()
+
+        XCTAssertEqual(harness.startedTargets, [frontWindow])
+        XCTAssertEqual(harness.globalTarget, frontWindow)
+    }
+
+    func testTopmostResolverFailsClosedWithoutAnAuthoritativeZOrderMatch() {
+        let candidate = TestTarget(windowID: 20, processID: 200)
+
+        let resolved = QuickTopmostWindowResolver.resolve(
+            frontmostProcessID: 200,
+            frontToBackWindowIDs: [999],
+            candidates: [candidate],
+            processID: { $0.processID },
+            windowID: { $0.windowID }
+        )
+
+        XCTAssertNil(resolved)
+    }
+
     func testReadinessDoesNotChangeMicrophoneOrSystemAudioChoices() {
         let target = TestTarget(windowID: 20, processID: 200)
         let harness = ShortcutHarness(
@@ -266,10 +304,25 @@ final class QuickTopmostWindowShortcutTests: XCTestCase {
         var scheduled = [() -> Void]()
         var startedTargets = [TestTarget]()
         var failureCount = 0
+        var acceptedResults = [Result<TestContent, ScreenRecordingContentError>]()
+        var acceptedTimeoutCount = 0
+        let sharedState = ScreenRecordingContentState<TestContent>()
+        let stale = TestTarget(windowID: 10, processID: 100)
         let actual = TestTarget(windowID: 20, processID: 200)
+        sharedState.apply(.success(TestContent(targets: [stale])))
         let shortcut = QuickTopmostWindowShortcutAdapter<TestContent, TestTarget>(
             maximumAttempts: 2,
             refreshContent: { refreshCompletions.append($0) },
+            acceptAttemptOutcome: { outcome in
+                switch outcome {
+                case .completed(let result):
+                    acceptedResults.append(result)
+                    sharedState.apply(result)
+                case .timedOut:
+                    acceptedTimeoutCount += 1
+                    sharedState.apply(.failure(.unavailable("timed out")))
+                }
+            },
             selectCurrentTarget: { $0.targets.first },
             scheduleRetry: { scheduled.append($0) },
             scheduleAttemptTimeout: { scheduled.append($0) },
@@ -281,6 +334,9 @@ final class QuickTopmostWindowShortcutTests: XCTestCase {
         XCTAssertEqual(refreshCompletions.count, 1)
         try XCTUnwrap(scheduled.first)()
         scheduled.removeFirst()
+        XCTAssertEqual(acceptedTimeoutCount, 1)
+        XCTAssertFalse(sharedState.isReady)
+        XCTAssertNil(sharedState.content)
         try XCTUnwrap(scheduled.first)()
         scheduled.removeFirst()
         XCTAssertEqual(refreshCompletions.count, 2)
@@ -290,6 +346,9 @@ final class QuickTopmostWindowShortcutTests: XCTestCase {
 
         XCTAssertEqual(startedTargets, [actual])
         XCTAssertEqual(failureCount, 0)
+        XCTAssertEqual(acceptedResults, [.success(TestContent(targets: [actual]))])
+        XCTAssertTrue(sharedState.isReady)
+        XCTAssertEqual(sharedState.content, TestContent(targets: [actual]))
     }
 
     func testProductionHotkeyUsesReadinessAdapterBeforeCaptureMutation() throws {
@@ -304,7 +363,7 @@ final class QuickTopmostWindowShortcutTests: XCTestCase {
         let shortcutRefresh = try sourceSlice(
             in: contextSource,
             from: "static func refreshAvailableContentForQuickTopmost",
-            through: "static func recoverScreenRecordingAccess"
+            through: "completion: completion"
         )
 
         XCTAssertTrue(hotkey.contains("quickTopmostWindowShortcut.trigger()"))
@@ -312,8 +371,14 @@ final class QuickTopmostWindowShortcutTests: XCTestCase {
         XCTAssertFalse(hotkey.contains("closeAllWindow()"))
         XCTAssertFalse(hotkey.contains("prepRecord("))
         XCTAssertTrue(appSource.contains("shareableContent: content"))
+        XCTAssertTrue(appSource.contains("acceptAttemptOutcome: { outcome in"))
+        XCTAssertTrue(appSource.contains("SCContext.applyAcceptedQuickTopmostContentResult(result)"))
+        XCTAssertTrue(appSource.contains("SCContext.invalidateQuickTopmostContentAfterTimeout()"))
+        XCTAssertTrue(appSource.contains("QuickTopmostWindowResolver.resolve("))
+        XCTAssertTrue(appSource.contains("QuickTopmostWindowZOrder.frontToBackWindowIDs()"))
         XCTAssertFalse(contextSource.contains("availableContent!"))
         XCTAssertFalse(engineSource.contains("availableContent!"))
+        XCTAssertFalse(shortcutRefresh.contains("applyAvailableContentResult"))
         XCTAssertFalse(shortcutRefresh.contains("presentRecovery"))
         XCTAssertFalse(shortcutRefresh.contains("NSWorkspace.shared.open"))
         XCTAssertFalse(shortcutRefresh.contains("CGRequestScreenCaptureAccess"))
@@ -323,10 +388,12 @@ final class QuickTopmostWindowShortcutTests: XCTestCase {
         XCTAssertTrue(appSource.contains("SCContext.window = nil"))
         XCTAssertTrue(appSource.contains("SCContext.application = nil"))
         XCTAssertTrue(appSource.contains("SCContext.filter = nil"))
+        XCTAssertTrue(appSource.contains("SCContext.screenArea = nil"))
+        XCTAssertTrue(appSource.contains("SCContext.streamType = nil"))
     }
 }
 
-private struct TestContent {
+private struct TestContent: Equatable {
     let targets: [TestTarget]
 }
 
@@ -345,6 +412,7 @@ private final class ShortcutHarness {
     private var scheduledRetries = [() -> Void]()
 
     var frontmostProcessID: Int
+    var frontToBackWindowIDs: [Int]
     var refreshCount = 0
     var failures = [QuickTopmostWindowShortcutFailure]()
     var startedTargets = [TestTarget]()
@@ -365,8 +433,17 @@ private final class ShortcutHarness {
                 completion(refreshResults.removeFirst())
             }
         },
+        acceptAttemptOutcome: { _ in },
         selectCurrentTarget: { [unowned self] content in
-            content.targets.first(where: { $0.processID == frontmostProcessID })
+            QuickTopmostWindowResolver.resolve(
+                frontmostProcessID: frontmostProcessID,
+                frontToBackWindowIDs: frontToBackWindowIDs.isEmpty
+                    ? content.targets.map(\.windowID)
+                    : frontToBackWindowIDs,
+                candidates: content.targets,
+                processID: { $0.processID },
+                windowID: { $0.windowID }
+            )
         },
         scheduleRetry: { [unowned self] retry in
             scheduledRetries.append(retry)
@@ -389,10 +466,12 @@ private final class ShortcutHarness {
 
     init(
         refreshResults: [Result<TestContent, ScreenRecordingContentError>],
-        frontmostProcessID: Int = 200
+        frontmostProcessID: Int = 200,
+        frontToBackWindowIDs: [Int] = []
     ) {
         self.refreshResults = refreshResults
         self.frontmostProcessID = frontmostProcessID
+        self.frontToBackWindowIDs = frontToBackWindowIDs
     }
 
     var captureStartCount: Int { startedTargets.count }

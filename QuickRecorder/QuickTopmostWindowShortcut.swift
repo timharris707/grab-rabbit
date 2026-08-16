@@ -1,9 +1,42 @@
+import CoreGraphics
 import Foundation
 
 enum QuickTopmostWindowShortcutFailure: Equatable {
     case contentUnavailable
     case permissionDenied
     case topmostWindowUnavailable
+}
+
+enum QuickTopmostContentAttemptOutcome<Content> {
+    case completed(Result<Content, ScreenRecordingContentError>)
+    case timedOut
+}
+
+enum QuickTopmostWindowZOrder {
+    static func frontToBackWindowIDs() -> [CGWindowID] {
+        let options: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
+        let windows = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] ?? []
+        return windows.compactMap { $0[kCGWindowNumber as String] as? CGWindowID }
+    }
+}
+
+struct QuickTopmostWindowResolver {
+    static func resolve<Item, ProcessID: Equatable, WindowID: Hashable>(
+        frontmostProcessID: ProcessID,
+        frontToBackWindowIDs: [WindowID],
+        candidates: [Item],
+        processID: (Item) -> ProcessID?,
+        windowID: (Item) -> WindowID
+    ) -> Item? {
+        let candidatesByID = Dictionary(
+            candidates.compactMap { candidate -> (WindowID, Item)? in
+                guard processID(candidate) == frontmostProcessID else { return nil }
+                return (windowID(candidate), candidate)
+            },
+            uniquingKeysWith: { first, _ in first }
+        )
+        return frontToBackWindowIDs.lazy.compactMap { candidatesByID[$0] }.first
+    }
 }
 
 struct QuickTopmostContentPreflightPolicy {
@@ -72,11 +105,13 @@ struct QuickTopmostWindowFailureHandler {
 
 final class QuickTopmostWindowShortcutAdapter<Content, Target> {
     typealias ContentResult = Result<Content, ScreenRecordingContentError>
+    typealias AttemptOutcome = QuickTopmostContentAttemptOutcome<Content>
     typealias RefreshContent = (@escaping (ContentResult) -> Void) -> Void
     typealias Schedule = (@escaping () -> Void) -> Void
 
     private let maximumAttempts: Int
     private let refreshContent: RefreshContent
+    private let acceptAttemptOutcome: (AttemptOutcome) -> Void
     private let selectCurrentTarget: (Content) -> Target?
     private let scheduleRetry: Schedule
     private let scheduleAttemptTimeout: Schedule
@@ -91,6 +126,7 @@ final class QuickTopmostWindowShortcutAdapter<Content, Target> {
     init(
         maximumAttempts: Int,
         refreshContent: @escaping RefreshContent,
+        acceptAttemptOutcome: @escaping (AttemptOutcome) -> Void,
         selectCurrentTarget: @escaping (Content) -> Target?,
         scheduleRetry: @escaping Schedule,
         scheduleAttemptTimeout: @escaping Schedule,
@@ -100,6 +136,7 @@ final class QuickTopmostWindowShortcutAdapter<Content, Target> {
         precondition(maximumAttempts > 0)
         self.maximumAttempts = maximumAttempts
         self.refreshContent = refreshContent
+        self.acceptAttemptOutcome = acceptAttemptOutcome
         self.selectCurrentTarget = selectCurrentTarget
         self.scheduleRetry = scheduleRetry
         self.scheduleAttemptTimeout = scheduleAttemptTimeout
@@ -131,6 +168,7 @@ final class QuickTopmostWindowShortcutAdapter<Content, Target> {
     private func handle(_ result: ContentResult, generation: UInt64) {
         guard isResolving, activeAttemptGeneration == generation else { return }
         activeAttemptGeneration = nil
+        acceptAttemptOutcome(.completed(result))
 
         switch result {
         case .success(let content):
@@ -150,6 +188,7 @@ final class QuickTopmostWindowShortcutAdapter<Content, Target> {
     private func handleAttemptTimeout(generation: UInt64) {
         guard isResolving, activeAttemptGeneration == generation else { return }
         activeAttemptGeneration = nil
+        acceptAttemptOutcome(.timedOut)
         retryOrFinish(with: .contentUnavailable)
     }
 

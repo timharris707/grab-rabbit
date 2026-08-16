@@ -115,11 +115,19 @@ class SCContext {
     ) {
         quickTopmostContentPreflightPolicy.refresh(
             preflightAuthorized: CGPreflightScreenCaptureAccess(),
-            fetch: fetchAvailableContent
-        ) { result in
-            applyAvailableContentResult(result)
-            completion(result)
-        }
+            fetch: fetchAvailableContent,
+            completion: completion
+        )
+    }
+
+    static func applyAcceptedQuickTopmostContentResult(
+        _ result: Result<SCShareableContent, ScreenRecordingContentError>
+    ) {
+        applyAvailableContentResult(result)
+    }
+
+    static func invalidateQuickTopmostContentAfterTimeout() {
+        contentState.apply(.failure(.unavailable("Quick Topmost Window content refresh timed out.")))
     }
 
     static func fetchWindowSelectorContent(

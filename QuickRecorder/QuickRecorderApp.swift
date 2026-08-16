@@ -185,6 +185,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, SCStreamDelegate, SCStreamOu
             SCContext.window = nil
             SCContext.application = nil
             SCContext.filter = nil
+            SCContext.screenArea = nil
+            SCContext.streamType = nil
         },
         presenter: QuickTopmostWindowFailurePresenter(
             activateApplication: {
@@ -208,13 +210,28 @@ class AppDelegate: NSObject, NSApplicationDelegate, SCStreamDelegate, SCStreamOu
                 }
             }
         },
+        acceptAttemptOutcome: { outcome in
+            switch outcome {
+            case .completed(let result):
+                SCContext.applyAcceptedQuickTopmostContentResult(result)
+            case .timedOut:
+                SCContext.invalidateQuickTopmostContentAfterTimeout()
+            }
+        },
         selectCurrentTarget: { content in
-            guard let processID = NSWorkspace.shared.frontmostApplication?.processIdentifier,
-                  let window = SCContext.getWindows(from: content).first(where: {
-                      $0.owningApplication?.processID == processID
-                      && $0.title != ""
-                      && $0.isOnScreen
-                  }),
+            guard let processID = NSWorkspace.shared.frontmostApplication?.processIdentifier else {
+                return nil
+            }
+            let candidates = SCContext.getWindows(from: content).filter {
+                $0.title != "" && $0.isOnScreen
+            }
+            guard let window = QuickTopmostWindowResolver.resolve(
+                frontmostProcessID: processID,
+                frontToBackWindowIDs: QuickTopmostWindowZOrder.frontToBackWindowIDs(),
+                candidates: candidates,
+                processID: { $0.owningApplication?.processID },
+                windowID: \.windowID
+            ),
                   let screen = SCContext.getSCDisplayWithMouse(from: content) else {
                 return nil
             }

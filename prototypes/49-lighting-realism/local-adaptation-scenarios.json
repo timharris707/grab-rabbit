@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "boundary": "Synthetic control descriptions only. No camera or still access. Apply adaptation to the generated background, never generatively reconstruct or modify the genuine person.",
+  "scenarios": [
+    {"id": "baseline", "input_change": {"exposure_ev": 0.0, "color_temperature_shift_k": 0, "contrast_scale": 1.0}, "question": "Does the unmodified generated background match the textual lighting profile?"},
+    {"id": "room-dims-warmer", "input_change": {"exposure_ev": -0.7, "color_temperature_shift_k": -500, "contrast_scale": 0.9}, "question": "Can local exposure, color, and contrast adaptation preserve plausible direction and depth?"},
+    {"id": "room-brightens-cooler", "input_change": {"exposure_ev": 0.7, "color_temperature_shift_k": 500, "contrast_scale": 1.1}, "question": "Can local exposure, color, and contrast adaptation avoid a pasted-on subject/background mismatch?"}
+  ]
+}

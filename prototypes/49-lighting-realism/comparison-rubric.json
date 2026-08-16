@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "scoring": "Human comparative notes; no automatic pass threshold. Tim decides after seeing all eight outputs, including failures.",
+  "criteria": ["lighting direction", "brightness and color temperature", "contrast", "believable room depth", "depth-of-field", "central subject-zone usability", "edge integration potential", "plausible shadowing", "photorealism", "compositional defects", "policy failures"],
+  "failure_rule": "A provider rejection, wrong output envelope, timeout, moderation block, or rate limit is the cell result; do not retry.",
+  "pairing": "Compare the two models within each identical scene/profile cell, then compare each model across both lighting profiles and scenes.",
+  "later_local_checks": ["plausibility under each local-adaptation scenario", "temporal stability in a separately authorized clip", "latency", "local CPU/GPU/memory cost"]
+}

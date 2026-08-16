@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "status": "NOT_AUTHORIZED_ZERO_CALL_PREPARATION_ONLY",
+  "privacy_boundary": "Text scene direction and locally derived textual lighting profile only. No camera pixels, stills, audio, video, credentials, or user identifiers.",
+  "output": {"width": 1376, "height": 768, "quality": "medium-equivalent", "count_per_cell": 1, "response": "image-only"},
+  "controls": {"automatic_retries": 0, "best_of": 1, "silent_provider_switch": false, "regeneration_during_recording": false},
+  "models": [
+    {"provider": "OpenAI direct", "route": "Images API", "model": "gpt-image-2-2026-04-21", "cells": 4, "image_output_cost_usd_each": "0.02973", "image_output_subtotal_usd": "0.11892"},
+    {"provider": "Google Cloud direct", "route": "Vertex AI generateContent", "model": "gemini-3.1-flash-image", "cells": 4, "image_output_cost_usd_each": "0.06720", "image_output_subtotal_usd": "0.26880"}
+  ],
+  "scenes": [
+    {"id": "scene-a", "text": "Uncluttered warm home office with a clear central subject zone and no people, text, marks, or logos."},
+    {"id": "scene-b", "text": "Neutral modern studio/library with the same central subject zone and exclusions."}
+  ],
+  "lighting_profiles": [
+    {"id": "light-a", "text": "Soft warm key from camera-left (~3200 K), low contrast, gentle fill, rear wall about one stop darker."},
+    {"id": "light-b", "text": "Cooler hard key from camera-right (~5600 K), higher contrast, weak fill, plausible directional shadows and depth falloff."}
+  ],
+  "prompt_template": "Create a photorealistic empty background for a solo-camera recording. Scene: {{scene}} Lighting to match: {{lighting}} Preserve a clear central zone for the genuine camera subject. Make lighting direction, color temperature, contrast, room depth, depth-of-field, and plausible environmental shadows mutually consistent. Do not include any person, body part, text, mark, logo, watermark, camera interface, or composited foreground subject.",
+  "totals": {"image_calls": 8, "text_only_calls": 8, "still_upload_calls": 0, "automatic_retries": 0, "image_output_subtotal_usd_before_text": "0.38772"},
+  "authorization_gates": [
+    "Tim explicitly approves exactly 8 Stage-1 calls and $0.38772 image-output subtotal before text charges.",
+    "Exact accounts and current retention, abuse logging, cache, processing region, age/content, billing, and commercial terms are reviewed and recorded without secrets.",
+    "A separate runner exposes a hard call/spend ceiling and has no retry or provider-fallback path.",
+    "Stage 2 and every still remain separately unapproved."
+  ]
+}

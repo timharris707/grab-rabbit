@@ -325,6 +325,8 @@ final class WindowSelectorRefreshAdapterTests: XCTestCase {
 
     func testShippingProviderCapsCaptureFanoutAndFallsBackPerWindow() throws {
         let provider = try projectSource("QuickRecorder/WindowSelectorThumbnailProvider.swift")
+        var batch = WindowSelectorThumbnailBatch<Int>()
+        [1, 2, 3].forEach { batch.register($0) }
         let plan = WindowSelectorThumbnailCapturePlan.make(
             windows: Array(0..<20),
             captureThumbnails: true,
@@ -340,10 +342,15 @@ final class WindowSelectorRefreshAdapterTests: XCTestCase {
         XCTAssertEqual(plan.placeholders, Array(12..<20))
         XCTAssertEqual(placeholdersOnly.captured, [])
         XCTAssertEqual(placeholdersOnly.placeholders, Array(0..<20))
+        XCTAssertEqual(batch.resolve(1), false)
+        XCTAssertEqual(batch.resolve(2), false)
+        XCTAssertEqual(batch.resolve(3), true)
+        XCTAssertNil(batch.resolve(2), "A stale stream callback must not resolve twice")
         XCTAssertTrue(provider.contains("private static let maximumConcurrentThumbnailCaptures = 12"))
         XCTAssertTrue(provider.contains("maximumCaptures: Self.maximumConcurrentThumbnailCaptures"))
         XCTAssertTrue(provider.contains("self?.recordFallback(for: stream)"))
         XCTAssertTrue(provider.contains("self.recordFallback(for: stream)"))
+        XCTAssertTrue(provider.contains("let isComplete = batch.resolve(identifier)"))
         XCTAssertTrue(provider.contains("appendPlaceholder(for: window, in: content)"))
         XCTAssertFalse(provider.contains("self?.fail(error.localizedDescription)"))
     }

@@ -61,6 +61,23 @@ struct WindowSelectorThumbnailCapturePlan<Item> {
     }
 }
 
+struct WindowSelectorThumbnailBatch<Identifier: Hashable> {
+    private var pending = Set<Identifier>()
+
+    mutating func register(_ identifier: Identifier) {
+        pending.insert(identifier)
+    }
+
+    mutating func resolve(_ identifier: Identifier) -> Bool? {
+        guard pending.remove(identifier) != nil else { return nil }
+        return pending.isEmpty
+    }
+
+    mutating func removeAll() {
+        pending.removeAll()
+    }
+}
+
 struct WindowSelectorSelectionReconciler {
     static func reconcile<Item, Identifier: Hashable>(
         selected: [Item],

@@ -33,7 +33,7 @@ final class WindowSelectorThumbnailProvider: NSObject, SCStreamDelegate, SCStrea
     private var content: SCShareableContent?
     private var streams = [SCStream]()
     private var entries = [ObjectIdentifier: StreamEntry]()
-    private var pendingStreams = Set<ObjectIdentifier>()
+    private var batch = WindowSelectorThumbnailBatch<ObjectIdentifier>()
     private var windows = [SCWindow]()
     private var thumbnails = [SCDisplay: [WindowThumbnail]]()
     private var finished = false
@@ -85,19 +85,11 @@ final class WindowSelectorThumbnailProvider: NSObject, SCStreamDelegate, SCStrea
     ) {
         guard type == .screen,
               CMSampleBufferGetImageBuffer(sampleBuffer) != nil else { return }
-        let identifier = ObjectIdentifier(stream)
-        guard !finished,
-              pendingStreams.remove(identifier) != nil,
-              let entry = entries[identifier] else { return }
-
-        appendThumbnail(
-            sampleBuffer.nsImage ?? NSImage(named: "unknowScreen")!,
-            for: entry
-        )
+        guard resolve(
+            stream,
+            image: sampleBuffer.nsImage ?? NSImage(named: "unknowScreen")!
+        ) else { return }
         startRegistry.stop(stream)
-        if pendingStreams.isEmpty {
-            succeed()
-        }
     }
 
     func stream(_ stream: SCStream, didStopWithError _: Error) {
@@ -139,7 +131,7 @@ final class WindowSelectorThumbnailProvider: NSObject, SCStreamDelegate, SCStrea
                     window: window,
                     displays: displays(for: window, in: content)
                 )
-                pendingStreams.insert(identifier)
+                batch.register(identifier)
                 streams.append(stream)
             } catch {
                 appendPlaceholder(for: window, in: content)
@@ -183,14 +175,19 @@ final class WindowSelectorThumbnailProvider: NSObject, SCStreamDelegate, SCStrea
     }
 
     private func recordFallback(for stream: SCStream) {
+        _ = resolve(stream, image: NSImage(named: "unknowScreen")!)
+    }
+
+    private func resolve(_ stream: SCStream, image: NSImage) -> Bool {
         let identifier = ObjectIdentifier(stream)
         guard !finished,
-              pendingStreams.remove(identifier) != nil,
-              let entry = entries[identifier] else { return }
-        appendThumbnail(NSImage(named: "unknowScreen")!, for: entry)
-        if pendingStreams.isEmpty {
+              let entry = entries[identifier],
+              let isComplete = batch.resolve(identifier) else { return false }
+        appendThumbnail(image, for: entry)
+        if isComplete {
             succeed()
         }
+        return true
     }
 
     private func appendPlaceholder(for window: SCWindow, in content: SCShareableContent) {
@@ -305,7 +302,7 @@ final class WindowSelectorThumbnailProvider: NSObject, SCStreamDelegate, SCStrea
 
         streams.removeAll()
         entries.removeAll()
-        pendingStreams.removeAll()
+        batch.removeAll()
         content = nil
         windows.removeAll()
         thumbnails.removeAll()

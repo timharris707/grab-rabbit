@@ -60,6 +60,11 @@ let countdownPanel = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 120, height
 let previewWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 266, height: 156), styleMask: [.fullSizeContentView], backing: .buffered, defer: false)
 var updaterController: SPUStandardUpdaterController!
 
+private struct QuickTopmostCaptureTarget {
+    let screen: SCDisplay
+    let window: SCWindow
+}
+
 @main
 struct QuickRecorderApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
@@ -171,6 +176,50 @@ class AppDelegate: NSObject, NSApplicationDelegate, SCStreamDelegate, SCStreamOu
     }
     var captureOutputCore: CaptureOutputCore { captureOutputInfrastructure.core }
     var captureStreamCallbackAdapter: CaptureStreamCallbackAdapter { captureOutputInfrastructure.adapter }
+    private lazy var quickTopmostWindowShortcut = QuickTopmostWindowShortcutAdapter<SCShareableContent, QuickTopmostCaptureTarget>(
+        maximumAttempts: 3,
+        refreshContent: { completion in
+            SCContext.refreshAvailableContentForQuickTopmost { result in
+                DispatchQueue.main.async {
+                    completion(result)
+                }
+            }
+        },
+        selectCurrentTarget: { content in
+            guard let processID = NSWorkspace.shared.frontmostApplication?.processIdentifier,
+                  let window = SCContext.getWindows(from: content).first(where: {
+                      $0.owningApplication?.processID == processID
+                      && $0.title != ""
+                      && $0.isOnScreen
+                  }),
+                  let screen = SCContext.getSCDisplayWithMouse(from: content) else {
+                return nil
+            }
+            return QuickTopmostCaptureTarget(screen: screen, window: window)
+        },
+        scheduleRetry: { retry in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: retry)
+        },
+        scheduleAttemptTimeout: { timeout in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: timeout)
+        },
+        startCapture: { [weak self] content, target in
+            guard let self else { return }
+            closeAllWindow()
+            prepRecord(
+                type: "window",
+                screens: target.screen,
+                windows: [target.window],
+                applications: nil,
+                fastStart: true,
+                windowCaptureMode: windowCaptureMode,
+                shareableContent: content
+            )
+        },
+        showFailure: { [weak self] failure in
+            self?.showQuickTopmostWindowFailure(failure)
+        }
+    )
     
     @AppStorage("showOnDock")       var showOnDock: Bool = true
     @AppStorage("showMenubar")      var showMenubar: Bool = false
@@ -407,22 +456,26 @@ class AppDelegate: NSObject, NSApplicationDelegate, SCStreamDelegate, SCStreamOu
         }
         KeyboardShortcuts.onKeyDown(for: .startWithWindow) { [self] in
             if SCContext.stream != nil { return }
-            closeAllWindow()
-            let frontmostApp = NSWorkspace.shared.frontmostApplication
-            if let pid = frontmostApp?.processIdentifier {
-                guard let scWindow = SCContext.getWindows().first(where: { $0.owningApplication?.processID == pid && $0.title != "" && $0.isOnScreen }) else { return }
-                prepRecord(
-                    type: "window",
-                    screens: SCContext.getSCDisplayWithMouse(),
-                    windows: [scWindow],
-                    applications: nil,
-                    fastStart: true,
-                    windowCaptureMode: windowCaptureMode
-                )
-                return
-            }
+            quickTopmostWindowShortcut.trigger()
         }
         updateStatusBar()
+    }
+
+    private func showQuickTopmostWindowFailure(_ failure: QuickTopmostWindowShortcutFailure) {
+        let message: String
+        switch failure {
+        case .contentUnavailable:
+            message = "Grab Rabbit could not load the available windows. Make sure the display is awake, then try Quick Topmost Window again."
+        case .permissionDenied:
+            message = "Screen recording access is unavailable. Grant Grab Rabbit access in System Settings, then try Quick Topmost Window again."
+        case .topmostWindowUnavailable:
+            message = "Grab Rabbit could not find an eligible window in the current frontmost app. Bring the window forward, then try again."
+        }
+        _ = createAlert(
+            title: "Quick Topmost Window Unavailable",
+            message: message,
+            button1: "OK"
+        ).runModal()
     }
     
     func applicationDidFinishLaunching(_ aNotification: Notification) {

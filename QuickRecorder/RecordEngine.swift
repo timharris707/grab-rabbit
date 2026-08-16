@@ -78,8 +78,10 @@ extension AppDelegate {
         windows: [SCWindow]?,
         applications: [SCRunningApplication]?,
         fastStart: Bool = false,
-        windowCaptureMode requestedWindowCaptureMode: WindowCaptureMode?
+        windowCaptureMode requestedWindowCaptureMode: WindowCaptureMode?,
+        shareableContent: SCShareableContent? = nil
     ) {
+        guard let content = shareableContent ?? SCContext.availableContent else { return }
         let sessionID = UUID()
         guard captureOutputSessions.reserve(sessionID) else {
             SCContext.showNotification(
@@ -123,45 +125,48 @@ extension AppDelegate {
         
         // file preparation
         if let screens = screens {
-            SCContext.screen = SCContext.availableContent!.displays.first(where: { $0 == screens })
+            SCContext.screen = content.displays.first(where: { $0 == screens })
         } else { SCContext.streamType = nil; return }
         
         if let windows = windows {
-            SCContext.window = SCContext.availableContent!.windows.filter({ windows.contains($0) })
+            SCContext.window = content.windows.filter({ windows.contains($0) })
         } else { if SCContext.streamType == .window { SCContext.streamType = nil; return } }
         
         if let applications = applications {
-            SCContext.application = SCContext.availableContent!.applications.filter({ applications.contains($0) })
+            SCContext.application = content.applications.filter({ applications.contains($0) })
         } else { if SCContext.streamType == .application { SCContext.streamType = nil; return } }
         
-        let screen = SCContext.screen ?? SCContext.getSCDisplayWithMouse()!
-        let qrSelf = SCContext.getSelf()
-        let qrWindows = SCContext.getSelfWindows()
-        let dockApp = SCContext.availableContent!.applications.first(where: { $0.bundleIdentifier.description == "com.apple.dock" })
-        let wallpaper = SCContext.availableContent!.windows.filter({
+        guard let screen = SCContext.screen ?? SCContext.getSCDisplayWithMouse(from: content) else {
+            SCContext.streamType = nil
+            return
+        }
+        let qrSelf = SCContext.getSelf(from: content)
+        let qrWindows = SCContext.getSelfWindows(from: content)
+        let dockApp = content.applications.first(where: { $0.bundleIdentifier.description == "com.apple.dock" })
+        let wallpaper = content.windows.filter({
             guard let title = $0.title else { return false }
             return $0.owningApplication?.bundleIdentifier == "com.apple.dock" && title != "LPSpringboard" && title != "Dock"
         })
-        let desktop = SCContext.availableContent!.windows.filter({
+        let desktop = content.windows.filter({
             guard let title = $0.title else { return false }
             return $0.owningApplication?.bundleIdentifier == "" && title == "Desktop"
         })
-        let dockWindow = SCContext.availableContent!.windows.filter({
+        let dockWindow = content.windows.filter({
             guard let title = $0.title else { return true }
             return $0.owningApplication?.bundleIdentifier == "com.apple.dock" && title == "Dock"
         })
-        let desktopFiles = SCContext.availableContent!.windows.filter({
+        let desktopFiles = content.windows.filter({
             $0.owningApplication?.bundleIdentifier == "com.apple.finder"
             && $0.title == "" && $0.frame == screen.frame })
-        let controlCenterWindow = SCContext.availableContent!.applications.filter({ $0.bundleIdentifier == "com.apple.controlcenter" })
-        let mouseWindow = SCContext.availableContent!.windows.filter({ $0.title == "Mouse Pointer".local && $0.owningApplication?.bundleIdentifier == Bundle.main.bundleIdentifier })
-        let camLayer = SCContext.availableContent!.windows.filter({ $0.title == "Camera Overlayer".local && $0.owningApplication?.bundleIdentifier == Bundle.main.bundleIdentifier })
+        let controlCenterWindow = content.applications.filter({ $0.bundleIdentifier == "com.apple.controlcenter" })
+        let mouseWindow = content.windows.filter({ $0.title == "Mouse Pointer".local && $0.owningApplication?.bundleIdentifier == Bundle.main.bundleIdentifier })
+        let camLayer = content.windows.filter({ $0.title == "Camera Overlayer".local && $0.owningApplication?.bundleIdentifier == Bundle.main.bundleIdentifier })
         var appBlackList = [String]()
         if let savedData = ud.data(forKey: "hiddenApps"),
            let decodedApps = try? JSONDecoder().decode([AppInfo].self, from: savedData) {
             appBlackList = (decodedApps as [AppInfo]).map({ $0.bundleID })
         }
-        let excliudedApps = SCContext.availableContent!.applications.filter({ appBlackList.contains($0.bundleIdentifier) })
+        let excliudedApps = content.applications.filter({ appBlackList.contains($0.bundleIdentifier) })
         
         if SCContext.streamType == .window || SCContext.streamType == .windows {
             if var includ = SCContext.window {
@@ -215,10 +220,14 @@ extension AppDelegate {
         let sessionWindowCaptureMode: WindowCaptureMode? = SCContext.streamType == .window
             ? requestedWindowCaptureMode ?? windowCaptureMode
             : nil
+        guard let filter = SCContext.filter else {
+            SCContext.streamType = nil
+            return
+        }
         reservationTransferred = true
         Task {
             await record(
-                filter: SCContext.filter!,
+                filter: filter,
                 fastStart: fastStart,
                 windowCaptureMode: sessionWindowCaptureMode,
                 sessionID: sessionID

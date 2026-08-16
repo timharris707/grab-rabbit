@@ -7,9 +7,13 @@ let package = Package(
     platforms: [.macOS(.v15)],
     products: [
         .executable(name: "cadence-probe", targets: ["CadenceProbe"]),
+        .executable(name: "live-cadence-probe", targets: ["LiveCadenceProbe"]),
     ],
     targets: [
         .executableTarget(name: "CadenceProbe"),
+        .target(name: "LiveProbeCore"),
+        .executableTarget(name: "LiveCadenceProbe", dependencies: ["LiveProbeCore"]),
+        .testTarget(name: "LiveProbeCoreTests", dependencies: ["LiveProbeCore"]),
     ],
     swiftLanguageModes: [.v5]
 )

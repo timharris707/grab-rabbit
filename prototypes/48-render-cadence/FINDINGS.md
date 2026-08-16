@@ -82,3 +82,25 @@ or another camera visible to the Mini and approve an interactive Mini run that:
 The Mini's CuaDriver PID 12083 and Screen Sharing PID 9243 were present before and after the
 native run. The 15 prototype-owned render PIDs are recorded in `processes.tsv`; all exited 0,
 and none remains live.
+
+## Live-run executable readiness
+
+The branch now also contains an actual-hardware `live-cadence-probe`; its results are not mixed
+with the synthetic evidence above. It selects a real `AVCaptureVideoDataOutput` camera by exact
+stable device ID and an optional real ScreenCaptureKit window by exact `SCWindow.windowID`.
+Screen frames have no raw-cache API: the callback copies the pixel buffer, runs the production
+`WindowCapturePrivacy` matte algorithm, verifies opaque/sentinel-free exterior pixels, and only
+then constructs the type accepted by `LiveFrameCache`. Camera-driven and fixed-clock triggers
+compose the live buffers through Metal-backed Core Image into a real-time H.264 writer; system
+audio and microphone inputs are separate real-time AAC tracks when explicitly requested and
+already authorized.
+
+The live metrics schema includes exact camera/window IDs, callback cadence and p95 jitter,
+camera latency, browser age, A/V endpoint drift, writer readiness/drops, pause/resume,
+disconnect reason, monotonicity, privacy scans, CPU/RSS/thermal, runtime certificate chain/TCC
+state, and a predeclared external-powermetrics path. The tool does not invoke `sudo`, request
+TCC, silently omit requested audio, substitute a display, or switch cameras.
+
+This preparation does not close the physical gate. Until a camera is present and Tim performs
+the signed run, all live metric fields remain unmeasured. The unsigned-safe Mini preflight is
+expected to exit 20 with zero cameras and prove that no output file is created.

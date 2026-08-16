@@ -237,6 +237,16 @@ Every condition below is conjunctive:
 7. The request produces a background only; it does not reconstruct the person. No retry, provider
    substitution, or second still occurs without another visible authorization.
 
+If approved, the still must travel as direct inline request bytes in the one-shot provider request:
+OpenAI multipart image-edit bytes or Google's `inlineData` part in `generateContent`. Do not use
+OpenAI Files, Google Cloud Storage or `fileData`, any provider object/file store, or backend object
+storage. The bytes must never be persisted in queues, logs, traces, crash reports, or support
+payloads. Strip EXIF and other metadata before sending. Any reduced local still copy is ephemeral
+and must be deleted immediately after the one-shot response or abort; no provider retry or second
+upload is implicit. These transport and deletion rules supplement the provider account, cache,
+logging, abuse-monitoring, and region gates above. [OpenAI image guide][openai-images] [Google
+generateContent][google-generate-content]
+
 **Inference:** if Tim requires literal zero retention with no safety/legal exception, the only
 researched image-conditioned route is on-device; otherwise the optional cloud-still feature does
 not ship.
@@ -283,9 +293,12 @@ generate one fresh text-only control and one image-conditioned result: **4 calls
 exactly 2 carry that same approved still. No other model or route participates. This stage remains
 locked behind Tim's separate approval; this lane performs no still upload and no paid call.
 
-- If OpenAI is chosen, the image-output floor is **`$0.11892`** (`4 × $0.02973`), plus the
-  published `$8/M` image-input charge for exactly two `768×432` stills and measured text tokens:
-  `Stage2 = $0.11892 + (2 × input_image_tokens × $8/M) + text charges`.
+- If OpenAI is chosen, the image-output floor is **`$0.11892`** (`4 × $0.02973`). OpenAI
+  publishes the `$8/M` image-input rate but does not publish a GPT Image 2 input-token formula for
+  the exact `768×432` still, so this is a bounded formula rather than a numeric pre-call total:
+  `Stage2 = $0.11892 + (2 × input_image_tokens × $8/M) + text charges`. Before Tim can authorize
+  it, the later runner must calculate the current input-token charge and display a hard spend ceiling;
+  if that preflight calculation is unavailable, the stage cannot run.
 - If Google is chosen, the deterministic pre-text total is **`$0.26992`**: four outputs
   (`4 × 1,120 × $60/M = $0.26880`) plus two input images (`2 × 1,120 × $0.50/M = $0.00112`).
 - If on-device is chosen, there are zero paid/API calls, but the authorized ~3.35 GB asset and
@@ -334,7 +347,7 @@ claim those controls.
 | Authentication, version, content policy, limits, cost, latency/SLA, commercial terms | Detailed OpenAI/Google/OpenRouter/on-device tables. |
 | User-key, managed, and local service boundaries | Credential/failure/billing table. |
 | Existing OpenRouter route remains a candidate | Accepted only as text transport; no reuse of Tim's development key and no duplicate visual call. |
-| Smallest visual matrix and rough paid cost | Eight-call Stage 1 image-output subtotal (`$0.38772` before text) plus a separately approved, deterministic four-call Stage 2 budget. |
+| Smallest visual matrix and rough paid cost | Eight-call Stage 1 image-output subtotal (`$0.38772` before text) plus a separately approved four-call Stage 2 budget: Google has an exact `$0.26992` pre-text total, while OpenAI requires the bounded formula and a preflight spend ceiling above. |
 | Remaining Tim decisions | Nine-item decision ledger above. |
 
 ## Primary-source ledger

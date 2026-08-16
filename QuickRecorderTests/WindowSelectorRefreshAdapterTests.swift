@@ -445,7 +445,7 @@ final class WindowSelectorRefreshAdapterTests: XCTestCase {
 
     func testTerminalRefreshFailureKeepsStaleSelectionFromStartingWhileAllowingRetryControls() {
         let failureStatus = WindowSelectorRefreshStatus(
-            isReady: false,
+            isReady: true,
             isRefreshing: false,
             errorMessage: WindowSelectorRefreshError.timedOut.userMessage
         )

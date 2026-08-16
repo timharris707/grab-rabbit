@@ -443,6 +443,23 @@ final class WindowSelectorRefreshAdapterTests: XCTestCase {
         )
     }
 
+    func testTerminalRefreshFailureKeepsStaleSelectionFromStartingWhileAllowingRetryControls() {
+        let failureStatus = WindowSelectorRefreshStatus(
+            isReady: false,
+            isRefreshing: false,
+            errorMessage: WindowSelectorRefreshError.timedOut.userMessage
+        )
+
+        XCTAssertEqual(
+            WindowSelectorControlAvailability(hasSelection: true, status: failureStatus),
+            WindowSelectorControlAvailability(
+                canStart: false,
+                canRefresh: true,
+                canChangeSelectorOptions: true
+            )
+        )
+    }
+
     func testRefreshProviderCannotStartRecordingOrCreatePermissionAndOutputResidue() throws {
         let refreshSources = try [
             projectSource("QuickRecorder/WindowSelectorRefreshAdapter.swift"),

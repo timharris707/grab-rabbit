@@ -271,7 +271,10 @@ struct WindowSelectorControlAvailability: Equatable {
     }
 
     init(hasSelection: Bool, status: WindowSelectorRefreshStatus) {
-        canStart = hasSelection && !status.isRefreshing
+        canStart = hasSelection
+            && status.isReady
+            && !status.isRefreshing
+            && status.errorMessage == nil
         canRefresh = !status.isRefreshing
         canChangeSelectorOptions = !status.isRefreshing
     }

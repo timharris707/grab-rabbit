@@ -2387,6 +2387,8 @@ final class WindowCapturePrivacyTests: XCTestCase {
         XCTAssertTrue(privacySource.contains("if stopsMicrophone { session.stopMicrophoneCapture() }"))
         XCTAssertTrue(rollbackSource.contains("CaptureFailedStartCleanup.run("))
         XCTAssertTrue(rollbackSource.contains("SCContext.outputJob === job"))
+        XCTAssertTrue(rollbackSource.contains("CaptureFailedStartErrorPresenter.present("))
+        XCTAssertFalse(rollbackSource.contains("SCContext.showNotification("))
     }
 
     func testDefaultMicrophoneStartFailureAfterTapInstallCleansJobAndAllowsRetry() throws {
@@ -2514,6 +2516,31 @@ final class WindowCapturePrivacyTests: XCTestCase {
         XCTAssertEqual(retryJob.lifecycle, .terminal)
         XCTAssertTrue(FileManager.default.fileExists(atPath: retryJob.finalURL.path))
         XCTAssertEqual(try Data(contentsOf: retryJob.finalURL), Data("complete recording".utf8))
+    }
+
+    func testFailedMicrophoneStartPresentsOneInAppEnglishError() {
+        let error = CaptureMicrophoneStartupError.unavailable(
+            .named("Grab Rabbit Missing Microphone")
+        )
+        var presentations = [(title: String, message: String)]()
+        var events = [String]()
+
+        CaptureFailedStartErrorPresenter.present(
+            message: error.localizedDescription,
+            activateApp: { events.append("activate") },
+            showAlert: { title, message in
+                events.append("alert")
+                presentations.append((title: title, message: message))
+            }
+        )
+
+        XCTAssertEqual(events, ["activate", "alert"])
+        XCTAssertEqual(presentations.count, 1)
+        XCTAssertEqual(presentations[0].title, "Failed to Record")
+        XCTAssertEqual(
+            presentations[0].message,
+            "The selected microphone “Grab Rabbit Missing Microphone” is unavailable. Reconnect it or choose another microphone, then try again."
+        )
     }
 
     func testPersistedNamedMicrophoneDisappearanceFailsBeforeCaptureStarts() {

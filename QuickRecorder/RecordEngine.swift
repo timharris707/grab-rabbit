@@ -6,7 +6,6 @@
 //
 
 import Foundation
-import UserNotifications
 import ScreenCaptureKit
 import AVFoundation
 import AVFAudio
@@ -586,10 +585,18 @@ extension AppDelegate {
                 SCContext.streamType = nil
             },
             notify: { message in
-                SCContext.showNotification(
-                    title: "Failed to Record".local,
-                    body: message,
-                    id: "quickrecorder.error.\(UUID().uuidString)"
+                CaptureFailedStartErrorPresenter.present(
+                    message: message,
+                    activateApp: {
+                        NSApp.activate(ignoringOtherApps: true)
+                    },
+                    showAlert: { title, message in
+                        _ = createAlert(
+                            title: title,
+                            message: message,
+                            button1: "OK"
+                        ).runModal()
+                    }
                 )
             }
         )

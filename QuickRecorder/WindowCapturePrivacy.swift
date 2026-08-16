@@ -630,6 +630,17 @@ enum CapturePreparationResourceSnapshot {
     }
 }
 
+enum CaptureFailedStartErrorPresenter {
+    static func present(
+        message: String,
+        activateApp: () -> Void,
+        showAlert: (_ title: String, _ message: String) -> Void
+    ) {
+        activateApp()
+        showAlert("Failed to Record", message)
+    }
+}
+
 enum CaptureMicrophoneSelection: Equatable {
     case defaultDevice
     case named(String)

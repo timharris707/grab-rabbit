@@ -19,10 +19,13 @@ hardware contracts: Presenter Overlay requires Apple silicon; ScreenCaptureKit H
 Apple-silicon-only; and Continuity Camera effects depend on the attached iPhone model. Those
 facts support Tim's ruling without rewriting it as an API requirement.
 
-**Unresolved product tradeoff for Tim:** the public 26.5 interfaces expose neither a direct
-pre-stream Presenter Overlay enabled/active property nor an off switch. Once an `SCStream`
-starts, delegate callbacks (macOS 14.0) and per-frame metadata (macOS 14.2) can positively report
-the effect.[^presenter-start][^presenter-rect] **Inference:** a no-writer `SCStream` can therefore
+**Unresolved product tradeoff for Tim:** the name-bounded public-SDK audit below found no direct
+pre-stream Presenter Overlay enabled/active property or off method among declarations matching
+`presenter.?overlay`, `outputVideoEffect`, or `video.?effect`. AVFoundation can open the system
+video-effects UI for user action, but that asynchronous method does not itself read or change
+Presenter Overlay state.[^system-effects-ui] Once an `SCStream` starts, delegate callbacks
+(macOS 14.0) and per-frame metadata (macOS 14.2) can positively report the
+effect.[^presenter-start][^presenter-rect] **Inference:** a no-writer `SCStream` can therefore
 provide a pre-recording observation phase that fails closed on a positive signal.[^scstream]
 Apple does not document callback/metadata timing or a bounded observation interval whose silence
 conclusively establishes that the effect is off. Raising the floor within Tahoe does not close
@@ -87,8 +90,10 @@ deployment-floor reason.
 
 ### Conceptual compile audit
 
-A symbol-only Swift probe importing AVFoundation, Vision, ScreenCaptureKit, Core Image, and
-Metal typechecked against the installed SDK for:
+The exact checked-in symbol probe
+[`probes/studio-platform-api-floor.swift`](probes/studio-platform-api-floor.swift), importing
+AVFoundation, Vision, ScreenCaptureKit, Core Image, and Metal, typechecked against the installed
+SDK for:
 
 - `arm64-apple-macosx15.0`;
 - `arm64-apple-macosx26.0`; and
@@ -110,7 +115,7 @@ This is only a consistency check against the annotated declarations. It is not r
 | `AVCaptureDeviceTypeContinuityCamera` | `API_AVAILABLE(macos(14.0))`; the header says apps opt in with `NSCameraUseContinuityCameraDeviceType`; without it, Continuity cameras report `.builtInWideAngleCamera`. | **Source fact:** public explicit discovery type. The current project does not declare the opt-in key. Adding it belongs to a later implementation ticket, not this research change.[^continuity-type] |
 | `AVCaptureDevice.isContinuityCamera` | `@property(... getter=isContinuityCamera) BOOL continuityCamera API_AVAILABLE(macos(13.0));` | **Source fact:** identifies an external iPhone webcam even though device type classification has a separate opt-in contract.[^continuity-property] |
 | `.external` / `.externalUnknown` | `.external API_AVAILABLE(macos(14.0))`; `.externalUnknown API_DEPRECATED_WITH_REPLACEMENT("AVCaptureDeviceTypeExternal", macos(10.15, 14.0))`. | **Source fact:** replace the current broad deprecated `.externalUnknown` when Studio implementation is specified; do not relabel the existing muxed mobile-device path as Continuity Camera. |
-| `AVCaptureVideoDataOutput` and its sample-buffer delegate | `API_AVAILABLE(macos(10.7))`; the delegate receives ordered `CMSampleBuffer` frames on a client queue. | **Source fact:** public uncompressed/compressed frame path. The header warns that blocked delegates drop frames and retaining pooled buffers too long can stop new delivery; the compositor must copy/consume promptly.[^video-output] |
+| `AVCaptureVideoDataOutput` and its sample-buffer delegate | `API_AVAILABLE(macos(10.7))`; `setSampleBufferDelegate(_:queue:)` delivers callbacks on the supplied queue, which Apple requires to be serial to guarantee frame order. | **Source fact:** public uncompressed/compressed frame path. Studio must supply a serial callback queue before depending on ordered frames. The header also warns that blocked delegates drop frames and retaining pooled buffers too long can stop new delivery; the compositor must copy/consume promptly.[^video-output] |
 | `AVCaptureDeviceWasDisconnectedNotification`, `isConnected`, and the discovery list | Disconnect notification is public from macOS 10.7; `isConnected` and the discovery list are observable. | **Source fact:** public disconnection state. **Inference:** retain the exact manually selected device/input and fail closed on its disconnect. Do not follow `systemPreferredCamera`, whose declaration says it may change spontaneously, because Q15 prohibits silent substitution.[^preferred-camera] |
 | Camera authorization | `authorizationStatusForMediaType:` and `requestAccessForMediaType:` are `API_AVAILABLE(macos(10.14))`. | **Source fact:** camera/microphone TCC is stateful; before authorization, capture devices may vend black video or silent audio.[^capture-permission] The host already has camera/audio-input entitlements and generated usage descriptions; this lane changes none. |
 
@@ -197,9 +202,14 @@ backpressure, buffer lifetime, and measured performance remain [#48](https://git
 | `SCStreamConfiguration.captureDynamicRange` | `API_AVAILABLE(macos(15.0))`; the header says HDR capture is supported only on Apple silicon and has no effect on Intel. | **Source fact:** an explicit Apple-silicon constraint, but HDR is not in [#44](https://github.com/timharris707/grab-rabbit/issues/44)'s required Studio contract. SDR capture has no such declaration. |
 
 Screen and system-audio recording is governed by macOS Privacy & Security authorization; Apple
-documents the user's Screen & System Audio Recording control.[^screen-permission] Microphone
-capture separately uses microphone TCC, `NSMicrophoneUsageDescription`, and—under the current
-Grab Rabbit release allowlist—the host audio-input entitlement. No new entitlement is proposed.
+documents the user's Screen & System Audio Recording control and instructs ScreenCaptureKit apps
+to add `NSScreenCaptureUsageDescription` with an explanation of why screen-recording access is
+required.[^screen-permission][^screen-capture-permission] The current project does not generate
+that key; [#18](https://github.com/timharris707/grab-rabbit/issues/18) owns the shipped
+permission-purpose settings and must add reviewed user-facing copy. Microphone capture separately
+uses microphone TCC, `NSMicrophoneUsageDescription`, and—under the current Grab Rabbit release
+allowlist—the host audio-input entitlement. This evidence-only lane changes neither settings nor
+entitlements.
 
 ### 6. Real-time writing and timing
 
@@ -222,17 +232,22 @@ backpressure under load.
 | Effect | Public state/control surface and exact floor | What Studio can and cannot promise |
 |---|---|---|
 | Background Replacement | `AVCaptureDevice.backgroundReplacementEnabled` and per-device `.backgroundReplacementActive` are readonly, public, and `API_AVAILABLE(macos(15.0))`; format support/rate range is also 15.0.[^background-enabled] | **Source fact:** detect user enablement, active application to a configured device, and format support. **Inference:** no public setter or background-image payload exists in AVFoundation, so Studio cannot turn it off or supply its generated image to the system feature. It can block start until the user disables it and observe active state. |
-| Presenter Overlay | `SCStreamDelegate.outputVideoEffectDidStart/Stop` are macOS 14.0; `SCStreamFrameInfoPresenterOverlayContentRect` is 14.2; `presenterOverlayPrivacyAlertSetting` is 14.0.[^presenter-start][^presenter-rect][^presenter-alert] | **Source fact:** after the stream starts, callbacks report the overlay effect and frame metadata identifies Presenter Overlay content; only the privacy-alert policy is configurable. **Inference:** Studio can start an `SCStream` without starting `AVAssetWriter` or adding `SCRecordingOutput`, observe before recording, and fail closed on a positive signal.[^scstream] No direct pre-stream enabled/active getter or off method appears in the public 26.5 interfaces, and Apple does not document bounded silence as a conclusive negative. This is the Tim adjudication above. |
+| Presenter Overlay | `SCStreamDelegate.outputVideoEffectDidStart/Stop` are macOS 14.0; `SCStreamFrameInfoPresenterOverlayContentRect` is 14.2; `presenterOverlayPrivacyAlertSetting` is 14.0.[^presenter-start][^presenter-rect][^presenter-alert] `AVCaptureDevice.showSystemUserInterface(.videoEffects)` is macOS 12.0.[^system-effects-ui] | **Source fact:** after the stream starts, callbacks report the overlay effect and frame metadata identifies Presenter Overlay content. The privacy-alert policy is configurable, and Studio may open system UI where the user can change video effects, but the app does not directly own that interaction. **Inference:** Studio can start an `SCStream` without starting `AVAssetWriter` or adding `SCRecordingOutput`, observe before recording, and fail closed on a positive signal.[^scstream] The name-bounded audit below found no direct pre-stream getter or off method, and Apple does not document bounded silence as a conclusive negative. This is the Tim adjudication above. |
 | Center Stage | `centerStageControlMode`, class `.centerStageEnabled`, and per-device `.centerStageActive` are `API_AVAILABLE(macos(12.3))`; enabled is settable only in app/cooperative mode and observable in user/cooperative mode.[^center-stage-api] | **Source fact:** Studio can inspect support/active state and can control enablement only after explicitly choosing an app/cooperative control contract. **Product recommendation:** honor the Q16 user choice, snapshot it before lighting calibration, and treat a later state change as invalidating calibration rather than silently accepting changed framing. |
 | Studio Light | class `.studioLightEnabled`, device `.studioLightActive`, and format `.studioLightSupported` are readonly and `API_AVAILABLE(macos(13.0))`.[^studio-light-api] | **Source fact:** detect user enablement, activity, and format support; no public setter. **Product recommendation:** permit it only when selected before calibration, then invalidate calibration visibly if state changes. |
 | Portrait Effect | class `.portraitEffectEnabled`, device `.portraitEffectActive`, and format support are readonly and macOS 12.0. | **Source fact:** Portrait blur is a separate system effect, not Background Replacement and not Grab Rabbit's generated-background compositor. Studio preflight should not conflate the two. |
 
-The direct-state/control finding came from a case-insensitive audit of every public header and
-Swift interface in AVFoundation, ScreenCaptureKit, and CoreMediaIO. The only relevant Presenter
-Overlay surface was the privacy-alert enum/property, the delegate start/stop callbacks, and the
-frame content-rect key. That supports the absence of a direct public getter or off switch in the
-installed 26.5 SDK; it does not make bounded no-signal observation conclusive, or claim anything
-about private frameworks or future Apple releases.
+The direct-state/control audit is deliberately **name-bounded**, not exhaustive. The reproducible
+command below searches every public header and Swift interface in AVFoundation,
+ScreenCaptureKit, and CoreMediaIO case-insensitively for exactly
+`presenter.?overlay|outputVideoEffect|video.?effect`. Its Presenter-specific matches are the
+privacy-alert enum/property, delegate start/stop callbacks, and frame content-rect key; broader
+video-effect matches also include AVFoundation's nonblocking system-UI method and unrelated
+effect declarations. None of those matching declarations is a direct Presenter Overlay state
+getter or off method. A differently named public symbol is not excluded, so the finding is
+“not identified by this named audit,” not a universal absence proof. It does not make bounded
+no-signal observation conclusive or claim anything about private frameworks or future Apple
+releases.
 
 ### 8. Hardware and camera-path matrix
 
@@ -259,7 +274,7 @@ separate Tim decision—not a reinterpretation of
 |---|---|---|
 | Camera | AVFoundation camera authorization; `NSCameraUsageDescription`; App Sandbox camera entitlement when sandboxed.[^capture-permission][^camera-entitlement] | The project already generates a camera usage description and the host entitlement allowlist includes `com.apple.security.device.camera = true`. Preserve it. |
 | Microphone | AVFoundation audio authorization; `NSMicrophoneUsageDescription`; audio-input entitlement when sandboxed.[^microphone-entitlement] | The project already generates a microphone usage description and has `com.apple.security.device.audio-input = true`. Preserve it. |
-| Screen/system audio | macOS Screen & System Audio Recording privacy authorization.[^screen-permission] | Existing TCC behavior remains. No new entitlement is proposed by this research. |
+| Screen/system audio | macOS Screen & System Audio Recording privacy authorization; Apple's ScreenCaptureKit overview instructs apps to declare `NSScreenCaptureUsageDescription` with user-facing purpose copy.[^screen-permission][^screen-capture-permission] | The current project does not generate the key. [#18](https://github.com/timharris707/grab-rabbit/issues/18) must add the reviewed copy with its shipped identity/TCC work. No new entitlement is proposed, and this research PR does not change target settings. |
 | Vision/Core Image/Metal | No capture authorization in the cited request/render declarations. | **Inference:** process only already-authorized buffers; no extra data access is granted. |
 | Output file | AVAssetWriter writes to a URL the app can access. | Preserve existing output reservation, visible failure, and finalization behavior. |
 | Continuity Camera | Apple Account/device proximity/trust requirements plus normal camera authorization.[^continuity-support] | No custom iPhone app or private entitlement is needed for the native route. |
@@ -331,7 +346,7 @@ xcrun --sdk macosx --show-sdk-version
 rg -n 'ContinuityCamera|ForegroundInstance|PersonInstance|PersonSegmentation|OpticalFlow|TrackObject|CenterStage|StudioLight|BackgroundReplacement|PresenterOverlay|outputVideoEffect|startCapture|addRecordingOutput|captureMicrophone|CameraIntrinsicMatrix|cameraCalibrationDataDelivery|supportedDepthDataFormats|activeDepthDataFormat' \
   "$sdk/System/Library/Frameworks" --glob '*.{h,swiftinterface}'
 
-rg -n 'API_AVAILABLE\(macosx?\(26\.[1-9]' \
+rg -n 'API_AVAILABLE\(macosx?\(26\.[1-9]|@available\(macOS 26\.[1-9]' \
   "$sdk/System/Library/Frameworks/AVFoundation.framework" \
   "$sdk/System/Library/Frameworks/Vision.framework" \
   "$sdk/System/Library/Frameworks/ScreenCaptureKit.framework" \
@@ -341,12 +356,22 @@ rg -n 'API_AVAILABLE\(macosx?\(26\.[1-9]' \
   "$sdk/System/Library/Frameworks/CoreMedia.framework" \
   --glob '*.{h,swiftinterface}'
 
-xcrun swiftc -typecheck -target arm64-apple-macosx15.0 -sdk "$sdk" -
-xcrun swiftc -typecheck -target arm64-apple-macosx26.0 -sdk "$sdk" -
-xcrun swiftc -typecheck -target x86_64-apple-macosx26.0 -sdk "$sdk" -
-```
+rg -n -i 'presenter.?overlay|outputVideoEffect|video.?effect' \
+  "$sdk/System/Library/Frameworks/AVFoundation.framework" \
+  "$sdk/System/Library/Frameworks/ScreenCaptureKit.framework" \
+  "$sdk/System/Library/Frameworks/CoreMediaIO.framework" \
+  --glob '*.{h,swiftinterface}'
 
-The Swift source was piped on standard input and created no repository file.
+curl -LfsS 'https://developer.apple.com/tutorials/data/documentation/screencapturekit.json' \
+  | jq -r '.primaryContentSections[].content[]?
+    | select(any(.inlineContent[]?; .code? == "NSScreenCaptureUsageDescription"))
+    | [.inlineContent[] | (.text // .code)] | join("")'
+
+probe=docs/research/probes/studio-platform-api-floor.swift
+xcrun swiftc -typecheck -target arm64-apple-macosx15.0 -sdk "$sdk" "$probe"
+xcrun swiftc -typecheck -target arm64-apple-macosx26.0 -sdk "$sdk" "$probe"
+xcrun swiftc -typecheck -target x86_64-apple-macosx26.0 -sdk "$sdk" "$probe"
+```
 
 ## Apple primary sources
 
@@ -379,6 +404,7 @@ The Swift source was piped on standard input and created no repository file.
 [^stream-output]: Apple, [`SCStreamOutputType`](https://developer.apple.com/documentation/screencapturekit/scstreamoutputtype).
 [^sck-microphone]: Apple, [`SCStreamConfiguration.captureMicrophone`](https://developer.apple.com/documentation/screencapturekit/scstreamconfiguration/capturemicrophone) and [`microphoneCaptureDeviceID`](https://developer.apple.com/documentation/screencapturekit/scstreamconfiguration/microphonecapturedeviceid).
 [^screen-permission]: Apple, [Control access to screen and system audio recording on Mac](https://support.apple.com/guide/mac-help/control-access-to-screen-and-system-audio-recording-mchld6aa7d23/mac).
+[^screen-capture-permission]: Apple, [ScreenCaptureKit](https://developer.apple.com/documentation/screencapturekit), which instructs apps to add the exact `NSScreenCaptureUsageDescription` key with purpose copy before capturing.
 [^asset-writer]: Apple, [`AVAssetWriter`](https://developer.apple.com/documentation/avfoundation/avassetwriter) and [`startSession(atSourceTime:)`](https://developer.apple.com/documentation/avfoundation/avassetwriter/startsession(atsourcetime:)).
 [^writer-input]: Apple, [`AVAssetWriterInput.expectsMediaDataInRealTime`](https://developer.apple.com/documentation/avfoundation/avassetwriterinput/expectsmediadatainrealtime).
 [^pixel-adaptor]: Apple, [`AVAssetWriterInputPixelBufferAdaptor.append(_:withPresentationTime:)`](https://developer.apple.com/documentation/avfoundation/avassetwriterinputpixelbufferadaptor/append(_:withpresentationtime:)).
@@ -386,6 +412,7 @@ The Swift source was piped on standard input and created no repository file.
 [^presenter-start]: Apple, [`SCStreamDelegate.outputVideoEffectDidStart(for:)`](https://developer.apple.com/documentation/screencapturekit/scstreamdelegate/outputvideoeffectdidstart(for:)) and [`outputVideoEffectDidStop(for:)`](https://developer.apple.com/documentation/screencapturekit/scstreamdelegate/outputvideoeffectdidstop(for:)).
 [^presenter-rect]: Apple, [`SCStreamFrameInfo.presenterOverlayContentRect`](https://developer.apple.com/documentation/screencapturekit/scstreamframeinfo/presenteroverlaycontentrect).
 [^presenter-alert]: Apple, [`SCStreamConfiguration.presenterOverlayPrivacyAlertSetting`](https://developer.apple.com/documentation/screencapturekit/scstreamconfiguration/presenteroverlayprivacyalertsetting).
+[^system-effects-ui]: Apple, [`AVCaptureDevice.showSystemUserInterface(_:)`](https://developer.apple.com/documentation/avfoundation/avcapturedevice/showsystemuserinterface(_:)), a nonblocking method that opens the system UI for the user to change video effects or microphone modes.
 [^center-stage-api]: Apple, [`AVCaptureDevice.centerStageControlMode`](https://developer.apple.com/documentation/avfoundation/avcapturedevice/centerstagecontrolmode), [`isCenterStageEnabled`](https://developer.apple.com/documentation/avfoundation/avcapturedevice/iscenterstageenabled), and [`isCenterStageActive`](https://developer.apple.com/documentation/avfoundation/avcapturedevice/iscenterstageactive).
 [^studio-light-api]: Apple, [`AVCaptureDevice.isStudioLightEnabled`](https://developer.apple.com/documentation/avfoundation/avcapturedevice/isstudiolightenabled) and [`isStudioLightActive`](https://developer.apple.com/documentation/avfoundation/avcapturedevice/isstudiolightactive).
 [^camera-entitlement]: Apple, [`com.apple.security.device.camera`](https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.security.device.camera) and [`NSCameraUsageDescription`](https://developer.apple.com/documentation/bundleresources/information-property-list/nscamerausagedescription).

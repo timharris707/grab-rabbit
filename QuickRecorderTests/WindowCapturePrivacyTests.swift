@@ -332,6 +332,58 @@ final class WindowCapturePrivacyTests: XCTestCase {
         XCTAssertTrue(adapter.handleStop(from: stream))
     }
 
+    func testProductionAdapterAcceptsIncreasingPTSWhenScreenCaptureDurationIsInvalid() throws {
+        let stream = NSObject()
+        let sink = TestVideoDestination()
+        let store = CaptureOutputSessionStore()
+        var diagnosticLines = [String]()
+        let diagnostics = CaptureDiagnostics(enabled: true) { diagnosticLines.append($0) }
+        let session = makeCaptureSession(
+            stream: stream,
+            mode: .transparent,
+            sink: sink,
+            diagnostics: diagnostics
+        )
+        let core = CaptureOutputCore(
+            store: store,
+            failureHandler: { _ in XCTFail("sample processing should not fail") },
+            stopHandler: { stoppedSession in store.release(stoppedSession) }
+        )
+        let adapter = CaptureStreamCallbackAdapter(core: core)
+        var acceptedPTS = [CMTime]()
+
+        XCTAssertTrue(store.install(session))
+        for index in 0..<6 {
+            let presentationTime = CMTime(value: Int64(100 + index), timescale: 30)
+            XCTAssertTrue(presentationTime.isValid)
+            XCTAssertEqual(
+                adapter.handleSample(
+                    from: stream,
+                    sampleBuffer: try makeSampleBuffer(
+                        imageBuffer: makeRoundedWindow(over: sentinels[index % sentinels.count]),
+                        presentationTime: presentationTime,
+                        duration: .invalid
+                    ),
+                    kind: .screen(isComplete: true, presenterOverlayX: nil)
+                ),
+                .appended
+            )
+            let state = session.stateSnapshot()
+            let lastPTS = try XCTUnwrap(state.lastPTS)
+            XCTAssertTrue(lastPTS.isValid)
+            XCTAssertEqual(lastPTS, presentationTime)
+            XCTAssertEqual(state.frameCount, index + 1)
+            if let previousPTS = acceptedPTS.last { XCTAssertGreaterThan(lastPTS, previousPTS) }
+            acceptedPTS.append(lastPTS)
+        }
+        XCTAssertEqual(sink.appendCount, 6)
+        XCTAssertGreaterThan(try XCTUnwrap(acceptedPTS.last), try XCTUnwrap(acceptedPTS.first))
+        XCTAssertTrue(adapter.handleStop(from: stream))
+        XCTAssertEqual(diagnosticLines.count, 1)
+        XCTAssertTrue(try XCTUnwrap(diagnosticLines.first).contains("pts_rejected=0"))
+        XCTAssertTrue(try XCTUnwrap(diagnosticLines.first).contains("append_succeeded=6"))
+    }
+
     func testVideoAdmissionCommitsTimelineOnlyAfterAppendSucceeds() throws {
         let stream = NSObject()
         let sink = TestVideoDestination()
@@ -1950,7 +2002,8 @@ final class WindowCapturePrivacyTests: XCTestCase {
 
     private func makeSampleBuffer(
         imageBuffer: CVPixelBuffer,
-        presentationTime: CMTime = .zero
+        presentationTime: CMTime = .zero,
+        duration: CMTime = CMTime(value: 1, timescale: 30)
     ) throws -> CMSampleBuffer {
         var formatDescription: CMVideoFormatDescription?
         XCTAssertEqual(
@@ -1962,7 +2015,7 @@ final class WindowCapturePrivacyTests: XCTestCase {
             noErr
         )
         var timing = CMSampleTimingInfo(
-            duration: CMTime(value: 1, timescale: 30),
+            duration: duration,
             presentationTimeStamp: presentationTime,
             decodeTimeStamp: .invalid
         )

@@ -863,7 +863,9 @@ final class CaptureOutputSession {
                 }
                 var pts = CMSampleBufferGetPresentationTimeStamp(adjustedSample)
                 let duration = CMSampleBufferGetDuration(adjustedSample)
-                if duration > .zero { pts = CMTimeAdd(pts, duration) }
+                if duration.isNumeric, CMTimeCompare(duration, .zero) > 0 {
+                    pts = CMTimeAdd(pts, duration)
+                }
                 guard !framePTS.contains(where: { $0 >= pts }) else {
                     diagnostics.recordPTSRejected()
                     return (.ignored, false)

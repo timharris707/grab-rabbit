@@ -120,6 +120,17 @@ class SCContext {
         }
     }
 
+    static func fetchWindowSelectorContent(
+        completion: @escaping (Result<SCShareableContent, ScreenRecordingContentError>) -> Void
+    ) {
+        fetchAvailableContent(completion: completion)
+    }
+
+    static func applyWindowSelectorContent(_ content: SCShareableContent) {
+        contentState.apply(.success(content))
+        scPerm = true
+    }
+
     static func recoverScreenRecordingAccess() {
         if CGPreflightScreenCaptureAccess() {
             DispatchQueue.main.async {

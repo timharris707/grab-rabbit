@@ -148,6 +148,12 @@ struct WinSelector: View {
                         }
                     }
                 }
+                if let refreshErrorMessage = viewModel.refreshErrorMessage {
+                    Text(refreshErrorMessage)
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                        .accessibilityIdentifier("window-refresh-error")
+                }
                 VStack(alignment: .leading, spacing: 5) {
                     Picker("Single-window exterior", selection: $windowCaptureMode) {
                         ForEach(WindowCaptureMode.allCases, id: \.self) { mode in
@@ -174,7 +180,9 @@ struct WinSelector: View {
                                 .font(.system(size: 12))
                         }
                         
-                    }).buttonStyle(.plain)
+                    })
+                    .buttonStyle(.plain)
+                    .disabled(viewModel.isRefreshing)
                     Button(action: {
                         isPopoverShowing2 = true
                     }, label: {
@@ -239,7 +247,7 @@ struct WinSelector: View {
                         }
                     })
                     .buttonStyle(.plain)
-                    .disabled(selected.count < 1)
+                    .disabled(selected.count < 1 || viewModel.isRefreshing)
                 }.padding(.horizontal, 40)
                 Spacer()
             }.padding(.top, -5)
@@ -277,108 +285,51 @@ struct WinSelector: View {
     }
 }
 
-class WindowSelectorViewModel: NSObject, ObservableObject, SCStreamDelegate, SCStreamOutput {
-    @Published var windowThumbnails = [SCDisplay:[WindowThumbnail]]()
-    @Published var isReady = false
-    private var allWindows = [SCWindow]()
-    private var streams = [SCStream]()
-    
+class WindowSelectorViewModel: NSObject, ObservableObject {
+    @Published private(set) var windowThumbnails = [SCDisplay: [WindowThumbnail]]()
+    @Published private(set) var isReady = false
+    @Published private(set) var isRefreshing = false
+    @Published private(set) var refreshErrorMessage: String?
+    private let refreshAdapter = WindowSelectorRefreshAdapter<WindowSelectorRefreshSnapshot>()
+
     override init() {
         super.init()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
             self.setupStreams()
         }
     }
-    
-    func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
-        if CMSampleBufferGetImageBuffer(sampleBuffer) == nil { return }
-        let nsImage = sampleBuffer.nsImage ?? NSImage.unknowScreen
-        if let index = self.streams.firstIndex(of: stream), index + 1 <= self.allWindows.count {
-            let currentWindow = self.allWindows[index]
-            let thumbnail = WindowThumbnail(image: nsImage, window: currentWindow)
-            guard let displays = SCContext.availableContent?.displays.filter({ NSIntersectsRect(currentWindow.frame, $0.frame) }) else {
-                self.streams[index].stopCapture()
-                return
-            }
-            for d in displays {
-                DispatchQueue.main.async {
-                    if self.windowThumbnails[d] != nil {
-                        if !self.windowThumbnails[d]!.contains(where: { $0.window == currentWindow }) { self.windowThumbnails[d]!.append(thumbnail) }
-                    } else {
-                        self.windowThumbnails[d] = [thumbnail]
-                    }
-                }
-            }
-            DispatchQueue.global().asyncAfter(deadline: .now() + 0.1) { self.streams[index].stopCapture() }
-            if index + 1 == self.streams.count { DispatchQueue.main.async { self.isReady = true }}
-        }
-    }
 
     func setupStreams(filter: Bool = true, capture: Bool = true) {
-        SCContext.updateAvailableContent {
-            Task {
-                do {
-                    self.streams.removeAll()
-                    DispatchQueue.main.async { self.windowThumbnails.removeAll() }
-                    self.allWindows = SCContext.getWindows().filter({
-                        !($0.title == "" && $0.owningApplication?.bundleIdentifier == "com.apple.finder")
-                        && $0.owningApplication?.bundleIdentifier != Bundle.main.bundleIdentifier
-                        && $0.owningApplication?.applicationName != ""
-                    })
-                    if filter { self.allWindows = self.allWindows.filter({ $0.title != "" }) }
-                    if capture {
-                        let contentFilters = self.allWindows.map { SCContentFilter(desktopIndependentWindow: $0) }
-                        for (index, contentFilter) in contentFilters.enumerated() {
-                            let streamConfiguration = SCStreamConfiguration()
-                            let width = self.allWindows[index].frame.width
-                            let height = self.allWindows[index].frame.height
-                            var factor = 0.5
-                            if width < 200 && height < 200 { factor = 1.0 }
-                            streamConfiguration.width = Int(width * factor)
-                            streamConfiguration.height = Int(height * factor)
-                            streamConfiguration.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(1))
-                            streamConfiguration.pixelFormat = kCVPixelFormatType_32BGRA
-                            if #available(macOS 13, *) { streamConfiguration.capturesAudio = false }
-                            streamConfiguration.showsCursor = false
-                            streamConfiguration.scalesToFit = true
-                            streamConfiguration.queueDepth = 3
-                            let stream = SCStream(filter: contentFilter, configuration: streamConfiguration, delegate: self)
-                            try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: .main)
-                            try await stream.startCapture()
-                            self.streams.append(stream)
-                        }
-                    } else {
-                        for w in self.allWindows {
-                            let thumbnail = WindowThumbnail(image: NSImage.unknowScreen, window: w)
-                            guard let displays = SCContext.availableContent?.displays.filter({ NSIntersectsRect(w.frame, $0.frame) }) else { break }
-                            for d in displays {
-                                DispatchQueue.main.async {
-                                    if self.windowThumbnails[d] != nil {
-                                        if !self.windowThumbnails[d]!.contains(where: { $0.window == w }) {
-                                            self.windowThumbnails[d]!.append(thumbnail)
-                                        }
-                                    } else {
-                                        self.windowThumbnails[d] = [thumbnail]
-                                    }
-                                }
-                            }
-                        }
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { self.isReady = true }
-                    }
-                } catch {
-                    print("Get windowshot error: \(error)")
-                }
+        let disposition = refreshAdapter.refresh(using: { completion in
+            let provider = WindowSelectorThumbnailProvider(
+                filterUntitledWindows: filter,
+                captureThumbnails: capture
+            )
+            provider.start(completion: completion)
+            return { provider.cancel() }
+        }, publish: { [weak self] result in
+            guard let self else { return }
+            self.isRefreshing = false
+            switch result {
+            case .success(let snapshot):
+                SCContext.applyWindowSelectorContent(snapshot.content)
+                self.windowThumbnails = snapshot.thumbnails
+                self.refreshErrorMessage = nil
+                self.isReady = true
+            case .failure(let error):
+                self.refreshErrorMessage = error.userMessage
+                self.isReady = !self.windowThumbnails.isEmpty
             }
+        })
+
+        if disposition == .started {
+            isRefreshing = true
+            isReady = false
+            refreshErrorMessage = nil
         }
     }
-}
 
-class WindowThumbnail {
-    let image: NSImage
-    let window: SCWindow
-
-    init(image: NSImage, window: SCWindow) {
-        self.image = image
-        self.window = window
+    deinit {
+        refreshAdapter.cancel()
     }
 }

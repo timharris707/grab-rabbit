@@ -403,8 +403,10 @@ the map closes.
 
 ## Out of scope
 
-These entries are ruled beyond this destination; they do not graduate into tickets without a
-new decision from Tim.
+### Tim-decided product boundaries
+
+These rulings are beyond this destination; they do not graduate into tickets without a new
+decision from Tim.
 
 - Multi-person calling, conferencing, or participant infrastructure — Q1.
 - Broadcasting to YouTube, Twitch, or other streaming destinations — Q2.
@@ -417,6 +419,12 @@ new decision from Tim.
 - AI-controlled browser tours in the first release — Q14.
 - Silent camera substitution, silent effect removal, or silent background fallback — Q15.
 - Apple Background Replacement or Presenter Overlay inside Studio mode — Q16.
+
+### Repository and parent-scope constraints
+
+These constraints apply existing repository policy and the accepted parent scope; they are not
+additional Studio product decisions attributed to Tim.
+
 - Reworking the existing no-camera recorder as part of this decision map. Studio integration
   must preserve its accepted privacy and reliability behavior unless a later tracked decision
   explicitly changes it.
@@ -427,6 +435,6 @@ new decision from Tim.
 ## Map-close gate
 
 The map is not done merely because this document exists. Each child ticket must carry its
-evidence/verdict, this document must replace the ticket pointer with a one-line outcome, every
-entry under **Not yet specified** must graduate or be resolved, native dependencies must show an
-empty frontier, and only then may [#43](https://github.com/timharris707/grab-rabbit/issues/43) close and PR-sized production slices be filed.
+evidence/verdict, and each resolved cluster in this document must retain its ticket pointer
+alongside a one-line outcome. Every entry under **Not yet specified** must graduate or be
+resolved, native dependencies must show an empty frontier, and only then may [#43](https://github.com/timharris707/grab-rabbit/issues/43) close and PR-sized production slices be filed.

@@ -8,6 +8,7 @@
 import SwiftUI
 import Foundation
 import AVFoundation
+import CoreGraphics
 import ScreenCaptureKit
 
 struct WinSelector: View {
@@ -302,7 +303,16 @@ class WindowSelectorViewModel: NSObject, ObservableObject {
     @Published private(set) var isReady = false
     @Published private(set) var isRefreshing = false
     @Published private(set) var refreshErrorMessage: String?
-    private let refreshAdapter = WindowSelectorRefreshAdapter<WindowSelectorRefreshSnapshot>()
+    private let refreshPipeline = WindowSelectorRefreshPipeline<
+        WindowSelectorRefreshSnapshot,
+        [SCDisplay: [WindowThumbnail]],
+        SCWindow,
+        CGWindowID
+    >(
+        candidateModel: { $0.thumbnails },
+        candidateItems: { $0.windows },
+        identifier: \.windowID
+    )
 
     override init() {
         super.init()
@@ -317,32 +327,30 @@ class WindowSelectorViewModel: NSObject, ObservableObject {
         currentSelection: @escaping () -> [SCWindow] = { [] },
         updateSelection: @escaping ([SCWindow]) -> Void = { _ in }
     ) {
-        let disposition = refreshAdapter.refresh(using: { completion in
-            let provider = WindowSelectorThumbnailProvider(
-                filterUntitledWindows: filter,
-                captureThumbnails: capture
-            )
-            provider.start(completion: completion)
-            return { provider.cancel() }
-        }, publish: { [weak self] result in
+        let disposition = refreshPipeline.refresh(
+            currentModel: { [weak self] in self?.windowThumbnails ?? [:] },
+            currentSelection: currentSelection,
+            using: { completion in
+                let provider = WindowSelectorThumbnailProvider(
+                    filterUntitledWindows: filter,
+                    captureThumbnails: capture
+                )
+                provider.start(completion: completion)
+                return { provider.cancel() }
+            }, publish: { [weak self] result in
             dispatchPrecondition(condition: .onQueue(DispatchQueue.main))
             guard let self else { return }
             switch result {
-            case .success(let snapshot):
-                let resolution = WindowSelectorRefreshTransaction.resolve(
-                    currentModel: self.windowThumbnails,
-                    currentSelection: currentSelection,
-                    candidateModel: snapshot.thumbnails,
-                    candidateItems: snapshot.windows,
-                    identifier: \.windowID
-                )
+            case .success(let publication):
+                let resolution = publication.resolution
                 if resolution.acceptedCandidate {
-                    SCContext.applyWindowSelectorContent(snapshot.content)
+                    SCContext.applyWindowSelectorContent(publication.snapshot.content)
                     self.windowThumbnails = resolution.model
                     updateSelection(resolution.selection)
                     self.refreshErrorMessage = nil
                     self.isReady = true
                 } else {
+                    updateSelection(resolution.selection)
                     self.refreshErrorMessage = WindowSelectorRefreshError.selectedTargetUnavailable.userMessage
                     self.isReady = !self.windowThumbnails.isEmpty
                 }
@@ -361,6 +369,6 @@ class WindowSelectorViewModel: NSObject, ObservableObject {
     }
 
     deinit {
-        refreshAdapter.cancel()
+        refreshPipeline.cancel()
     }
 }

@@ -13,7 +13,7 @@ enum WindowSelectorRefreshError: Error, Equatable {
         case .permissionDenied:
             return "Screen recording access is required to refresh windows."
         case .selectedTargetUnavailable:
-            return "The selected window is no longer available. Your previous selection was kept."
+            return "The selected window is no longer available. Select a window and try again."
         case .unavailable:
             return "Window refresh failed. Please try again."
         }
@@ -78,7 +78,7 @@ struct WindowSelectorRefreshTransaction {
         ) else {
             return WindowSelectorRefreshResolution(
                 model: currentModel,
-                selection: liveSelection,
+                selection: [],
                 acceptedCandidate: false
             )
         }
@@ -87,6 +87,71 @@ struct WindowSelectorRefreshTransaction {
             selection: reconciledSelection,
             acceptedCandidate: true
         )
+    }
+}
+
+struct WindowSelectorRefreshPublication<Snapshot, Model, Item> {
+    let snapshot: Snapshot
+    let resolution: WindowSelectorRefreshResolution<Model, Item>
+}
+
+final class WindowSelectorRefreshPipeline<Snapshot, Model, Item, Identifier: Hashable> {
+    typealias Publication = WindowSelectorRefreshPublication<Snapshot, Model, Item>
+    typealias Provider = WindowSelectorRefreshAdapter<Snapshot>.Provider
+
+    private let adapter: WindowSelectorRefreshAdapter<Snapshot>
+    private let candidateModel: (Snapshot) -> Model
+    private let candidateItems: (Snapshot) -> [Item]
+    private let identifier: (Item) -> Identifier
+
+    init(
+        timeout: TimeInterval = 10,
+        workerQueue: DispatchQueue = DispatchQueue(
+            label: "dev.clickai.grabrabbit.window-refresh",
+            qos: .userInitiated
+        ),
+        publicationQueue: DispatchQueue = .main,
+        timeoutQueue: DispatchQueue = DispatchQueue(
+            label: "dev.clickai.grabrabbit.window-refresh-timeout"
+        ),
+        candidateModel: @escaping (Snapshot) -> Model,
+        candidateItems: @escaping (Snapshot) -> [Item],
+        identifier: @escaping (Item) -> Identifier
+    ) {
+        adapter = WindowSelectorRefreshAdapter(
+            timeout: timeout,
+            workerQueue: workerQueue,
+            publicationQueue: publicationQueue,
+            timeoutQueue: timeoutQueue
+        )
+        self.candidateModel = candidateModel
+        self.candidateItems = candidateItems
+        self.identifier = identifier
+    }
+
+    @discardableResult
+    func refresh(
+        currentModel: @escaping () -> Model,
+        currentSelection: @escaping () -> [Item],
+        using provider: @escaping Provider,
+        publish: @escaping (Result<Publication, WindowSelectorRefreshError>) -> Void
+    ) -> WindowSelectorRefreshDisposition {
+        adapter.refresh(using: provider) { [candidateModel, candidateItems, identifier] result in
+            publish(result.map { snapshot in
+                let resolution = WindowSelectorRefreshTransaction.resolve(
+                    currentModel: currentModel(),
+                    currentSelection: currentSelection,
+                    candidateModel: candidateModel(snapshot),
+                    candidateItems: candidateItems(snapshot),
+                    identifier: identifier
+                )
+                return Publication(snapshot: snapshot, resolution: resolution)
+            })
+        }
+    }
+
+    func cancel() {
+        adapter.cancel()
     }
 }
 
@@ -138,15 +203,9 @@ final class WindowSelectorRefreshAdapter<Output> {
         publish: @escaping Completion
     ) -> WindowSelectorRefreshDisposition {
         lock.lock()
-        let supersededRefresh: ActiveRefresh?
-        if let activeRefresh {
-            guard activeRefresh.phase == .publishing else {
-                lock.unlock()
-                return .coalesced
-            }
-            supersededRefresh = activeRefresh
-        } else {
-            supersededRefresh = nil
+        if activeRefresh != nil {
+            lock.unlock()
+            return .coalesced
         }
 
         generation += 1
@@ -161,9 +220,6 @@ final class WindowSelectorRefreshAdapter<Output> {
             cancellation: nil
         )
         lock.unlock()
-
-        supersededRefresh?.timeout.cancel()
-        supersededRefresh?.cancellation?()
 
         timeoutQueue.asyncAfter(deadline: .now() + timeout, execute: timeoutWork)
         workerQueue.async { [weak self] in
@@ -246,9 +302,15 @@ final class WindowSelectorRefreshAdapter<Output> {
             lock.unlock()
             return
         }
-        self.activeRefresh = nil
         lock.unlock()
+
         publish(result)
+
+        lock.lock()
+        if self.activeRefresh?.generation == generation {
+            self.activeRefresh = nil
+        }
+        lock.unlock()
     }
 
     deinit {

@@ -2155,7 +2155,7 @@ final class WindowCapturePrivacyTests: XCTestCase {
 
         XCTAssertTrue(engineSource.contains("captureStreamCallbackAdapter.handleSample("))
         XCTAssertTrue(engineSource.contains("captureStreamCallbackAdapter.handleStop(from: stream)"))
-        XCTAssertTrue(engineSource.contains("session.releaseStandaloneAudioResources()"))
+        XCTAssertTrue(privacySource.contains("session.releaseStandaloneAudioResources()"))
         XCTAssertEqual(
             engineSource.components(separatedBy: "captureStreamCallbackAdapter.handleMicrophone(").count - 1,
             2,
@@ -2362,6 +2362,224 @@ final class WindowCapturePrivacyTests: XCTestCase {
         }
     }
 
+    func testEnabledMicrophoneStartupCannotCrashOrSilentlyContinue() throws {
+        let engineSource = try projectSource("QuickRecorder/RecordEngine.swift")
+        let privacySource = try projectSource("QuickRecorder/WindowCapturePrivacy.swift")
+        let microphoneStartSource = try XCTUnwrap(
+            engineSource.components(separatedBy: "func startMicRecording").last?
+                .components(separatedBy: "func finishCaptureSession").first
+        )
+        let rollbackSource = try XCTUnwrap(
+            engineSource.components(separatedBy: "private func discardPreparedCapture").last?
+                .components(separatedBy: "func prepareAudioRecording").first
+        )
+
+        XCTAssertFalse(engineSource.contains("try! SCContext.audioEngine.start()"))
+        XCTAssertFalse(engineSource.contains("try? SCContext.AECEngine.startAudioStream"))
+        XCTAssertTrue(engineSource.contains("func startMicRecording(session: CaptureOutputSession) throws"))
+        XCTAssertTrue(engineSource.contains("try startMicRecording(session: session)"))
+        XCTAssertTrue(engineSource.contains("try CaptureMicrophoneStartup.start("))
+        XCTAssertTrue(engineSource.contains("CaptureFailedStartCleanup.run("))
+        XCTAssertTrue(engineSource.contains("deviceName: micDevice"))
+        XCTAssertTrue(engineSource.contains("CaptureMicrophoneDeviceResolver.resolve("))
+        XCTAssertTrue(engineSource.contains("inputFormat.sampleRate > 0, inputFormat.channelCount > 0"))
+        XCTAssertFalse(microphoneStartSource.contains("SCContext.showNotification("))
+        XCTAssertTrue(privacySource.contains("if stopsMicrophone { session.stopMicrophoneCapture() }"))
+        XCTAssertTrue(rollbackSource.contains("CaptureFailedStartCleanup.run("))
+        XCTAssertTrue(rollbackSource.contains("SCContext.outputJob === job"))
+        XCTAssertTrue(rollbackSource.contains("CaptureFailedStartErrorPresenter.present("))
+        XCTAssertFalse(rollbackSource.contains("SCContext.showNotification("))
+    }
+
+    func testDefaultMicrophoneStartFailureAfterTapInstallCleansJobAndAllowsRetry() throws {
+        let temporaryDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MicrophoneStartupTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: temporaryDirectory, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
+
+        let store = CaptureOutputSessionStore()
+        let streamA = NSObject()
+        let failedJob = try RecordingOutputJob.reserve(
+            in: temporaryDirectory,
+            preferredStem: "Issue 38 retry",
+            layout: .single(fileExtension: "mp4", recordsMicrophone: true)
+        )
+        try Data("partial recording".utf8).write(to: failedJob.inputURL)
+        let sidebandURL = failedJob.reservationURL.appendingPathComponent("capture-diagnostics.json")
+        try Data("private diagnostics".utf8).write(to: sidebandURL)
+
+        var tapInstalled = false
+        var microphoneStopCount = 0
+        var streamStopCount = 0
+        var sharedResourcesCleared = false
+        var visibleErrors = [String]()
+        let failedSession = makeCaptureSession(
+            stream: streamA,
+            mode: .transparent,
+            sink: TestVideoDestination(),
+            microphoneInput: TestVideoDestination(),
+            outputJob: failedJob,
+            microphoneStopHandler: {
+                microphoneStopCount += 1
+                tapInstalled = false
+            }
+        )
+        let core = CaptureOutputCore(
+            store: store,
+            failureHandler: { _ in XCTFail("sample processing should not fail") },
+            stopHandler: { stoppedSession in
+                stoppedSession.stopMicrophoneCapture()
+                if let job = stoppedSession.outputJob {
+                    _ = job.finishSingleOutput()
+                }
+                store.release(stoppedSession)
+            }
+        )
+        let adapter = CaptureStreamCallbackAdapter(core: core)
+
+        XCTAssertTrue(store.install(failedSession))
+        var recordingError: RecordingExportError?
+        XCTAssertThrowsError(
+            try CaptureMicrophoneStartup.start(
+                selection: .defaultDevice,
+                session: failedSession,
+                install: { tapInstalled = true },
+                start: { throw InjectedCaptureSetupError.microphoneStartFailed }
+            )
+        ) { error in
+            XCTAssertEqual(
+                error as? CaptureMicrophoneStartupError,
+                .unavailable(.defaultDevice)
+            )
+            recordingError = .preparation(stage: .first, message: error.localizedDescription)
+        }
+        XCTAssertFalse(tapInstalled, "the installed tap must be removed before rollback continues")
+        XCTAssertEqual(microphoneStopCount, 1)
+
+        let failure = try XCTUnwrap(recordingError)
+        XCTAssertTrue(adapter.handleStartFailure(failedSession) { session in
+            CaptureFailedStartCleanup.run(
+                session: session,
+                error: failure,
+                stopsMicrophone: true,
+                stopStream: { streamStopCount += 1 },
+                clearSharedResources: { sharedResourcesCleared = true },
+                notify: { visibleErrors.append($0) }
+            )
+            store.release(session)
+        })
+
+        XCTAssertEqual(microphoneStopCount, 1, "microphone rollback must be idempotent")
+        XCTAssertEqual(streamStopCount, 1)
+        XCTAssertTrue(sharedResourcesCleared)
+        XCTAssertEqual(visibleErrors, [failure.localizedDescription])
+        XCTAssertTrue(visibleErrors[0].contains("default microphone"))
+        XCTAssertNil(store.activeSession())
+        XCTAssertEqual(failedJob.lifecycle, .terminal)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: failedJob.finalURL.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: failedJob.reservationURL.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: failedJob.inputURL.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: sidebandURL.path))
+
+        let retryStream = NSObject()
+        let retryJob = try RecordingOutputJob.reserve(
+            in: temporaryDirectory,
+            preferredStem: "Issue 38 retry",
+            layout: .single(fileExtension: "mp4", recordsMicrophone: true)
+        )
+        XCTAssertEqual(retryJob.finalURL, failedJob.finalURL, "failed output reservation must be reusable")
+        try Data("complete recording".utf8).write(to: retryJob.inputURL)
+        var retryTapInstalled = false
+        var retryStarted = false
+        let retrySession = makeCaptureSession(
+            stream: retryStream,
+            mode: .transparent,
+            sink: TestVideoDestination(),
+            microphoneInput: TestVideoDestination(),
+            outputJob: retryJob,
+            microphoneStopHandler: { retryTapInstalled = false }
+        )
+
+        XCTAssertTrue(store.install(retrySession))
+        XCTAssertNoThrow(
+            try CaptureMicrophoneStartup.start(
+                selection: .defaultDevice,
+                session: retrySession,
+                install: { retryTapInstalled = true },
+                start: { retryStarted = true }
+            )
+        )
+        XCTAssertTrue(retryTapInstalled)
+        XCTAssertTrue(retryStarted)
+        XCTAssertTrue(adapter.handleStop(from: retryStream))
+        XCTAssertNil(store.activeSession())
+        XCTAssertEqual(retryJob.lifecycle, .terminal)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: retryJob.finalURL.path))
+        XCTAssertEqual(try Data(contentsOf: retryJob.finalURL), Data("complete recording".utf8))
+    }
+
+    func testFailedMicrophoneStartPresentsOneInAppEnglishError() {
+        let error = CaptureMicrophoneStartupError.unavailable(
+            .named("Grab Rabbit Missing Microphone")
+        )
+        var presentations = [(title: String, message: String)]()
+        var events = [String]()
+
+        CaptureFailedStartErrorPresenter.present(
+            message: error.localizedDescription,
+            activateApp: { events.append("activate") },
+            showAlert: { title, message in
+                events.append("alert")
+                presentations.append((title: title, message: message))
+            }
+        )
+
+        XCTAssertEqual(events, ["activate", "alert"])
+        XCTAssertEqual(presentations.count, 1)
+        XCTAssertEqual(presentations[0].title, "Failed to Record")
+        XCTAssertEqual(
+            presentations[0].message,
+            "The selected microphone “Grab Rabbit Missing Microphone” is unavailable. Reconnect it or choose another microphone, then try again."
+        )
+    }
+
+    func testPersistedNamedMicrophoneDisappearanceFailsBeforeCaptureStarts() {
+        let selection = CaptureMicrophoneSelection.named("Desk USB Mic")
+        let availableDevices = [TestMicrophone(name: "Built-in Microphone")]
+        var stopCount = 0
+        var startCalled = false
+        let session = makeCaptureSession(
+            stream: NSObject(),
+            mode: .transparent,
+            sink: TestVideoDestination(),
+            microphoneInput: TestVideoDestination(),
+            microphoneStopHandler: { stopCount += 1 }
+        )
+
+        XCTAssertThrowsError(
+            try CaptureMicrophoneStartup.start(
+                selection: selection,
+                session: session,
+                install: {
+                    _ = try CaptureMicrophoneDeviceResolver.resolve(
+                        named: "Desk USB Mic",
+                        from: availableDevices,
+                        name: \.name
+                    )
+                },
+                start: { startCalled = true }
+            )
+        ) { error in
+            XCTAssertEqual(error as? CaptureMicrophoneStartupError, .unavailable(selection))
+            XCTAssertEqual(
+                error.localizedDescription,
+                "The selected microphone \u{201c}Desk USB Mic\u{201d} is unavailable. Reconnect it or choose another microphone, then try again."
+            )
+        }
+        XCTAssertFalse(startCalled)
+        XCTAssertEqual(stopCount, 1)
+    }
+
     func testNormalAndQuickWindowPathsUseTheSelectedModeWithoutMutatingAudioChoices() throws {
         let appSource = try projectSource("QuickRecorder/QuickRecorderApp.swift")
         let engineSource = try projectSource("QuickRecorder/RecordEngine.swift")
@@ -2562,14 +2780,16 @@ final class WindowCapturePrivacyTests: XCTestCase {
         mode: WindowCaptureMode,
         sink: any CaptureVideoSampleDestination,
         microphoneInput: (any CaptureVideoSampleDestination)? = nil,
+        outputJob: RecordingOutputJob? = nil,
         isAudioOnly: Bool = false,
         saveFrameHandler: ((CMSampleBuffer) -> Void)? = nil,
         firstFrameHandler: ((CMSampleBuffer) -> Void)? = nil,
-        diagnostics: CaptureDiagnostics = CaptureDiagnostics(enabled: false)
+        diagnostics: CaptureDiagnostics = CaptureDiagnostics(enabled: false),
+        microphoneStopHandler: (() -> Void)? = nil
     ) -> CaptureOutputSession {
         CaptureOutputSession(
             stream: stream,
-            outputJob: nil,
+            outputJob: outputJob,
             writer: nil,
             videoInput: sink,
             systemAudioInput: nil,
@@ -2580,7 +2800,8 @@ final class WindowCapturePrivacyTests: XCTestCase {
             isAudioOnly: isAudioOnly,
             saveFrameHandler: saveFrameHandler,
             firstFrameHandler: firstFrameHandler,
-            diagnostics: diagnostics
+            diagnostics: diagnostics,
+            microphoneStopHandler: microphoneStopHandler
         )
     }
 
@@ -2840,6 +3061,11 @@ private final class WeakReference<Object: AnyObject> {
 
 private enum InjectedCaptureSetupError: Error {
     case addOutputFailed
+    case microphoneStartFailed
+}
+
+private struct TestMicrophone {
+    let name: String
 }
 
 private enum FinalizationExitVariant: CaseIterable {

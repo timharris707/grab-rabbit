@@ -630,6 +630,99 @@ enum CapturePreparationResourceSnapshot {
     }
 }
 
+enum CaptureFailedStartErrorPresenter {
+    static func present(
+        message: String,
+        activateApp: () -> Void,
+        showAlert: (_ title: String, _ message: String) -> Void
+    ) {
+        activateApp()
+        showAlert("Failed to Record", message)
+    }
+}
+
+enum CaptureMicrophoneSelection: Equatable {
+    case defaultDevice
+    case named(String)
+
+    var unavailableMessage: String {
+        switch self {
+        case .defaultDevice:
+            return "The default microphone is unavailable. Check the audio input and try again."
+        case .named(let name):
+            return "The selected microphone \u{201c}\(name)\u{201d} is unavailable. Reconnect it or choose another microphone, then try again."
+        }
+    }
+}
+
+enum CaptureMicrophoneStartupError: LocalizedError, Equatable {
+    case unavailable(CaptureMicrophoneSelection)
+
+    var errorDescription: String? {
+        switch self {
+        case .unavailable(let selection):
+            return selection.unavailableMessage
+        }
+    }
+}
+
+enum CaptureMicrophoneDeviceError: Error {
+    case deviceUnavailable
+    case inputUnavailable
+    case outputUnavailable
+    case sessionUnavailable
+    case sessionDidNotStart
+}
+
+enum CaptureMicrophoneDeviceResolver {
+    static func resolve<Device>(
+        named deviceName: String,
+        from devices: [Device],
+        name: (Device) -> String
+    ) throws -> Device {
+        guard let device = devices.first(where: { name($0) == deviceName }) else {
+            throw CaptureMicrophoneDeviceError.deviceUnavailable
+        }
+        return device
+    }
+}
+
+enum CaptureMicrophoneStartup {
+    static func start(
+        selection: CaptureMicrophoneSelection,
+        session: CaptureOutputSession,
+        install: () throws -> Void,
+        start: () throws -> Void
+    ) throws {
+        do {
+            try install()
+            try start()
+        } catch {
+            session.stopMicrophoneCapture()
+            throw CaptureMicrophoneStartupError.unavailable(selection)
+        }
+    }
+}
+
+enum CaptureFailedStartCleanup {
+    static func run(
+        session: CaptureOutputSession,
+        error: RecordingExportError,
+        stopsMicrophone: Bool,
+        stopStream: () -> Void,
+        clearSharedResources: () -> Void,
+        notify: (String) -> Void
+    ) {
+        stopStream()
+        if stopsMicrophone { session.stopMicrophoneCapture() }
+        session.writer?.cancelWriting()
+        session.releaseStandaloneAudioResources()
+        if let job = session.outputJob { _ = job.discardOutputs(reason: error) }
+        clearSharedResources()
+        notify(error.localizedDescription)
+    }
+}
+
 final class CapturePresenterReadyScheduler {
     typealias Schedule = (TimeInterval, @escaping () -> Void) -> Void
     private let scheduleAction: Schedule

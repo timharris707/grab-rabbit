@@ -163,8 +163,8 @@ The macOS API surface is narrower than the iPhone's in-process capture surface.
 | Can the Mac app read sensor ISO and exposure duration? | `AVCaptureDevice.ISO`, `.exposureDuration`, and `.lensPosition` each end in `API_UNAVAILABLE(macos, visionos)`. | **Source fact:** no public macOS property for these numeric sensor values on the Continuity Camera capture device.[^camera-iso] |
 | Can it read device white-balance gains? | `deviceWhiteBalanceGains ... API_UNAVAILABLE(macos, visionos)`. | **Source fact:** no public macOS gains value.[^camera-white-balance] |
 | Can it request live depth from the Mac camera input? | `activeDepthDataFormat` and `AVCaptureDevice.Format.supportedDepthDataFormats` are `API_UNAVAILABLE(macos, visionos)`. `AVCaptureDepthDataOutput` is also unavailable on macOS. | **Source fact:** the iOS live-depth negotiation path is not a macOS capture contract.[^depth-format] |
-| Can it request camera calibration delivery? | `AVCaptureConnection.cameraIntrinsicMatrixDeliverySupported/Enabled`, `AVCapturePhotoOutput.cameraCalibrationDataDeliverySupported`, and `AVCapturePhotoSettings.cameraCalibrationDataDeliveryEnabled` are unavailable on macOS. | **Source fact:** public AVFoundation does not expose the video-connection or photo-settings enablement path on macOS. |
-| Does Core Media define an intrinsic-matrix attachment? | `kCMSampleBufferAttachmentKey_CameraIntrinsicMatrix API_AVAILABLE(macos(10.13))`. | **Source fact:** the generic key exists. **Inference:** its existence does not guarantee that Continuity Camera frames carry it, because AVFoundation's delivery controls are unavailable on macOS. Code may inspect optional attachments but must not require one. |
+| Can it request camera calibration delivery? | `AVCaptureConnection.cameraIntrinsicMatrixDeliverySupported/Enabled`, `AVCapturePhotoOutput.cameraCalibrationDataDeliverySupported`, and `AVCapturePhotoSettings.cameraCalibrationDataDeliveryEnabled` each carry an exact `API_UNAVAILABLE(macos...)` clause in the installed public headers; the reproduction audit below prints every declaration without normalizing its annotation. | **Source fact:** public AVFoundation does not expose the video-connection or photo-settings enablement path on macOS.[^camera-calibration-delivery] |
+| Does Core Media define an intrinsic-matrix attachment? | `kCMSampleBufferAttachmentKey_CameraIntrinsicMatrix API_AVAILABLE(macos(10.13))`. | **Source fact:** the generic key exists.[^camera-intrinsic-matrix] **Inference:** its existence does not guarantee that Continuity Camera frames carry it, because AVFoundation's delivery controls are unavailable on macOS. Code may inspect optional attachments but must not require one. |
 | What metadata is usable? | `uniqueID`, `localizedName`, `modelID`, `manufacturer`, `transportType`, `activeFormat`, format descriptions, frame timing, dimensions, and color attachments are public. | **Source fact:** identity, format, timing, and color metadata can drive source selection and pixel interpretation. They do not describe room-light direction, brightness, color temperature, or depth. |
 
 **Inference:** Studio lighting analysis must be pixel-derived on the Mac. The public capture path
@@ -346,6 +346,16 @@ xcrun --sdk macosx --show-sdk-version
 rg -n 'ContinuityCamera|ForegroundInstance|PersonInstance|PersonSegmentation|OpticalFlow|TrackObject|CenterStage|StudioLight|BackgroundReplacement|PresenterOverlay|outputVideoEffect|startCapture|addRecordingOutput|captureMicrophone|CameraIntrinsicMatrix|cameraCalibrationDataDelivery|supportedDepthDataFormats|activeDepthDataFormat' \
   "$sdk/System/Library/Frameworks" --glob '*.{h,swiftinterface}'
 
+av_headers="$sdk/System/Library/Frameworks/AVFoundation.framework/Versions/A/Headers"
+rg -n '@property.*\b(lensPosition|exposureDuration|ISO|deviceWhiteBalanceGains|activeDepthDataFormat|supportedDepthDataFormats|cameraIntrinsicMatrixDeliverySupported|cameraIntrinsicMatrixDeliveryEnabled|cameraCalibrationDataDeliverySupported|cameraCalibrationDataDeliveryEnabled)\b.*API_(AVAILABLE|UNAVAILABLE)' \
+  "$av_headers/AVCaptureDevice.h" \
+  "$av_headers/AVCaptureSession.h" \
+  "$av_headers/AVCapturePhotoOutput.h"
+
+core_media_header="$sdk/System/Library/Frameworks/CoreMedia.framework/Versions/A/Headers/CMSampleBuffer.h"
+rg -n -A1 '^CM_EXPORT const CFStringRef kCMSampleBufferAttachmentKey_CameraIntrinsicMatrix' \
+  "$core_media_header"
+
 rg -n 'API_AVAILABLE\(macosx?\(26\.[1-9]|@available\(macOS 26\.[1-9]' \
   "$sdk/System/Library/Frameworks/AVFoundation.framework" \
   "$sdk/System/Library/Frameworks/Vision.framework" \
@@ -394,9 +404,11 @@ xcrun swiftc -typecheck -target x86_64-apple-macosx26.0 -sdk "$sdk" "$probe"
 [^generated-flow]: Apple, [`VNGenerateOpticalFlowRequest`](https://developer.apple.com/documentation/vision/vngenerateopticalflowrequest).
 [^tracked-flow]: Apple, [`VNTrackOpticalFlowRequest`](https://developer.apple.com/documentation/vision/vntrackopticalflowrequest).
 [^vision-compute]: Apple, [`VNRequest.supportedComputeStageDevices`](https://developer.apple.com/documentation/vision/vnrequest/supportedcomputestagedevices).
-[^camera-iso]: Apple, [`AVCaptureDevice.ISO`](https://developer.apple.com/documentation/avfoundation/avcapturedevice/iso) and [`exposureDuration`](https://developer.apple.com/documentation/avfoundation/avcapturedevice/exposureduration).
+[^camera-iso]: Apple, [`AVCaptureDevice.ISO`](https://developer.apple.com/documentation/avfoundation/avcapturedevice/iso), [`exposureDuration`](https://developer.apple.com/documentation/avfoundation/avcapturedevice/exposureduration), and [`lensPosition`](https://developer.apple.com/documentation/avfoundation/avcapturedevice/lensposition).
 [^camera-white-balance]: Apple, [`AVCaptureDevice.deviceWhiteBalanceGains`](https://developer.apple.com/documentation/avfoundation/avcapturedevice/devicewhitebalancegains).
 [^depth-format]: Apple, [`AVCaptureDevice.Format.supportedDepthDataFormats`](https://developer.apple.com/documentation/avfoundation/avcapturedevice/format/supporteddepthdataformats) and [`activeDepthDataFormat`](https://developer.apple.com/documentation/avfoundation/avcapturedevice/activedepthdataformat).
+[^camera-calibration-delivery]: Apple, [`AVCaptureConnection.isCameraIntrinsicMatrixDeliverySupported`](https://developer.apple.com/documentation/avfoundation/avcaptureconnection/iscameraintrinsicmatrixdeliverysupported), [`isCameraIntrinsicMatrixDeliveryEnabled`](https://developer.apple.com/documentation/avfoundation/avcaptureconnection/iscameraintrinsicmatrixdeliveryenabled), [`AVCapturePhotoOutput.isCameraCalibrationDataDeliverySupported`](https://developer.apple.com/documentation/avfoundation/avcapturephotooutput/iscameracalibrationdatadeliverysupported), and [`AVCapturePhotoSettings.isCameraCalibrationDataDeliveryEnabled`](https://developer.apple.com/documentation/avfoundation/avcapturephotosettings/iscameracalibrationdatadeliveryenabled).
+[^camera-intrinsic-matrix]: Apple, [`kCMSampleBufferAttachmentKey_CameraIntrinsicMatrix`](https://developer.apple.com/documentation/coremedia/kcmsamplebufferattachmentkey_cameraintrinsicmatrix).
 [^ci-image]: Apple, [`CIImage.imageWithCVPixelBuffer:`](https://developer.apple.com/documentation/coreimage/ciimage/imagewithcvpixelbuffer:).
 [^ci-context]: Apple, [`CIContext.init(mtlDevice:)`](https://developer.apple.com/documentation/coreimage/cicontext/init(mtldevice:)-swey).
 [^metal-device]: Apple, [`MTLCreateSystemDefaultDevice()`](https://developer.apple.com/documentation/metal/mtlcreatesystemdefaultdevice()).

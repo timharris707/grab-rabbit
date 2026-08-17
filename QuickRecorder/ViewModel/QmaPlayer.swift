@@ -558,7 +558,12 @@ class AudioPlayerManager: ObservableObject {
         }
     }
     
-    func saveFile(_ destinationURL: URL, saveAsMP3: Bool = false, recordingJob: RecordingOutputJob? = nil) {
+    func saveFile(
+        _ destinationURL: URL,
+        saveAsMP3: Bool = false,
+        recordingJob: RecordingOutputJob? = nil,
+        completion: @escaping (Result<URL, RecordingExportError>) -> Void = { _ in }
+    ) {
         var renderURL = destinationURL
         if recordingJob == nil {
             if renderURL.pathExtension == "mp3" { renderURL = renderURL.deletingPathExtension() }
@@ -626,7 +631,9 @@ class AudioPlayerManager: ObservableObject {
                                         outputUrl: recordingJob.stagedOutputURL,
                                         qualityKbps: recordingJob.audioQualityKbps
                                     )
-                                    self.notifyRecordingOutput(recordingJob.finishExport(.success(())))
+                                    let result = recordingJob.finishExport(.success(()))
+                                    self.notifyRecordingOutput(result)
+                                    completion(result)
                                 } catch {
                                     let exportError: RecordingExportError
                                     if let typedError = error as? RecordingExportError {
@@ -642,13 +649,16 @@ class AudioPlayerManager: ObservableObject {
                                         body: cleanupError.localizedDescription,
                                         id: "quickrecorder.error.\(UUID().uuidString)"
                                     )
+                                    completion(.failure(cleanupError))
                                 }
                                 self.exporting = false
                             }
                         }
                         return
                     }
-                    self.notifyRecordingOutput(recordingJob.finishSingleOutput())
+                    let result = recordingJob.finishSingleOutput()
+                    self.notifyRecordingOutput(result)
+                    completion(result)
                 } else {
                     let title = "Recording Completed".local
                     var notificationURL = renderURL
@@ -679,7 +689,9 @@ class AudioPlayerManager: ObservableObject {
                 if let recordingJob {
                     let exportError = (error as? RecordingExportError)
                         ?? .failed(stage: .first, message: error.localizedDescription)
-                    reportedError = recordingJob.discardOutputs(reason: exportError)
+                    let cleanupError = recordingJob.discardOutputs(reason: exportError)
+                    reportedError = cleanupError
+                    completion(.failure(cleanupError))
                 } else {
                     reportedError = error
                 }

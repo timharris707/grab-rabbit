@@ -237,8 +237,9 @@ struct StatusBarItem: View {
     }
 }
 
-func updateStatusBar() {
+func updateStatusBar(completion: (() -> Void)? = nil) {
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+        defer { completion?() }
         if !SCContext.isFinalizing && SCContext.streamType == nil && !ud.bool(forKey: "showMenubar") {
             statusBarItem.isVisible = false
             return

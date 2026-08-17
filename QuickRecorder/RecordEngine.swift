@@ -517,10 +517,10 @@ extension AppDelegate {
                 registerMouseMonitor: {
                     if !audioOnly { registerGlobalMouseMonitor() }
                 },
-                preventSleep: {
-                    if preventSleep {
-                        SleepPreventer.shared.preventSleep(reason: "Screen recording in progress")
-                    }
+                acquireSleepAssertion: {
+                    preventSleep
+                        ? SleepPreventer.shared.preventSleep(reason: "Screen recording in progress")
+                        : false
                 }
             ) else {
                 return

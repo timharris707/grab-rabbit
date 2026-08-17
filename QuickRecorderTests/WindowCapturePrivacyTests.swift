@@ -837,11 +837,12 @@ final class WindowCapturePrivacyTests: XCTestCase {
             store.cancelReservation(sessionB)
         }
 
-        XCTAssertTrue(contextSource.contains("CaptureSessionStopPipeline(store: sessions)"))
+        XCTAssertTrue(contextSource.contains("CaptureProductionStopEntry(store: sessions).stop("))
         XCTAssertTrue(contextSource.contains("expectedSession: expectedSession"))
-        XCTAssertTrue(contextSource.contains("if disposition == .fallback"))
         XCTAssertFalse(contextSource.contains("if expectedSession == nil, let activeStream = stream"))
-        XCTAssertTrue(contextSource.contains("CaptureFinalizationPresentation.begin("))
+        XCTAssertFalse(contextSource.contains("writerFinalizer.finish"))
+        XCTAssertFalse(contextSource.contains("finishedJob.beginPostprocessing"))
+        XCTAssertFalse(contextSource.contains("switch finishedJob.kind"))
         XCTAssertFalse(
             contextSource.contains("if let sessionToRelease { sessions.release(sessionToRelease) }")
         )
@@ -852,12 +853,13 @@ final class WindowCapturePrivacyTests: XCTestCase {
         let engineSource = try projectSource("QuickRecorder/RecordEngine.swift")
         let appSource = try projectSource("QuickRecorder/QuickRecorderApp.swift")
         let statusSource = try projectSource("QuickRecorder/ViewModel/StatusBar.swift")
+        let lifecycleSource = try projectSource("QuickRecorder/WindowCapturePrivacy.swift")
 
         XCTAssertFalse(
             contextSource.contains("dispatchGroup.wait()"),
             "Stop must return to the main run loop while AVAssetWriter finishes."
         )
-        XCTAssertTrue(contextSource.contains("writerFinalizer.finish { writerResult in"))
+        XCTAssertTrue(lifecycleSource.contains("writerFinalizer.finish { writerResult in"))
         XCTAssertTrue(contextSource.contains("body: \"Finalizing recording...\".local"))
         XCTAssertTrue(engineSource.contains("Another capture session is still finishing."))
         XCTAssertTrue(statusSource.contains("Text(CaptureFinalizationPresentation.statusText.local)"))
@@ -891,56 +893,62 @@ final class WindowCapturePrivacyTests: XCTestCase {
             outputJob: job,
             writerFinalizer: writer
         )
+        let entry = CaptureProductionStopEntry(store: store)
+        let resources = CaptureProductionStopResources(
+            outputJob: job,
+            writerFinalizer: writer,
+            isAudioOnly: false,
+            markVideoInputFinished: {}
+        )
         let replacementID = UUID()
-        let stopPipeline = CaptureSessionStopPipeline(store: store)
         var activeStream: AnyObject? = stream
-        var productionFinalization: CaptureSessionStopPipeline.Finalization!
         var adapter: CaptureStreamCallbackAdapter!
+        var actions: CaptureProductionStopActions!
         var finalizing = false
         var statusMessages = [String]()
         var fallbackCount = 0
+        var prepareCount = 0
         var terminalCleanupCount = 0
+        var pendingStatusDismissal: (() -> Void)?
         var terminalResult: Result<URL, RecordingExportError>?
 
-        productionFinalization = { stoppedSession, releaseSession in
-            activeStream = nil
-            CaptureFinalizationPresentation.begin(
-                setFinalizing: { finalizing = $0 },
-                publishStatus: { statusMessages.append($0) }
-            )
-            XCTAssertTrue(job.beginPostprocessing())
-            stoppedSession.writerFinalizer?.finish { result in
-                terminalResult = job.finishExport(result)
-                CaptureFinalizationPresentation.complete(
-                    setFinalizing: { finalizing = $0 }
-                )
-                terminalCleanupCount += 1
-                releaseSession()
-            }
-        }
         let core = CaptureOutputCore(
             store: store,
             failureHandler: { _ in XCTFail("Stop must not take the failure route.") },
             stopHandler: { stoppedSession in
                 XCTAssertEqual(
-                    stopPipeline.stop(
+                    entry.stop(
                         expectedSession: stoppedSession,
                         activeStream: nil,
-                        stopActiveStream: { _ in false },
-                        finalization: productionFinalization
+                        resolveResources: { _ in resources },
+                        actions: actions
                     ),
                     .handled
                 )
             }
         )
         adapter = CaptureStreamCallbackAdapter(core: core)
+        actions = CaptureProductionStopActions(
+            stopActiveStream: { adapter.handleStop(from: $0) },
+            setFinalizing: { finalizing = $0 },
+            publishStatus: { statusMessages.append($0) },
+            prepareForFinalization: { _, _ in
+                prepareCount += 1
+                activeStream = nil
+            },
+            presentVideoResult: { result, _ in terminalResult = result },
+            cleanupTerminal: { acknowledge in
+                terminalCleanupCount += 1
+                pendingStatusDismissal = acknowledge
+            }
+        )
 
         func requestProductionStop() {
-            let disposition = stopPipeline.stop(
+            let disposition = entry.stop(
                 expectedSession: nil,
                 activeStream: activeStream,
-                stopActiveStream: { adapter.handleStop(from: $0) },
-                finalization: productionFinalization
+                resolveResources: { _ in resources },
+                actions: actions
             )
             if disposition == .fallback { fallbackCount += 1 }
         }
@@ -957,37 +965,246 @@ final class WindowCapturePrivacyTests: XCTestCase {
         XCTAssertEqual(statusMessages, ["Finishing..."])
         XCTAssertEqual(writer.finishCallCount, 1)
         XCTAssertEqual(fallbackCount, 0)
+        XCTAssertEqual(prepareCount, 1)
         XCTAssertEqual(terminalCleanupCount, 0)
         XCTAssertEqual(job.lifecycle, .postprocessing)
         XCTAssertFalse(store.reserve(replacementID), "Replacement must remain refused while A finishes.")
 
         writer.complete(.success(()))
+        requestProductionStop()
 
         XCTAssertFalse(finalizing)
         XCTAssertEqual(writer.finishCallCount, 1)
+        XCTAssertEqual(fallbackCount, 0)
+        XCTAssertEqual(prepareCount, 1)
         XCTAssertEqual(terminalCleanupCount, 1)
+        XCTAssertNotNil(pendingStatusDismissal)
         XCTAssertEqual(try terminalResult?.get(), job.finalURL)
         XCTAssertEqual(try Data(contentsOf: job.finalURL), Data("recording-a".utf8))
         XCTAssertTrue(store.reserve(replacementID), "Replacement may start after exact terminal release.")
         store.cancelReservation(replacementID)
+        pendingStatusDismissal?()
+    }
+
+    func testFastTerminalCompletionSuppressesStaleStopUntilStatusDismissal() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("fast-stop-entry-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let job = try RecordingOutputJob.reserve(
+            in: directory,
+            preferredStem: "fast-recording",
+            layout: .single(fileExtension: "mov")
+        )
+        XCTAssertTrue(FileManager.default.createFile(
+            atPath: job.inputURL.path,
+            contents: Data("fast recording".utf8)
+        ))
+        let stream = NSObject()
+        let store = CaptureOutputSessionStore()
+        let writer = ImmediateCaptureWriterFinalizer(result: .success(()))
+        let session = makeCaptureSession(
+            stream: stream,
+            mode: .transparent,
+            sink: TestVideoDestination(),
+            outputJob: job,
+            writerFinalizer: writer
+        )
+        let entry = CaptureProductionStopEntry(store: store)
+        let resources = CaptureProductionStopResources(
+            outputJob: job,
+            writerFinalizer: writer,
+            isAudioOnly: false,
+            markVideoInputFinished: {}
+        )
+        var prepareCount = 0
+        var cleanupCount = 0
+        var pendingStatusDismissal: (() -> Void)?
+        let actions = CaptureProductionStopActions(
+            stopActiveStream: { _ in false },
+            prepareForFinalization: { _, _ in prepareCount += 1 },
+            cleanupTerminal: { acknowledge in
+                cleanupCount += 1
+                pendingStatusDismissal = acknowledge
+            }
+        )
+
+        XCTAssertTrue(store.install(session))
+        XCTAssertTrue(store.deactivate(session))
+        XCTAssertEqual(
+            entry.stop(
+                expectedSession: session,
+                activeStream: nil,
+                resolveResources: { _ in resources },
+                actions: actions
+            ),
+            .handled
+        )
+        XCTAssertEqual(job.lifecycle, .terminal)
+        XCTAssertEqual(writer.finishCallCount, 1)
+        XCTAssertEqual(cleanupCount, 1)
+        XCTAssertEqual(
+            entry.stop(
+                expectedSession: nil,
+                activeStream: nil,
+                resolveResources: { _ in resources },
+                actions: actions
+            ),
+            .handled
+        )
+        XCTAssertEqual(prepareCount, 1)
+        XCTAssertEqual(writer.finishCallCount, 1)
+
+        pendingStatusDismissal?()
+        var legacyFallbackCount = 0
+        let fallbackDisposition = entry.stop(
+            expectedSession: nil,
+            activeStream: nil,
+            resolveResources: { _ in
+                CaptureProductionStopResources(
+                    outputJob: nil,
+                    writerFinalizer: nil,
+                    isAudioOnly: false
+                )
+            },
+            actions: CaptureProductionStopActions(
+                stopActiveStream: { _ in false },
+                prepareForFinalization: { _, _ in legacyFallbackCount += 1 }
+            )
+        )
+        XCTAssertEqual(fallbackDisposition, .fallback)
+        XCTAssertEqual(legacyFallbackCount, 1)
+    }
+
+    func testEarlierStatusDismissalCannotClearNewerStaleStopGuard() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("overlapping-stop-dismissals-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let store = CaptureOutputSessionStore()
+        let entry = CaptureProductionStopEntry(store: store)
+        var pendingStatusDismissals = [() -> Void]()
+
+        func finishImmediately(_ stem: String) throws {
+            let job = try RecordingOutputJob.reserve(
+                in: directory,
+                preferredStem: stem,
+                layout: .single(fileExtension: "mov")
+            )
+            XCTAssertTrue(FileManager.default.createFile(
+                atPath: job.inputURL.path,
+                contents: Data(stem.utf8)
+            ))
+            let stream = NSObject()
+            let writer = ImmediateCaptureWriterFinalizer(result: .success(()))
+            let session = makeCaptureSession(
+                stream: stream,
+                mode: .transparent,
+                sink: TestVideoDestination(),
+                outputJob: job,
+                writerFinalizer: writer
+            )
+            let resources = CaptureProductionStopResources(
+                outputJob: job,
+                writerFinalizer: writer,
+                isAudioOnly: false,
+                markVideoInputFinished: {}
+            )
+            let actions = CaptureProductionStopActions(
+                stopActiveStream: { _ in false },
+                cleanupTerminal: { pendingStatusDismissals.append($0) }
+            )
+
+            XCTAssertTrue(store.reserve(session.id))
+            XCTAssertTrue(store.install(session))
+            XCTAssertTrue(store.deactivate(session))
+            XCTAssertEqual(
+                entry.stop(
+                    expectedSession: session,
+                    activeStream: nil,
+                    resolveResources: { _ in resources },
+                    actions: actions
+                ),
+                .handled
+            )
+            XCTAssertEqual(job.lifecycle, .terminal)
+        }
+
+        try finishImmediately("recording-a")
+        try finishImmediately("recording-b")
+        XCTAssertEqual(pendingStatusDismissals.count, 2)
+
+        pendingStatusDismissals[0]()
+        var fallbackCount = 0
+        XCTAssertEqual(
+            entry.stop(
+                expectedSession: nil,
+                activeStream: nil,
+                resolveResources: { _ in
+                    CaptureProductionStopResources(
+                        outputJob: nil,
+                        writerFinalizer: nil,
+                        isAudioOnly: false
+                    )
+                },
+                actions: CaptureProductionStopActions(
+                    stopActiveStream: { _ in false },
+                    prepareForFinalization: { _, _ in fallbackCount += 1 }
+                )
+            ),
+            .handled
+        )
+        XCTAssertEqual(fallbackCount, 0)
+
+        pendingStatusDismissals[1]()
+        XCTAssertEqual(
+            entry.stop(
+                expectedSession: nil,
+                activeStream: nil,
+                resolveResources: { _ in
+                    CaptureProductionStopResources(
+                        outputJob: nil,
+                        writerFinalizer: nil,
+                        isAudioOnly: false
+                    )
+                },
+                actions: CaptureProductionStopActions(
+                    stopActiveStream: { _ in false },
+                    prepareForFinalization: { _, _ in fallbackCount += 1 }
+                )
+            ),
+            .fallback
+        )
+        XCTAssertEqual(fallbackCount, 1)
     }
 
     func testProductionStopEntryPreservesIdleLegacyFallback() {
         let store = CaptureOutputSessionStore()
-        let stopPipeline = CaptureSessionStopPipeline(store: store)
+        let entry = CaptureProductionStopEntry(store: store)
         var finalizationCount = 0
 
         XCTAssertEqual(
-            stopPipeline.stop(
+            entry.stop(
                 expectedSession: nil,
                 activeStream: nil,
-                stopActiveStream: { _ in false },
-                finalization: { _, _ in finalizationCount += 1 }
+                resolveResources: { _ in
+                    CaptureProductionStopResources(
+                        outputJob: nil,
+                        writerFinalizer: nil,
+                        isAudioOnly: false
+                    )
+                },
+                actions: CaptureProductionStopActions(
+                    stopActiveStream: { _ in false },
+                    prepareForFinalization: { _, _ in finalizationCount += 1 }
+                )
             ),
             .fallback
         )
-        XCTAssertEqual(finalizationCount, 0)
+        XCTAssertEqual(finalizationCount, 1)
     }
+
 
     func testPostStartActivationRejectsDelayedStopWithoutRearmingResources() throws {
         let engineSource = try projectSource("QuickRecorder/RecordEngine.swift")
@@ -1029,7 +1246,10 @@ final class WindowCapturePrivacyTests: XCTestCase {
             session: session,
             stream: stream,
             registerMouseMonitor: { mouseMonitorRegistrations += 1 },
-            preventSleep: { sleepAssertions += 1 }
+            acquireSleepAssertion: {
+                sleepAssertions += 1
+                return true
+            }
         ))
         XCTAssertEqual(mouseMonitorRegistrations, 0)
         XCTAssertEqual(sleepAssertions, 0)
@@ -1053,18 +1273,90 @@ final class WindowCapturePrivacyTests: XCTestCase {
             session: session,
             stream: wrongStream,
             registerMouseMonitor: { mouseMonitorRegistrations += 1 },
-            preventSleep: { sleepAssertions += 1 }
+            acquireSleepAssertion: {
+                sleepAssertions += 1
+                return true
+            }
         ))
         XCTAssertTrue(activation.activate(
             session: session,
             stream: stream,
             registerMouseMonitor: { mouseMonitorRegistrations += 1 },
-            preventSleep: { sleepAssertions += 1 }
+            acquireSleepAssertion: {
+                sleepAssertions += 1
+                return true
+            }
         ))
         XCTAssertEqual(mouseMonitorRegistrations, 1)
         XCTAssertEqual(sleepAssertions, 1)
         XCTAssertTrue(store.deactivate(session))
         XCTAssertTrue(store.release(session))
+    }
+
+    func testOwnedSleepAssertionReleasesAfterStopEvenWhenPreferenceTurnsOff() {
+        let stream = NSObject()
+        let store = CaptureOutputSessionStore()
+        let session = makeCaptureSession(
+            stream: stream,
+            mode: .transparent,
+            sink: TestVideoDestination()
+        )
+        let activation = CapturePostStartResourceActivation(store: store)
+        var preventSleepPreference = true
+        var acquisitionCount = 0
+        var releaseCount = 0
+
+        XCTAssertTrue(store.install(session))
+        XCTAssertTrue(activation.activate(
+            session: session,
+            stream: stream,
+            registerMouseMonitor: {},
+            acquireSleepAssertion: {
+                guard preventSleepPreference else { return false }
+                acquisitionCount += 1
+                return true
+            }
+        ))
+        preventSleepPreference = false
+        XCTAssertTrue(store.deactivate(session))
+
+        let entry = CaptureProductionStopEntry(store: store)
+        let actions = CaptureProductionStopActions(
+            stopActiveStream: { _ in false },
+            releaseSleepAssertion: { releaseCount += 1 }
+        )
+        XCTAssertEqual(
+            entry.stop(
+                expectedSession: session,
+                activeStream: nil,
+                resolveResources: { _ in
+                    CaptureProductionStopResources(
+                        outputJob: nil,
+                        writerFinalizer: nil,
+                        isAudioOnly: false
+                    )
+                },
+                actions: actions
+            ),
+            .handled
+        )
+        XCTAssertEqual(
+            entry.stop(
+                expectedSession: session,
+                activeStream: nil,
+                resolveResources: { _ in
+                    CaptureProductionStopResources(
+                        outputJob: nil,
+                        writerFinalizer: nil,
+                        isAudioOnly: false
+                    )
+                },
+                actions: actions
+            ),
+            .handled
+        )
+        XCTAssertEqual(acquisitionCount, 1)
+        XCTAssertEqual(releaseCount, 1)
     }
 
     func testPostStartActivationRejectsDelayedQuitAndRepliesExactlyOnce() {
@@ -1107,7 +1399,10 @@ final class WindowCapturePrivacyTests: XCTestCase {
             session: session,
             stream: stream,
             registerMouseMonitor: { mouseMonitorRegistrations += 1 },
-            preventSleep: { sleepAssertions += 1 }
+            acquireSleepAssertion: {
+                sleepAssertions += 1
+                return true
+            }
         ))
         XCTAssertEqual(stopCount, 1)
         XCTAssertEqual(replyCount, 0)
@@ -1182,6 +1477,129 @@ final class WindowCapturePrivacyTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: job.finalURL), Data("recording-a".utf8))
         XCTAssertTrue(store.reserve(sessionB), "B may reserve only after A reaches terminal state.")
         store.cancelReservation(sessionB)
+    }
+
+    func testAutomaticPackageExportRetainsSessionUntilRequiredExportIsTerminal() throws {
+        let outcomes: [Result<Void, RecordingExportError>] = [
+            .success(()),
+            .failure(.failed(stage: .first, message: "automatic export failed")),
+            .failure(.cancelled(stage: .conversion)),
+        ]
+
+        for (index, outcome) in outcomes.enumerated() {
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent("automatic-package-export-\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+            defer { try? FileManager.default.removeItem(at: directory) }
+            let packageJob = try RecordingOutputJob.reserve(
+                in: directory,
+                preferredStem: "package-\(index)",
+                layout: .package(
+                    fileExtension: "qma",
+                    requiredMembers: ["info.json", "sys.m4a", "mic.m4a"],
+                    automaticallyExports: true
+                )
+            )
+            for (name, contents) in [
+                ("info.json", "{}"),
+                ("sys.m4a", "system audio"),
+                ("mic.m4a", "microphone audio"),
+            ] {
+                XCTAssertTrue(FileManager.default.createFile(
+                    atPath: packageJob.inputURL.appendingPathComponent(name).path,
+                    contents: Data(contents.utf8)
+                ))
+            }
+            let exportJob = try RecordingOutputJob.reserve(
+                in: directory,
+                preferredStem: "automatic-export-\(index)",
+                layout: .single(fileExtension: "m4a")
+            )
+            let stream = NSObject()
+            let store = CaptureOutputSessionStore()
+            let writer = DelayedCaptureWriterFinalizer()
+            let session = makeCaptureSession(
+                stream: stream,
+                mode: .transparent,
+                sink: TestVideoDestination(),
+                outputJob: packageJob,
+                isAudioOnly: true,
+                writerFinalizer: writer
+            )
+            let entry = CaptureProductionStopEntry(store: store)
+            var automaticExportCompletion: (() -> Void)?
+            var terminalScheduleCount = 0
+            var terminalCleanupCount = 0
+            var terminationReplyCount = 0
+            let actions = CaptureProductionStopActions(
+                stopActiveStream: { _ in false },
+                scheduleTerminal: { action in
+                    terminalScheduleCount += 1
+                    action()
+                },
+                finishAudioPackage: { _, automaticallyExports, _, completion in
+                    XCTAssertTrue(automaticallyExports)
+                    automaticExportCompletion = completion
+                },
+                cleanupTerminal: { acknowledge in
+                    terminalCleanupCount += 1
+                    acknowledge()
+                }
+            )
+
+            XCTAssertTrue(store.install(session))
+            XCTAssertTrue(store.deactivate(session))
+            XCTAssertEqual(
+                entry.stop(
+                    expectedSession: session,
+                    activeStream: nil,
+                    resolveResources: { _ in
+                        CaptureProductionStopResources(
+                            outputJob: packageJob,
+                            writerFinalizer: writer,
+                            isAudioOnly: true
+                        )
+                    },
+                    actions: actions
+                ),
+                .handled
+            )
+            writer.complete(.success(()))
+
+            XCTAssertEqual(packageJob.lifecycle, .terminal)
+            XCTAssertNotNil(automaticExportCompletion)
+            XCTAssertEqual(terminalScheduleCount, 1)
+            XCTAssertEqual(exportJob.lifecycle, .recording)
+            XCTAssertEqual(terminalCleanupCount, 0)
+            XCTAssertFalse(store.reserve(UUID()), "Capture ownership must include pending automatic export.")
+
+            let termination = CaptureApplicationTerminationCoordinator(
+                store: store,
+                scheduleReply: { $0() }
+            )
+            XCTAssertTrue(termination.prepareForTermination(
+                stopActiveCapture: { XCTFail("The capture is already retired into postprocessing.") },
+                replyWhenFinished: { terminationReplyCount += 1 }
+            ))
+            XCTAssertEqual(terminationReplyCount, 0)
+
+            switch outcome {
+            case .success:
+                XCTAssertTrue(FileManager.default.createFile(
+                    atPath: exportJob.inputURL.path,
+                    contents: Data("automatic export".utf8)
+                ))
+                _ = exportJob.finishSingleOutput()
+            case .failure(let error):
+                _ = exportJob.discardOutputs(reason: error)
+            }
+            automaticExportCompletion?()
+
+            XCTAssertEqual(exportJob.lifecycle, .terminal)
+            XCTAssertEqual(terminalScheduleCount, 2)
+            XCTAssertEqual(terminalCleanupCount, 1)
+            XCTAssertEqual(terminationReplyCount, 1)
+        }
     }
 
     func testApplicationTerminationWaitsForExactJobWithoutRepeatingStopOrReply() throws {
@@ -2723,7 +3141,7 @@ final class WindowCapturePrivacyTests: XCTestCase {
     }
 
     func testMissingWriterFinalizationClearsOnlyItsFinishedJob() throws {
-        let contextSource = try projectSource("QuickRecorder/SCContext.swift")
+        let lifecycleSource = try projectSource("QuickRecorder/WindowCapturePrivacy.swift")
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("missing-writer-finalization-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
@@ -2771,7 +3189,20 @@ final class WindowCapturePrivacyTests: XCTestCase {
         XCTAssertTrue(currentB === newerB, "late cleanup for A must preserve newer job B")
         XCTAssertTrue(FileManager.default.fileExists(atPath: newerB.reservationURL.path))
         XCTAssertNil(firstFrameB, "the early return must clear retained frame state")
-        XCTAssertTrue(contextSource.contains("CaptureMissingWriterFinalizer.discard("))
+        let productionEntryStart = try XCTUnwrap(
+            lifecycleSource.range(of: "final class CaptureProductionStopEntry")
+        )
+        let productionEntryEnd = try XCTUnwrap(
+            lifecycleSource.range(
+                of: "enum CaptureFinalizationPresentation",
+                range: productionEntryStart.upperBound..<lifecycleSource.endIndex
+            )
+        )
+        let productionEntrySource = lifecycleSource[
+            productionEntryStart.lowerBound..<productionEntryEnd.lowerBound
+        ]
+        XCTAssertTrue(productionEntrySource.contains("finishedJob.discardOutputs(reason:"))
+        XCTAssertTrue(productionEntrySource.contains("The recording writer is unavailable."))
     }
 
     func testCaptureDelegatesAndUIStopUseTheProductionCallbackAdapter() throws {
@@ -3709,6 +4140,20 @@ private final class DelayedCaptureWriterFinalizer: CaptureWriterFinalizing {
         let completion = completion
         self.completion = nil
         completion?(result)
+    }
+}
+
+private final class ImmediateCaptureWriterFinalizer: CaptureWriterFinalizing {
+    private let result: Result<Void, RecordingExportError>
+    private(set) var finishCallCount = 0
+
+    init(result: Result<Void, RecordingExportError>) {
+        self.result = result
+    }
+
+    func finish(_ completion: @escaping (Result<Void, RecordingExportError>) -> Void) {
+        finishCallCount += 1
+        completion(result)
     }
 }
 

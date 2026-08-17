@@ -24,6 +24,10 @@ if gate_output=$(required_confirm "Continue the required test action?" <<<"n" 2>
 fi
 grep -Fq 'Choosing No ends this wizard run.' <<<"$gate_output" \
   || fail "the required gate did not explain the No behavior before input"
+case "$gate_output" in
+  *'Choosing No ends this wizard run.'*'? Continue the required test action?'*) ;;
+  *) fail "the required gate warning was not printed before the input prompt" ;;
+esac
 
 if awk '/^# STAGES — author below\./ { in_stages=1 } in_stages' "$wizard" \
     | rg -n 'if ! confirm ' >"$test_root/direct-confirmations.txt"; then

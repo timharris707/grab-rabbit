@@ -73,10 +73,12 @@ or another camera visible to the Mini and run the confirmed 100-minute
 [`run-human-gate-wizard.sh`](scripts/run-human-gate-wizard.sh), which:
 
 1. verifies the exact selected camera without persisting its stable ID;
-2. refuses any pre-existing `.build/human-gate-stable` path, creates the stable-path probe only
-   beneath that wizard-owned directory with the approved certificate, then explicitly asks before
-   the approved-signed `authorize` command invokes macOS-owned Camera, Microphone, and Screen
-   Recording prompts;
+2. requires the exact app and manifest that the approved laptop helper built, signed using only
+   fingerprint `189EC9780DE0A94CF5B24CC5983CAB3FDAE15638`, and transactionally staged at
+   `.build/human-gate-stable`; the Mini verifies that pair's SHA, hashes, bundle, signer, Hardened
+   Runtime, and strict signature but never signs or receives private keys, then explicitly asks
+   before the approved-signed `authorize` command invokes macOS-owned Camera, Microphone, and
+   Screen Recording prompts;
 3. selects one exact real browser window and prepares static, low-change, and active cases;
 4. performs camera-only and camera/browser runs for all three shapes, including pause/resume and
    physically disconnecting the exact selected camera;

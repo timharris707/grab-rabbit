@@ -1227,6 +1227,178 @@ final class WindowCapturePrivacyTests: XCTestCase {
         XCTAssertNil(store.activeSession())
     }
 
+    func testApplicationTerminationStopsReplacementWhileEarlierStopDismissalIsPending() throws {
+        let appSource = try projectSource("QuickRecorder/QuickRecorderApp.swift")
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("termination-stale-stop-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        func makeJob(_ stem: String) throws -> RecordingOutputJob {
+            let job = try RecordingOutputJob.reserve(
+                in: directory,
+                preferredStem: stem,
+                layout: .single(fileExtension: "mov")
+            )
+            XCTAssertTrue(FileManager.default.createFile(
+                atPath: job.inputURL.path,
+                contents: Data(stem.utf8)
+            ))
+            return job
+        }
+
+        let store = CaptureOutputSessionStore()
+        let entry = CaptureProductionStopEntry(store: store)
+        let jobA = try makeJob("finished-a")
+        let sessionA = makeCaptureSession(
+            stream: NSObject(),
+            mode: .transparent,
+            sink: TestVideoDestination(),
+            outputJob: jobA,
+            writerFinalizer: ImmediateCaptureWriterFinalizer(result: .success(()))
+        )
+        let resourcesA = CaptureProductionStopResources(
+            outputJob: jobA,
+            writerFinalizer: sessionA.writerFinalizer,
+            isAudioOnly: false,
+            markVideoInputFinished: {}
+        )
+        var acknowledgeDismissalA: (() -> Void)?
+
+        XCTAssertTrue(store.reserve(sessionA.id))
+        XCTAssertTrue(store.install(sessionA))
+        XCTAssertTrue(store.deactivate(sessionA))
+        XCTAssertEqual(
+            entry.stop(
+                expectedSession: sessionA,
+                activeStream: nil,
+                resolveResources: { _ in resourcesA },
+                actions: CaptureProductionStopActions(
+                    stopActiveStream: { _ in false },
+                    cleanupTerminal: { acknowledgeDismissalA = $0 }
+                )
+            ),
+            .handled
+        )
+        XCTAssertEqual(jobA.lifecycle, .terminal)
+        XCTAssertNotNil(acknowledgeDismissalA)
+        XCTAssertTrue(store.hasPendingStopControlDismissal)
+
+        let streamB = NSObject()
+        let writerB = DelayedCaptureWriterFinalizer()
+        let jobB = try makeJob("replacement-b")
+        let sessionB = makeCaptureSession(
+            stream: streamB,
+            mode: .transparent,
+            sink: TestVideoDestination(),
+            outputJob: jobB,
+            writerFinalizer: writerB
+        )
+        let resourcesB = CaptureProductionStopResources(
+            outputJob: jobB,
+            writerFinalizer: writerB,
+            isAudioOnly: false,
+            markVideoInputFinished: {}
+        )
+        var stopOfferCount = 0
+        var finalizationCount = 0
+        var prepareCount = 0
+        var cleanupCount = 0
+        var actionsB: CaptureProductionStopActions!
+        let coreB = CaptureOutputCore(
+            store: store,
+            failureHandler: { _ in XCTFail("Application termination must stop B normally.") },
+            stopHandler: { stoppedSession in
+                finalizationCount += 1
+                XCTAssertTrue(stoppedSession === sessionB)
+                XCTAssertEqual(
+                    entry.stop(
+                        expectedSession: stoppedSession,
+                        activeStream: nil,
+                        resolveResources: { _ in resourcesB },
+                        actions: actionsB
+                    ),
+                    .handled
+                )
+            }
+        )
+        let adapterB = CaptureStreamCallbackAdapter(core: coreB)
+        actionsB = CaptureProductionStopActions(
+            stopActiveStream: { stream in
+                stopOfferCount += 1
+                return adapterB.handleStop(from: stream)
+            },
+            prepareForFinalization: { stoppedSession, _ in
+                prepareCount += 1
+                XCTAssertTrue(stoppedSession === sessionB)
+            },
+            cleanupTerminal: { acknowledge in
+                cleanupCount += 1
+                acknowledge()
+            }
+        )
+
+        XCTAssertTrue(store.reserve(sessionB.id))
+        XCTAssertTrue(store.install(sessionB))
+        let termination = CaptureApplicationTerminationCoordinator(
+            store: store,
+            scheduleReply: { $0() }
+        )
+        var terminationStopCount = 0
+        var replyCount = 0
+
+        XCTAssertTrue(termination.prepareForTermination(
+            stopActiveCapture: {
+                terminationStopCount += 1
+                XCTAssertEqual(
+                    entry.stop(
+                        expectedSession: nil,
+                        origin: .applicationTermination,
+                        activeStream: streamB,
+                        resolveResources: { _ in resourcesB },
+                        actions: actionsB
+                    ),
+                    .handled
+                )
+            },
+            replyWhenFinished: { replyCount += 1 }
+        ))
+        XCTAssertNil(store.activeSession(), "Quit must retire replacement B despite stale UI from A.")
+        XCTAssertEqual(terminationStopCount, 1)
+        XCTAssertEqual(stopOfferCount, 1)
+        XCTAssertEqual(finalizationCount, 1)
+        XCTAssertEqual(prepareCount, 1)
+        XCTAssertEqual(writerB.finishCallCount, 1)
+        XCTAssertEqual(jobB.lifecycle, .postprocessing)
+        XCTAssertEqual(replyCount, 0)
+
+        XCTAssertTrue(termination.prepareForTermination(
+            stopActiveCapture: { terminationStopCount += 1 },
+            replyWhenFinished: { replyCount += 1 }
+        ))
+        XCTAssertEqual(terminationStopCount, 1)
+        XCTAssertEqual(finalizationCount, 1)
+        XCTAssertEqual(replyCount, 0)
+
+        writerB.complete(.success(()))
+        XCTAssertEqual(jobB.lifecycle, .terminal)
+        XCTAssertEqual(cleanupCount, 1)
+        XCTAssertEqual(finalizationCount, 1)
+        XCTAssertEqual(replyCount, 1)
+
+        XCTAssertFalse(termination.prepareForTermination(
+            stopActiveCapture: { terminationStopCount += 1 },
+            replyWhenFinished: { replyCount += 1 }
+        ))
+        XCTAssertEqual(terminationStopCount, 1)
+        XCTAssertEqual(finalizationCount, 1)
+        XCTAssertEqual(replyCount, 1)
+        XCTAssertTrue(
+            appSource.contains("SCContext.stopRecording(origin: .applicationTermination)"),
+            "The application delegate must bind Quit to the authoritative production Stop origin."
+        )
+    }
+
     func testEarlierStatusDismissalCannotClearNewerStaleStopGuard() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("overlapping-stop-dismissals-\(UUID().uuidString)", isDirectory: true)

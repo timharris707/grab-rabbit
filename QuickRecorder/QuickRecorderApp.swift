@@ -340,7 +340,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, SCStreamDelegate, SCStreamOu
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         let waitsForFinalization = captureTerminationCoordinator.prepareForTermination(
             stopActiveCapture: {
-                if SCContext.stream != nil { SCContext.stopRecording() }
+                if SCContext.stream != nil {
+                    SCContext.stopRecording(origin: .applicationTermination)
+                }
             },
             replyWhenFinished: {
                 dispatchPrecondition(condition: .onQueue(.main))

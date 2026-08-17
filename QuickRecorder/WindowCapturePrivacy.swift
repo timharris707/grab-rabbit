@@ -630,6 +630,11 @@ enum CaptureStopDisposition: Equatable {
     case fallback
 }
 
+enum CaptureStopRequestOrigin: Equatable {
+    case userControl
+    case applicationTermination
+}
+
 final class CaptureSessionStopPipeline {
     typealias Finalization = (
         _ session: CaptureOutputSession,
@@ -784,6 +789,7 @@ final class CaptureProductionStopEntry {
     @discardableResult
     func stop(
         expectedSession: CaptureOutputSession?,
+        origin: CaptureStopRequestOrigin = .userControl,
         activeStream: AnyObject?,
         resolveResources: ResourceResolver,
         actions: CaptureProductionStopActions
@@ -799,7 +805,7 @@ final class CaptureProductionStopEntry {
             }
             return .handled
         }
-        if store.hasPendingStopControlDismissal {
+        if origin == .userControl, store.hasPendingStopControlDismissal {
             return .handled
         }
         if let activeStream, actions.stopActiveStream(activeStream) {

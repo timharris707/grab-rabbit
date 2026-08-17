@@ -452,7 +452,10 @@ class SCContext {
         }
     }
 
-    static func stopRecording(session expectedSession: CaptureOutputSession? = nil) {
+    static func stopRecording(
+        session expectedSession: CaptureOutputSession? = nil,
+        origin: CaptureStopRequestOrigin = .userControl
+    ) {
         let sessions = AppDelegate.shared.captureOutputSessions
         let reportFailure: (RecordingExportError) -> Void = { error in
             showNotification(
@@ -594,6 +597,7 @@ class SCContext {
 
         _ = CaptureProductionStopEntry(store: sessions).stop(
             expectedSession: expectedSession,
+            origin: origin,
             activeStream: stream,
             resolveResources: { session in
                 let finishedJob = session?.outputJob ?? outputJob

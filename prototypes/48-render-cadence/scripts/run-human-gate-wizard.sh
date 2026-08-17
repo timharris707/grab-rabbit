@@ -257,6 +257,8 @@ finish() {
 TOTAL_STAGES=6
 TOTAL_MINUTES=100
 
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 PROTOTYPE_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
 REPOSITORY_ROOT=$(cd "$PROTOTYPE_ROOT/../.." && pwd)
@@ -264,10 +266,10 @@ EXPECTED_BRANCH="prototype/48-render-cadence"
 APPROVED_NAME="Developer ID Application: TIMOTHY G HARRIS (F66FM4V88Q)"
 APPROVED_TEAM="F66FM4V88Q"
 APPROVED_SHA1="189EC9780DE0A94CF5B24CC5983CAB3FDAE15638"
-PROHIBITED_PREFIX="45F21D"
 BUNDLE_ID="dev.clickai.grabrabbit.prototype.render-cadence"
 STABLE_APP_DIR="$PROTOTYPE_ROOT/.build/human-gate-stable"
 STABLE_APP="$STABLE_APP_DIR/Grab Rabbit Live Cadence Probe.app"
+STAGING_MANIFEST="$STABLE_APP_DIR/staging-manifest.json"
 LIVE_PROBE="$STABLE_APP/Contents/MacOS/live-cadence-probe"
 UNSIGNED_PROBE="$PROTOTYPE_ROOT/.build/release/live-cadence-probe"
 RUN_SHA=$(git -C "$REPOSITORY_ROOT" rev-parse HEAD 2>/dev/null || true)
@@ -293,6 +295,8 @@ TCC_BEFORE_FILE="$EVIDENCE_DIR/tcc-before.json"
 TCC_AFTER_FILE="$EVIDENCE_DIR/tcc-after.json"
 VOLUME_BEFORE_FILE="$EVIDENCE_DIR/volume-before.txt"
 POWER_BEFORE_FILE="$EVIDENCE_DIR/power-before.txt"
+CUA_DRIVER_PATH="/Applications/CuaDriver.app/Contents/MacOS/cua-driver"
+SCREENSHARINGD_PATH="/System/Library/CoreServices/RemoteManagement/screensharingd.bundle/Contents/MacOS/screensharingd"
 
 owned_pid_is_running() {
   local target="$1" pid running
@@ -343,9 +347,9 @@ record_pending_restoration() {
   [[ "$TCC_STATE_MAY_DIFFER" == false ]] \
     || manual "restore the prototype bundle's Camera, Microphone, and Screen Capture TCC state to $TCC_BEFORE_FILE"
   [[ "$STABLE_APP_MAY_EXIST" == false ]] \
-    || manual "move only the wizard-created stable probe at $STABLE_APP to Trash after its processes stop"
+    || manual "move only the manifest-verified staged probe and staging manifest in $STABLE_APP_DIR to Trash after its processes stop"
   [[ -z "$CREATED_STABLE_APP_DIR" ]] \
-    || manual "after moving the stable probe to Trash, remove only the recorded wizard-created directory $CREATED_STABLE_APP_DIR if it is empty and still equals $PROTOTYPE_ROOT/.build/human-gate-stable"
+    || manual "after moving the two verified staged artifacts to Trash, remove only the recorded helper-created directory $CREATED_STABLE_APP_DIR if it is empty and still equals $PROTOTYPE_ROOT/.build/human-gate-stable"
   [[ "$CAMERA_STATE_MAY_DIFFER" == false ]] \
     || manual "restore the physical camera inventory to its before-run state"
   [[ "$BROWSER_CASE_MAY_BE_OPEN" == false ]] \
@@ -400,15 +404,6 @@ window_id_is_present() {
     | jq -e --argjson window_id "$WINDOW_ID" '.windows | any(.windowID == $window_id)' >/dev/null
 }
 
-approved_signer_is_exclusive() {
-  local identities certificates
-  identities=$(security find-identity -v -p codesigning 2>/dev/null || true)
-  certificates=$(security find-certificate -a -c "$APPROVED_NAME" -Z 2>/dev/null || true)
-  grep -F "$APPROVED_SHA1" <<<"$identities" | grep -F "$APPROVED_NAME" >/dev/null \
-    && grep -Fq "SHA-1 hash: $APPROVED_SHA1" <<<"$certificates" \
-    && ! grep -Fq "$PROHIBITED_PREFIX" <<<"$identities"
-}
-
 signed_probe_identity_is_approved() {
   [[ -x "$LIVE_PROBE" ]] || return 1
   "$LIVE_PROBE" list-sources --skip-window-query \
@@ -416,6 +411,48 @@ signed_probe_identity_is_approved() {
       '.signing.approvedDeveloperIDPresent == true
        and .signing.teamIdentifier == $team
        and (.signing.certificateSHA1s | index($sha) != null)' >/dev/null
+}
+
+staged_app_manifest_is_exact() {
+  local info_sha executable_sha details actual_name actual_team actual_bundle certificate_dir actual_sha
+  [[ "$PROTOTYPE_ROOT" == /* ]] || return 1
+  [[ "$STABLE_APP_DIR" == "$PROTOTYPE_ROOT/.build/human-gate-stable" ]] || return 1
+  [[ "$STABLE_APP" == "$STABLE_APP_DIR/Grab Rabbit Live Cadence Probe.app" ]] || return 1
+  [[ "$STAGING_MANIFEST" == "$STABLE_APP_DIR/staging-manifest.json" ]] || return 1
+  [[ -d "$STABLE_APP_DIR" && ! -L "$STABLE_APP_DIR" ]] || return 1
+  [[ -d "$STABLE_APP" && ! -L "$STABLE_APP" ]] || return 1
+  [[ -f "$STAGING_MANIFEST" && ! -L "$STAGING_MANIFEST" ]] || return 1
+  [[ "$(find "$STABLE_APP_DIR" -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')" -eq 2 ]] || return 1
+  [[ "$(find "$STABLE_APP" -type l | wc -l | tr -d ' ')" -eq 0 ]] || return 1
+  info_sha=$(shasum -a 256 "$STABLE_APP/Contents/Info.plist" | awk '{print $1}') || return 1
+  executable_sha=$(shasum -a 256 "$LIVE_PROBE" | awk '{print $1}') || return 1
+  jq -e --arg branch "$EXPECTED_BRANCH" --arg sha "$RUN_SHA" --arg directory "$STABLE_APP_DIR" \
+      --arg info "$info_sha" --arg executable "$executable_sha" --arg bundle "$BUNDLE_ID" \
+      --arg name "$APPROVED_NAME" --arg team "$APPROVED_TEAM" --arg fingerprint "$APPROVED_SHA1" '
+      .schema == "grab-rabbit-render-cadence-staged-app-v1" and .branch == $branch and .git_sha == $sha
+      and .remote_directory == $directory and .app_relative_path == "Grab Rabbit Live Cadence Probe.app"
+      and .hashes.info_plist_sha256 == $info and .hashes.executable_sha256 == $executable
+      and .signing.bundle_id == $bundle and .signing.common_name == $name
+      and .signing.team_id == $team and .signing.certificate_sha1 == $fingerprint
+      and .signing.hardened_runtime == true and .cleanup_owner == "human-gate-wizard"' \
+      "$STAGING_MANIFEST" >/dev/null || return 1
+  codesign --verify --deep --strict --verbose=2 "$STABLE_APP" || return 1
+  details=$(codesign -dvvv "$STABLE_APP" 2>&1) || return 1
+  actual_name=$(sed -n 's/^Authority=//p' <<<"$details" | head -1)
+  actual_team=$(sed -n 's/^TeamIdentifier=//p' <<<"$details" | head -1)
+  grep -Eq '^CodeDirectory .* flags=.*\(runtime\)' <<<"$details" || return 1
+  actual_bundle=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$STABLE_APP/Contents/Info.plist") || return 1
+  [[ "$actual_name" == "$APPROVED_NAME" && "$actual_team" == "$APPROVED_TEAM" \
+      && "$actual_bundle" == "$BUNDLE_ID" ]] || return 1
+  certificate_dir=$(mktemp -d /tmp/grab-rabbit-48-wizard-cert.XXXXXX) || return 1
+  if ! codesign -d --extract-certificates="$certificate_dir/cert-" "$STABLE_APP"; then
+    rm -rf "$certificate_dir"
+    return 1
+  fi
+  actual_sha=$(openssl x509 -inform DER -in "$certificate_dir/cert-0" -noout -fingerprint -sha1 \
+      | cut -d= -f2 | tr -d ':')
+  rm -rf "$certificate_dir"
+  [[ "$actual_sha" == "$APPROVED_SHA1" ]]
 }
 
 tcc_is_granted() {
@@ -607,7 +644,16 @@ no_owned_process_is_live() {
 }
 
 protected_processes_are_live() {
-  kill -0 12083 >/dev/null 2>&1 && kill -0 9243 >/dev/null 2>&1
+  protected_process_has_exact_path 12083 "$CUA_DRIVER_PATH" \
+    && protected_process_has_exact_path 9243 "$SCREENSHARINGD_PATH"
+}
+
+protected_process_has_exact_path() {
+  local pid="$1" expected_path="$2" actual_path
+  actual_path=$(ps -ww -p "$pid" -o comm=) || return 1
+  actual_path=${actual_path#"${actual_path%%[![:space:]]*}"}
+  actual_path=${actual_path%"${actual_path##*[![:space:]]}"}
+  [[ "$actual_path" == "$expected_path" ]]
 }
 
 tcc_matches_snapshot() {
@@ -780,7 +826,6 @@ required_tool swift "the live probe build"
 required_tool jq "machine-readable checks"
 required_tool rg "exact-identifier evidence scan"
 required_tool ffprobe "playable-output checks"
-required_tool security "signing checks"
 required_tool codesign "signed-app verification"
 required_tool openssl "certificate fingerprint verification"
 required_tool powermetrics "CPU/GPU/ANE/thermal sampling"
@@ -850,39 +895,21 @@ SELECTED_CAMERA_TYPE=$(jq -er --arg camera_id "$CAMERA_ID" \
   || fatal_gate "the selected camera type could not be read"
 ok "Selected $SELECTED_CAMERA_NAME ($SELECTED_CAMERA_TYPE); its ID remains only in this wizard process."
 
-stage "Build, sign, and visibly authorize the stable probe" 15
-say "What and why: TCC grants bind to one stable signed identity and path. The wizard refuses the prohibited 45F21D identity, any missing/wrong fingerprint, and any existing app it would overwrite. It never reads a certificate password or private key."
-if ! confirm "Open Apple's Keychain Access import instructions for reference? This does not import anything."; then
-  fatal_gate "signing-source instructions were not reviewed"
-fi
-open_url "https://support.apple.com/guide/keychain-access/import-and-export-keychain-items-kyca35961/mac"
-step "Before this wizard can continue, Keychain Access must already contain the certificate and private key whose SHA-1 is $APPROVED_SHA1. Apple's documented import path is Keychain Access → File → Import Items."
-step "The Mini must not expose any live code-signing identity beginning $PROHIBITED_PREFIX. Resolve that outside this run, then rerun the wizard; this wizard will not delete keychain material."
-check "the exact approved signer is available and no $PROHIBITED_PREFIX identity is live" approved_signer_is_exclusive
-if ! approved_signer_is_exclusive; then
-  fatal_gate "approved signer-only gate is not satisfied; fix Keychain state outside the wizard and rerun"
-fi
-[[ "$PROTOTYPE_ROOT" == /* ]] || fatal_gate "the prototype root must be an absolute path"
-[[ "$STABLE_APP_DIR" == "$PROTOTYPE_ROOT/.build/human-gate-stable" ]] \
-  || fatal_gate "the stable app directory is not the exact wizard-owned prototype path"
-[[ "$STABLE_APP" == "$STABLE_APP_DIR/Grab Rabbit Live Cadence Probe.app" ]] \
-  || fatal_gate "the stable app escaped its exact wizard-owned directory"
-[[ ! -e "$STABLE_APP" && ! -L "$STABLE_APP" ]] \
-  || fatal_gate "stable app path already exists; move it safely before rerunning rather than overwriting it"
-[[ ! -e "$STABLE_APP_DIR" && ! -L "$STABLE_APP_DIR" ]] \
-  || fatal_gate "stable app directory already exists; move it safely before rerunning rather than reusing or overwriting it"
-if ! confirm "Create $STABLE_APP_DIR and sign the new probe at the stable path using only $APPROVED_SHA1?"; then
-  fatal_gate "stable approved signing was not authorized"
-fi
+stage "Verify and visibly authorize the staged stable probe" 15
+say "What and why: TCC grants bind to one stable signed identity and path. A laptop with the approved signer must already have staged this exact-SHA app and manifest. The Mini only verifies the artifact; it never signs or handles signing credentials, so unrelated Mini identities do not affect this gate."
+step "Before this wizard starts, run scripts/stage-signed-app-to-mini.sh with this exact 40-character SHA on the approved-signing laptop: $RUN_SHA"
+step "That helper refuses a dirty, moved, or unpushed branch and refuses any existing or unexpected Mini target. If staging is absent or partial, stop and resolve it on the laptop; do not modify the stable directory by hand."
+[[ -e "$STABLE_APP_DIR" || -L "$STABLE_APP_DIR" ]] \
+  || fatal_gate "the laptop-staged stable directory is absent"
+[[ -e "$STABLE_APP" || -L "$STABLE_APP" ]] \
+  || fatal_gate "the laptop-staged app is absent"
+[[ -e "$STAGING_MANIFEST" || -L "$STAGING_MANIFEST" ]] \
+  || fatal_gate "the laptop staging manifest is absent"
+required_check "the staged manifest, exact SHA, app hashes, bundle, team, fingerprint, Hardened Runtime, and strict signature are exact" staged_app_manifest_is_exact
+cp "$STAGING_MANIFEST" "$EVIDENCE_DIR/staged-app-manifest.json" \
+  || fatal_gate "the verified staging manifest could not be retained with the evidence"
 CREATED_STABLE_APP_DIR="$STABLE_APP_DIR"
-if ! mkdir "$CREATED_STABLE_APP_DIR"; then
-  CREATED_STABLE_APP_DIR=""
-  fatal_gate "could not create the exact stable app directory"
-fi
 STABLE_APP_MAY_EXIST=true
-"$SCRIPT_DIR/build-live-app.sh" --sign-approved --output "$STABLE_APP" \
-  >"$EVIDENCE_DIR/signed-build.txt" 2>"$EVIDENCE_DIR/signed-build.stderr.txt" \
-  || fatal_gate "the approved signed build failed; inspect signed-build.stderr.txt and safely move any partial stable app before rerunning"
 required_check "the stable probe runtime identity is exactly approved" signed_probe_identity_is_approved
 "$LIVE_PROBE" list-sources --skip-window-query \
   | jq '{authorization,signing}' >"$TCC_BEFORE_FILE" \
@@ -1066,21 +1093,26 @@ fi
   || fatal_gate "could not snapshot the restored TCC state"
 required_check "Camera, Microphone, and Screen TCC state matches the before snapshot" tcc_matches_snapshot
 TCC_STATE_MAY_DIFFER=false
-if ! confirm "Move the wizard-created stable probe to Trash and remove its parent only if this wizard created that still-empty directory?"; then
+if ! confirm "Move the two manifest-verified staged artifacts to Trash and remove their helper-created parent only if it is then empty?"; then
   fatal_gate "stable app-path restoration was declined"
 fi
 osascript -e "tell application \"Finder\" to delete POSIX file \"$STABLE_APP\"" >/dev/null \
-  || fatal_gate "Finder could not move the wizard-created stable probe to Trash"
-required_check "the wizard-created stable app no longer occupies its before-empty path" test ! -e "$STABLE_APP"
+  || fatal_gate "Finder could not move the verified staged probe to Trash"
+osascript -e "tell application \"Finder\" to delete POSIX file \"$STAGING_MANIFEST\"" >/dev/null \
+  || fatal_gate "Finder could not move the verified staging manifest to Trash"
+required_check "the verified staged app no longer occupies the stable path" test ! -e "$STABLE_APP"
+required_check "the verified staging manifest no longer occupies the stable path" test ! -e "$STAGING_MANIFEST"
 STABLE_APP_MAY_EXIST=false
 if [[ -n "$CREATED_STABLE_APP_DIR" ]]; then
   [[ "$PROTOTYPE_ROOT" == /* ]] || fatal_gate "the prototype root is no longer an absolute path"
   [[ "$STABLE_APP_DIR" == "$PROTOTYPE_ROOT/.build/human-gate-stable" ]] \
     || fatal_gate "the stable app directory no longer equals the exact wizard-owned prototype path"
   [[ "$CREATED_STABLE_APP_DIR" == "$STABLE_APP_DIR" ]] \
-    || fatal_gate "refusing to remove a directory other than the exact directory recorded at creation"
+    || fatal_gate "refusing to remove a directory other than the exact manifest-verified helper-created directory"
   [[ ! -e "$STABLE_APP" && ! -L "$STABLE_APP" ]] \
     || fatal_gate "refusing to remove the recorded directory before the stable app is gone"
+  [[ ! -e "$STAGING_MANIFEST" && ! -L "$STAGING_MANIFEST" ]] \
+    || fatal_gate "refusing to remove the recorded directory before the staging manifest is gone"
   stable_app_directory_is_empty "$CREATED_STABLE_APP_DIR" \
     || fatal_gate "the recorded wizard-created stable app directory is not empty"
   rmdir "$CREATED_STABLE_APP_DIR" \

@@ -22,105 +22,68 @@ source_root="$prototype_root/Sources/LiveCadenceProbe"
 main_source="$source_root/LiveCadenceProbeMain.swift"
 models_source="$source_root/LiveModels.swift"
 wizard="$prototype_root/scripts/run-human-gate-wizard.sh"
-
-first_fixed_line() {
-    (rg -n -F "$1" "$wizard" 2>/dev/null || true) | sed -n '1s/:.*//p'
-}
-
-last_fixed_line() {
-    (rg -n -F "$1" "$wizard" 2>/dev/null || true) | sed -n '$s/:.*//p'
-}
-
-fixed_match_count() {
-    (rg -n -F "$1" "$wizard" 2>/dev/null || true) | wc -l | tr -d ' '
-}
+stager="$prototype_root/scripts/stage-signed-app-to-mini.sh"
 
 regex_match_count() {
     (rg -n "$1" "$wizard" 2>/dev/null || true) | wc -l | tr -d ' '
 }
 
-forbidden_stable_path=false
-if rg -n '^[[:space:]]*STABLE_APP_DIR=.*(\$HOME|\$\{HOME\}|~|/Applications)' "$wizard" \
-    >"$evidence/forbidden-stable-paths.txt"; then
-    forbidden_stable_path=true
-fi
-if rg -n -F 'rmdir "$STABLE_APP_DIR"' "$wizard" \
-    >>"$evidence/forbidden-stable-paths.txt"; then
-    forbidden_stable_path=true
-fi
-[[ "$forbidden_stable_path" == false ]] || {
-    echo "broad or unrecorded stable-app path found in the human-gate wizard" >&2
+[[ -f "$stager" && -x "$stager" ]] || {
+    echo "laptop-side signed-app stager is missing or not executable" >&2
     exit 7
 }
+rg -n -F 'REMOTE_WORKTREE="/Users/openclaw/grab-rabbit/.worktrees/48-render-cadence"' "$stager" \
+    >"$evidence/stager-remote-path-proof.txt"
+rg -n -F 'REMOTE_STABLE_DIR="$REMOTE_WORKTREE/prototypes/48-render-cadence/.build/human-gate-stable"' "$stager" \
+    >>"$evidence/stager-remote-path-proof.txt"
+rg -n -F 'EXPECTED_BRANCH="prototype/48-render-cadence"' "$stager" \
+    >>"$evidence/stager-remote-path-proof.txt"
+rg -n -F '[[ "$local_head" == "$expected_sha" && "$local_upstream" == "$expected_sha" && "$remote_head" == "$expected_sha" ]]' "$stager" \
+    >"$evidence/stager-sha-proof.txt"
+rg -n -F '[[ -z "$local_status" ]]' "$stager" >>"$evidence/stager-sha-proof.txt"
+rg -n -F '[[ ! -e "$REMOTE_STABLE_DIR" && ! -L "$REMOTE_STABLE_DIR" ]]' "$stager" \
+    >"$evidence/stager-refusal-proof.txt"
+rg -n -F '[[ "$(find "$STABLE_APP_DIR" -mindepth 1 -maxdepth 1 | wc -l | tr -d '\'' '\'')" -eq 2 ]]' "$wizard" \
+    >>"$evidence/stager-refusal-proof.txt"
+rg -n -F 'export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"' "$wizard" \
+    >"$evidence/mini-path-proof.txt"
+rg -n -F 'STAGING_MANIFEST="$STABLE_APP_DIR/staging-manifest.json"' "$wizard" \
+    >"$evidence/wizard-staging-manifest-proof.txt"
+rg -n -F 'staged_app_manifest_is_exact' "$wizard" >>"$evidence/wizard-staging-manifest-proof.txt"
+rg -n -F 'cp "$STAGING_MANIFEST" "$EVIDENCE_DIR/staged-app-manifest.json"' "$wizard" \
+    >>"$evidence/wizard-staging-manifest-proof.txt"
+rg -n -F 'codesign --verify --deep --strict --verbose=2 "$STABLE_APP"' "$wizard" \
+    >>"$evidence/wizard-staging-manifest-proof.txt"
+rg -n -F 'protected_process_has_exact_path 9243 "$SCREENSHARINGD_PATH"' "$wizard" \
+    >"$evidence/protected-process-proof.txt"
+rg -n -F 'protected_process_has_exact_path 12083 "$CUA_DRIVER_PATH"' "$wizard" \
+    >>"$evidence/protected-process-proof.txt"
 
-stable_assignment_line=$(first_fixed_line 'STABLE_APP_DIR="$PROTOTYPE_ROOT/.build/human-gate-stable"')
-stable_app_assignment_line=$(first_fixed_line 'STABLE_APP="$STABLE_APP_DIR/Grab Rabbit Live Cadence Probe.app"')
-absolute_guard_before_create=$(first_fixed_line '[[ "$PROTOTYPE_ROOT" == /* ]]')
-absolute_guard_before_rmdir=$(last_fixed_line '[[ "$PROTOTYPE_ROOT" == /* ]]')
-equality_guard_before_create=$(first_fixed_line '[[ "$STABLE_APP_DIR" == "$PROTOTYPE_ROOT/.build/human-gate-stable" ]]')
-equality_guard_before_rmdir=$(last_fixed_line '[[ "$STABLE_APP_DIR" == "$PROTOTYPE_ROOT/.build/human-gate-stable" ]]')
-preexisting_app_guard=$(first_fixed_line '[[ ! -e "$STABLE_APP" && ! -L "$STABLE_APP" ]]')
-preexisting_directory_guard=$(first_fixed_line '[[ ! -e "$STABLE_APP_DIR" && ! -L "$STABLE_APP_DIR" ]]')
-created_directory_record=$(first_fixed_line 'CREATED_STABLE_APP_DIR="$STABLE_APP_DIR"')
-stable_directory_creation=$(first_fixed_line 'mkdir "$CREATED_STABLE_APP_DIR"')
-recorded_directory_guard=$(last_fixed_line '[[ "$CREATED_STABLE_APP_DIR" == "$STABLE_APP_DIR" ]]')
-removed_app_guard=$(last_fixed_line '[[ ! -e "$STABLE_APP" && ! -L "$STABLE_APP" ]]')
-empty_directory_guard=$(last_fixed_line 'stable_app_directory_is_empty "$CREATED_STABLE_APP_DIR"')
-recorded_directory_removal=$(last_fixed_line 'rmdir "$CREATED_STABLE_APP_DIR"')
-stable_assignment_count=$(regex_match_count '^[[:space:]]*STABLE_APP_DIR=')
-stable_app_assignment_count=$(regex_match_count '^[[:space:]]*STABLE_APP=')
-absolute_guard_count=$(fixed_match_count '[[ "$PROTOTYPE_ROOT" == /* ]]')
-equality_guard_count=$(fixed_match_count '[[ "$STABLE_APP_DIR" == "$PROTOTYPE_ROOT/.build/human-gate-stable" ]]')
-rmdir_count=$(regex_match_count '^[[:space:]]*rmdir[[:space:]]')
-
-stable_path_lines=(
-    "$stable_assignment_line" "$stable_app_assignment_line"
-    "$absolute_guard_before_create" "$absolute_guard_before_rmdir"
-    "$equality_guard_before_create" "$equality_guard_before_rmdir"
-    "$preexisting_app_guard" "$preexisting_directory_guard"
-    "$created_directory_record" "$stable_directory_creation"
-    "$recorded_directory_guard" "$removed_app_guard"
-    "$empty_directory_guard" "$recorded_directory_removal"
-)
-for line in "${stable_path_lines[@]}"; do
-    [[ "$line" =~ ^[0-9]+$ ]] || {
-        echo "human-gate stable-path guard is missing" >&2
-        exit 7
-    }
-done
-if [[ "$stable_assignment_count" -ne 1 \
-    || "$stable_app_assignment_count" -ne 1 \
-    || "$absolute_guard_count" -ne 2 \
-    || "$equality_guard_count" -ne 2 \
-    || "$rmdir_count" -ne 1 \
-    || "$stable_assignment_line" -ge "$absolute_guard_before_create" \
-    || "$absolute_guard_before_create" -ge "$equality_guard_before_create" \
-    || "$equality_guard_before_create" -ge "$preexisting_app_guard" \
-    || "$preexisting_app_guard" -ge "$preexisting_directory_guard" \
-    || "$preexisting_directory_guard" -ge "$created_directory_record" \
-    || "$created_directory_record" -ge "$stable_directory_creation" \
-    || "$stable_directory_creation" -ge "$absolute_guard_before_rmdir" \
-    || "$absolute_guard_before_rmdir" -ge "$equality_guard_before_rmdir" \
-    || "$equality_guard_before_rmdir" -ge "$recorded_directory_guard" \
-    || "$recorded_directory_guard" -ge "$removed_app_guard" \
-    || "$removed_app_guard" -ge "$empty_directory_guard" \
-    || "$empty_directory_guard" -ge "$recorded_directory_removal" ]]; then
-    echo "human-gate stable-path ownership or guard ordering changed" >&2
+if rg -n 'codesign[[:space:]].*--sign|security[[:space:]]+(find-identity|export|import)|\.p12|private[[:space:]_-]*key' "$wizard" \
+    >"$evidence/forbidden-mini-signing.txt"; then
+    echo "Mini wizard contains signing or private-key handling" >&2
     exit 7
 fi
-{
-    printf 'stable_assignment=%s\n' "$stable_assignment_line"
-    printf 'stable_app_assignment=%s\n' "$stable_app_assignment_line"
-    printf 'absolute_guard_before_create=%s\n' "$absolute_guard_before_create"
-    printf 'equality_guard_before_create=%s\n' "$equality_guard_before_create"
-    printf 'creation=%s\n' "$stable_directory_creation"
-    printf 'absolute_guard_before_rmdir=%s\n' "$absolute_guard_before_rmdir"
-    printf 'equality_guard_before_rmdir=%s\n' "$equality_guard_before_rmdir"
-    printf 'recorded_directory_guard=%s\n' "$recorded_directory_guard"
-    printf 'app_absent_guard=%s\n' "$removed_app_guard"
-    printf 'empty_directory_guard=%s\n' "$empty_directory_guard"
-    printf 'recorded_directory_removal=%s\n' "$recorded_directory_removal"
-} >"$evidence/wizard-stable-path-proof.txt"
+if rg -n 'scp.*(p12|key)|tar.*(p12|key)|security[[:space:]]+(export|import)' "$stager" \
+    >"$evidence/forbidden-private-key-transfer.txt"; then
+    echo "stager can transfer private-key material" >&2
+    exit 7
+fi
+if rg -n '45F21D.*(approve|accept|allow)|PROHIBITED_PREFIX.*(approve|accept|allow)' "$wizard" "$stager" \
+    >"$evidence/forbidden-prohibited-signer-acceptance.txt"; then
+    echo "prohibited Mini signer can be accepted" >&2
+    exit 7
+fi
+
+stage_count=$(regex_match_count '^stage "')
+stage_minutes=$(awk '/^stage "/ { total += $(NF) } END { print total + 0 }' "$wizard")
+[[ "$stage_count" -eq 6 && "$stage_minutes" -eq 100 ]] || {
+    echo "human-gate stage count or minute estimate changed" >&2
+    exit 7
+}
+rg -n -F 'TOTAL_STAGES=6' "$wizard" >"$evidence/wizard-stage-proof.txt"
+rg -n -F 'TOTAL_MINUTES=100' "$wizard" >>"$evidence/wizard-stage-proof.txt"
+rg -n -F '[[ "$count" -eq 28 ]]' "$wizard" >"$evidence/wizard-output-count-proof.txt"
 
 rg -n 'SCContentFilter\(desktopIndependentWindow:' "$source_root/LiveSources.swift" \
     >"$evidence/window-filter-proof.txt"

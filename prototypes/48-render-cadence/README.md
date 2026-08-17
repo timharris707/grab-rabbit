@@ -101,16 +101,28 @@ then verification, state restoration, and visual verdict. The repeatable path is
 [`scripts/run-human-gate-wizard.sh`](scripts/run-human-gate-wizard.sh):
 
 ```bash
+# On the approved-signing laptop, after committing and pushing the checkpoint:
+prototypes/48-render-cadence/scripts/stage-signed-app-to-mini.sh \
+  EXACT_40_CHARACTER_GIT_SHA
+
+# Then, in an interactive Terminal in the staged Mini worktree:
 prototypes/48-render-cadence/scripts/run-human-gate-wizard.sh
 ```
 
-Start from a clean, pushed `prototype/48-render-cadence` checkout on the Mac Mini. Have the exact
-camera, a browser, the approved certificate/private key already visible in Keychain Access, the
-administrator password, and time to inspect the movies in QuickTime. The stable probe app path
-and its exact wizard-owned `prototypes/48-render-cadence/.build/human-gate-stable` parent must not
-exist, the prohibited `45F21D…` identity must not be live, and protected PIDs 12083 and 9243 must
-still be running. The wizard creates the app only beneath that parent and removes only the exact
-directory it recorded creating, after the app is in Trash and the directory is empty. It estimates
-100 minutes, asks before every stateful or interactive phase, lets `sudo` own its foreground
-password prompt, and never writes a password or exact camera/window ID. Do not run it as an
-automated or unattended gate.
+Start from clean, pushed, exact-SHA `prototype/48-render-cadence` checkouts on both machines.
+The laptop helper is the only signing step: it accepts only the approved fingerprint
+`189EC9780DE0A94CF5B24CC5983CAB3FDAE15638`, builds in a temporary local directory, verifies the
+bundle/team/fingerprint/Hardened Runtime and strict signature, writes file hashes bound to the
+exact git SHA, and transfers only the signed app and manifest through the existing `macmini` SSH
+alias. It refuses an existing, symlinked, dirty, moved, or unexpected target instead of
+overwriting it. Never copy signing credentials to the Mini.
+
+The Mini wizard requires that exact staged pair at
+`prototypes/48-render-cadence/.build/human-gate-stable`, verifies it again without signing, and
+then owns cleanup of only those two manifest-verified artifacts and their exact empty parent.
+The Mini may retain unrelated signing identities because none is used there. Have the exact
+camera, a browser, the administrator password, and time to inspect the movies in QuickTime;
+protected PIDs 12083 and 9243 must remain at their exact command paths. The wizard fixes its tool
+path to include `/opt/homebrew/bin`, estimates 100 minutes, asks before every stateful or
+interactive phase, lets `sudo` own its foreground password prompt, and never writes a password
+or exact camera/window ID. Do not run it as an automated or unattended gate.

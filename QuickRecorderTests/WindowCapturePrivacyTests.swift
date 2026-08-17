@@ -1198,6 +1198,87 @@ final class WindowCapturePrivacyTests: XCTestCase {
         XCTAssertEqual(terminalDismissalCount, 1)
     }
 
+    func testSupersededTerminalRenderStillAcknowledgesItsStaleStopExactlyOnce() {
+        XCTAssertTrue(Thread.isMainThread)
+        let store = CaptureOutputSessionStore()
+        let entry = CaptureProductionStopEntry(store: store)
+        let sessionA = makeCaptureSession(
+            stream: NSObject(),
+            mode: .transparent,
+            sink: TestVideoDestination()
+        )
+        let sessionB = makeCaptureSession(
+            stream: NSObject(),
+            mode: .transparent,
+            sink: TestVideoDestination()
+        )
+        let staleAcknowledgement = expectation(description: "stale Stop acknowledgement")
+        var supersededRenderCount = 0
+        var staleAcknowledgementCount = 0
+
+        XCTAssertTrue(store.install(sessionA))
+        XCTAssertTrue(store.deactivate(sessionA))
+        XCTAssertTrue(store.beginFinalization(sessionA))
+        XCTAssertTrue(store.release(sessionA))
+        XCTAssertTrue(store.hasPendingStopControlDismissal)
+
+        CaptureStatusBarUpdateScheduler.schedule(
+            isFinalizing: false,
+            completion: {
+                staleAcknowledgementCount += 1
+                store.acknowledgeStopControlDismissal()
+                staleAcknowledgement.fulfill()
+            }
+        ) {
+            supersededRenderCount += 1
+        }
+
+        XCTAssertTrue(store.install(sessionB))
+        XCTAssertTrue(store.deactivate(sessionB))
+        XCTAssertTrue(store.beginFinalization(sessionB))
+        XCTAssertTrue(store.release(sessionB))
+        CaptureStatusBarUpdateScheduler.schedule(isFinalizing: true) {}
+
+        wait(for: [staleAcknowledgement], timeout: 1)
+        XCTAssertEqual(supersededRenderCount, 0)
+        XCTAssertEqual(staleAcknowledgementCount, 1)
+        XCTAssertTrue(store.hasPendingStopControlDismissal, "B still owns its Stop dismissal.")
+
+        var laterStopFallbackCount = 0
+        let resources = CaptureProductionStopResources(
+            outputJob: nil,
+            writerFinalizer: nil,
+            isAudioOnly: false
+        )
+        let actions = CaptureProductionStopActions(
+            stopActiveStream: { _ in false },
+            prepareForFinalization: { _, _ in laterStopFallbackCount += 1 }
+        )
+        XCTAssertEqual(
+            entry.stop(
+                expectedSession: nil,
+                activeStream: nil,
+                resolveResources: { _ in resources },
+                actions: actions
+            ),
+            .handled
+        )
+        XCTAssertEqual(laterStopFallbackCount, 0)
+
+        store.acknowledgeStopControlDismissal()
+        XCTAssertFalse(store.hasPendingStopControlDismissal)
+        XCTAssertEqual(
+            entry.stop(
+                expectedSession: nil,
+                activeStream: nil,
+                resolveResources: { _ in resources },
+                actions: actions
+            ),
+            .fallback
+        )
+        XCTAssertEqual(laterStopFallbackCount, 1)
+    }
+
     func testStaleStopControlCannotStopReplacementBeforeDismissalAcknowledgement() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("stale-stop-replacement-\(UUID().uuidString)", isDirectory: true)

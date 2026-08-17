@@ -50,7 +50,9 @@ write_fake_tools() {
         'set -euo pipefail' \
         'if [[ "${FAKE_REMOTE_CONTEXT:-0}" == 1 && -f "$FAKE_STATE/fail-verify-once" && "$*" == *"--verify"* ]]; then rm "$FAKE_STATE/fail-verify-once"; exit 82; fi' \
         'if [[ "$*" == *"-dvvv"* ]]; then' \
-        '  printf "%s\\n" "CodeDirectory v=20500 size=1 flags=0x10000(runtime) hashes=1+1 location=embedded" "Authority=Developer ID Application: TIMOTHY G HARRIS (F66FM4V88Q)" "TeamIdentifier=F66FM4V88Q" >&2' \
+        '  target=${@: -1}' \
+        '  identity=$(sed -n '\''s/^probe-//p'\'' "$target/Contents/MacOS/live-cadence-probe")' \
+        '  printf "%s\\n" "CodeDirectory v=20500 size=1 flags=0x10000(runtime) hashes=1+1 location=embedded" "CDHash=$identity" "Authority=Developer ID Application: TIMOTHY G HARRIS (F66FM4V88Q)" "TeamIdentifier=F66FM4V88Q" >&2' \
         'elif [[ "$*" == *"--extract-certificates="* ]]; then' \
         '  for argument in "$@"; do' \
         '    case "$argument" in --extract-certificates=*) prefix=${argument#*=}; mkdir -p "${prefix%/*}"; printf cert >"${prefix}0" ;; esac' \
@@ -67,7 +69,7 @@ write_fake_tools() {
         'app=$3' \
         'mkdir -p "$app/Contents/MacOS"' \
         'cp "$FAKE_INFO_PLIST" "$app/Contents/Info.plist"' \
-        'printf probe >"$app/Contents/MacOS/live-cadence-probe"' \
+        'printf "probe-%s\\n" "$(cat "$FAKE_STATE/code-identity")" >"$app/Contents/MacOS/live-cadence-probe"' \
         'chmod +x "$app/Contents/MacOS/live-cadence-probe"' \
         'if [[ "${FAKE_DRIFT_AFTER_BUILD:-0}" == 1 ]]; then printf dirty >"$FAKE_STATE/dirty"; fi' \
         >"$case_root/prototypes/48-render-cadence/scripts/build-live-app.sh"
@@ -110,6 +112,10 @@ write_fake_tools() {
         '    fi' \
         '    rewritten="$script.rewritten"' \
         '    awk -v replacement="export PATH=\\\"$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin\\\"" '\''/^export PATH=/ { print replacement; next } { print }'\'' "$script" >"$rewritten"' \
+        '    if [[ -f "$FAKE_STATE/hold-prepare" ]] && mkdir "$FAKE_STATE/hold-claimed" 2>/dev/null; then' \
+        '      : >"$FAKE_STATE/prepare-entered"' \
+        '      while [[ -f "$FAKE_STATE/hold-prepare" ]]; do sleep 0.05; done' \
+        '    fi' \
         '    prepare_output="$script.prepare-output"' \
         '    set +e' \
         '    /bin/bash "$rewritten" "$worktree" "$stable" "$remote_temp" "$@" >"$prepare_output"' \
@@ -171,6 +177,7 @@ new_case() {
     printf '%s\n' "$EXPECTED_SHA" >"$case_root/state/head"
     printf '%s\n' "$EXPECTED_SHA" >"$case_root/state/upstream"
     printf '%s\n' "$EXPECTED_SHA" >"$case_root/state/remote"
+    printf '%s\n' 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' >"$case_root/state/code-identity"
     : >"$case_root/events"
     write_fake_tools "$case_root"
     printf '%s\n' "$case_root"
@@ -204,8 +211,9 @@ assert_published_manifest() {
     [[ -f "$manifest" ]] || fail "staging did not publish the manifest"
     jq -e --arg sha "$EXPECTED_SHA" --arg directory "$REMOTE_PREFIX/prototypes/48-render-cadence/.build/human-gate-stable" '
         .git_sha == $sha and .remote_directory == $directory
+        and .signing.code_directory_cdhash == "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
         and .cleanup_owner == "human-gate-wizard"' "$manifest" >/dev/null \
-        || fail "published manifest is not bound to the revalidated SHA and stable path"
+        || fail "published manifest is not bound to the revalidated SHA, code identity, and stable path"
 }
 
 test_absent_parent_startup() {
@@ -335,6 +343,99 @@ test_invalid_existing_targets_are_refused() {
         || fail "tampered stable target was accepted or altered"
 }
 
+test_same_sha_different_code_identity_is_refused() {
+    local case_root stable code before_hash after_hash
+    case_root=$(new_case stale-code-identity)
+    run_stager "$case_root" >/dev/null
+    stable="$case_root/remote/prototypes/48-render-cadence/.build/human-gate-stable"
+    before_hash=$(tree_fingerprint "$stable")
+    printf '%s\n' 'cccccccccccccccccccccccccccccccccccccccc' >"$case_root/state/code-identity"
+    set +e
+    run_stager "$case_root" >/dev/null 2>&1
+    code=$?
+    set -e
+    after_hash=$(tree_fingerprint "$stable")
+    [[ "$code" -ne 0 && "$before_hash" == "$after_hash" ]] \
+        || fail "same-SHA stable target with a different fresh code identity was accepted or altered"
+}
+
+test_concurrent_invocation_lock() {
+    local case_root first_pid first_code second_code code before_hash after_hash
+    local waited=0 prepare_count tar_count promote_count lock_target
+    local lock_dir="/tmp/grab-rabbit-48-render-cadence-stage.lock"
+    case_root=$(new_case concurrent-lock)
+    : >"$case_root/state/hold-prepare"
+    run_stager "$case_root" >"$case_root/first.stdout" 2>"$case_root/first.stderr" &
+    first_pid=$!
+    while [[ ! -e "$case_root/state/prepare-entered" && "$waited" -lt 200 ]]; do
+        sleep 0.05
+        waited=$((waited + 1))
+    done
+    [[ -e "$case_root/state/prepare-entered" ]] || fail "first helper never reached held PREPARE"
+    set +e
+    run_stager "$case_root" >"$case_root/second.stdout" 2>"$case_root/second.stderr"
+    second_code=$?
+    set -e
+    rm "$case_root/state/hold-prepare"
+    if wait "$first_pid"; then first_code=0; else first_code=$?; fi
+    [[ "$first_code" -eq 0 && "$second_code" -ne 0 ]] \
+        || fail "concurrent helpers did not produce exactly one closed-fail loser"
+    assert_published_manifest "$case_root"
+    [[ ! -e "$lock_dir" && ! -L "$lock_dir" ]] \
+        || fail "successful helper did not trap-clean its exact local lock"
+
+    printf '%s\n' unknown >"$lock_dir"
+    before_hash=$(shasum -a 256 "$lock_dir" | awk '{print $1}')
+    set +e
+    run_stager "$case_root" >/dev/null 2>&1
+    code=$?
+    set -e
+    after_hash=$(shasum -a 256 "$lock_dir" | awk '{print $1}')
+    rm "$lock_dir"
+    [[ "$code" -ne 0 && "$before_hash" == "$after_hash" ]] \
+        || fail "unknown local lock was accepted or altered"
+
+    lock_target="$case_root/symlink-lock-target"
+    mkdir "$lock_target"
+    printf '%s\n' sentinel >"$lock_target/sentinel"
+    ln -s "$lock_target" "$lock_dir"
+    before_hash=$(tree_fingerprint "$lock_target")
+    set +e
+    run_stager "$case_root" >/dev/null 2>&1
+    code=$?
+    set -e
+    after_hash=$(tree_fingerprint "$lock_target")
+    rm "$lock_dir"
+    [[ "$code" -ne 0 && "$before_hash" == "$after_hash" ]] \
+        || fail "symlinked local lock was accepted or altered"
+
+    mkdir -m 700 "$lock_dir"
+    printf '%s\n' 999999 >"$lock_dir/owner-pid"
+    printf '%s\n' unexpected >"$lock_dir/unexpected"
+    before_hash=$(tree_fingerprint "$lock_dir")
+    set +e
+    run_stager "$case_root" >/dev/null 2>&1
+    code=$?
+    set -e
+    after_hash=$(tree_fingerprint "$lock_dir")
+    rm "$lock_dir/owner-pid" "$lock_dir/unexpected"
+    rmdir "$lock_dir"
+    [[ "$code" -ne 0 && "$before_hash" == "$after_hash" ]] \
+        || fail "extra-entry local lock was accepted or altered"
+
+    mkdir -m 700 "$lock_dir"
+    printf '%s\n' 999999 >"$lock_dir/owner-pid"
+    run_stager "$case_root" >/dev/null
+    assert_published_manifest "$case_root"
+    [[ ! -e "$lock_dir" && ! -L "$lock_dir" ]] \
+        || fail "serial retry did not recover and clean the valid stale lock"
+    prepare_count=$(awk '$0 == "prepare" { count += 1 } END { print count + 0 }' "$case_root/events")
+    tar_count=$(awk '$0 == "tar" { count += 1 } END { print count + 0 }' "$case_root/events")
+    promote_count=$(awk '$0 == "promote" { count += 1 } END { print count + 0 }' "$case_root/events")
+    [[ "$prepare_count" -eq 2 && "$tar_count" -eq 1 && "$promote_count" -eq 1 ]] \
+        || fail "concurrent loser reached remote mutation or serial retry was not idempotent"
+}
+
 test_exact_stage_order() {
     local expected actual
     expected=$(printf '%s\n' \
@@ -357,5 +458,7 @@ test_verification_rollback_and_retry
 test_prepare_response_loss_and_rollback_outage
 test_promotion_response_loss_is_idempotent
 test_invalid_existing_targets_are_refused
+test_same_sha_different_code_identity_is_refused
+test_concurrent_invocation_lock
 test_exact_stage_order
-echo "stage-signed-app tests passed (8/8)"
+echo "stage-signed-app tests passed (10/10)"

@@ -34,8 +34,8 @@ regex_match_count() {
     exit 7
 }
 "$stage_tests" >"$evidence/stage-signed-app-tests.log"
-grep -Fxq 'stage-signed-app tests passed (8/8)' "$evidence/stage-signed-app-tests.log"
-rg -n '^test_prepare_response_loss_and_rollback_outage\(\)|^test_promotion_response_loss_is_idempotent\(\)|^test_invalid_existing_targets_are_refused\(\)' \
+grep -Fxq 'stage-signed-app tests passed (10/10)' "$evidence/stage-signed-app-tests.log"
+rg -n '^test_prepare_response_loss_and_rollback_outage\(\)|^test_promotion_response_loss_is_idempotent\(\)|^test_invalid_existing_targets_are_refused\(\)|^test_same_sha_different_code_identity_is_refused\(\)|^test_concurrent_invocation_lock\(\)' \
     "$stage_tests" >"$evidence/stager-response-loss-test-proof.txt"
 rg -n -F 'REMOTE_WORKTREE="/Users/openclaw/grab-rabbit/.worktrees/48-render-cadence"' "$stager" \
     >"$evidence/stager-remote-path-proof.txt"
@@ -59,6 +59,17 @@ rg -n -F 'validate_published_target || exit 9' "$stager" \
     >>"$evidence/stager-transaction-proof.txt"
 rg -n -F 'rollback_remote_transaction' "$stager" >>"$evidence/stager-transaction-proof.txt"
 rg -n -F 'mv "$REMOTE_TEMP_DIR" "$REMOTE_STABLE_DIR"' "$stager" >>"$evidence/stager-transaction-proof.txt"
+rg -n -F 'LOCAL_LOCK_DIR="/tmp/grab-rabbit-48-render-cadence-stage.lock"' "$stager" \
+    >"$evidence/stager-local-lock-proof.txt"
+rg -n -F 'process_is_running_without_signal' "$stager" >>"$evidence/stager-local-lock-proof.txt"
+rg -n -F 'acquire_local_lock' "$stager" >>"$evidence/stager-local-lock-proof.txt"
+rg -n -F 'release_local_lock' "$stager" >>"$evidence/stager-local-lock-proof.txt"
+rg -n -F -- '--arg code_directory_cdhash "$actual_cdhash"' "$stager" \
+    >"$evidence/stager-artifact-binding-proof.txt"
+rg -n -F -- '"$EXPECTED_BRANCH" "$manifest_sha" "$info_sha256" "$actual_cdhash"' "$stager" \
+    >>"$evidence/stager-artifact-binding-proof.txt"
+rg -n -F '.signing.code_directory_cdhash == $cdhash and $cdhash == $fresh_cdhash' "$stager" \
+    >>"$evidence/stager-artifact-binding-proof.txt"
 rg -n -F '[[ "$(find "$STABLE_APP_DIR" -mindepth 1 -maxdepth 1 | wc -l | tr -d '\'' '\'')" -eq 2 ]]' "$wizard" \
     >>"$evidence/stager-refusal-proof.txt"
 rg -n -F 'export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"' "$wizard" \
@@ -69,6 +80,8 @@ rg -n -F 'staged_app_manifest_is_exact' "$wizard" >>"$evidence/wizard-staging-ma
 rg -n -F 'cp "$STAGING_MANIFEST" "$EVIDENCE_DIR/staged-app-manifest.json"' "$wizard" \
     >>"$evidence/wizard-staging-manifest-proof.txt"
 rg -n -F 'codesign --verify --deep --strict --verbose=2 "$STABLE_APP"' "$wizard" \
+    >>"$evidence/wizard-staging-manifest-proof.txt"
+rg -n -F '.signing.code_directory_cdhash == $cdhash' "$wizard" \
     >>"$evidence/wizard-staging-manifest-proof.txt"
 rg -n -F 'protected_process_has_exact_path 9243 "$SCREENSHARINGD_PATH"' "$wizard" \
     >"$evidence/protected-process-proof.txt"
@@ -184,7 +197,7 @@ jq -n \
     --arg os "$(sw_vers -productVersion) ($(sw_vers -buildVersion))" \
     --argjson camera_count "$camera_count" \
     --argjson preflight_exit "$preflight_code" \
-    '{schema:$schema,branch:$branch,commit:$commit,host:$host,os:$os,camera_count:$camera_count,missing_camera_preflight_exit:$preflight_exit,output_created:false,exact_source_ids_persisted:false,checks:{warnings_as_errors_build:true,tests:true,desktop_filter_absent:true,desktop_independent_window_filter:true,typed_sanitized_cache:true,copy_sanitize_cache_order:true,tcc_requests_scoped_behind_approved_signer:true,live_evidence_identifiers_redacted:true,wizard_stable_path_owned_and_guarded:true}}' \
+    '{schema:$schema,branch:$branch,commit:$commit,host:$host,os:$os,camera_count:$camera_count,missing_camera_preflight_exit:$preflight_exit,output_created:false,exact_source_ids_persisted:false,checks:{warnings_as_errors_build:true,tests:true,desktop_filter_absent:true,desktop_independent_window_filter:true,typed_sanitized_cache:true,copy_sanitize_cache_order:true,tcc_requests_scoped_behind_approved_signer:true,live_evidence_identifiers_redacted:true,wizard_stable_path_owned_and_guarded:true,stager_fresh_artifact_binding:true,stager_local_concurrency_lock:true}}' \
     >"$evidence/manifest.json"
 
 (cd "$evidence" && find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 shasum -a 256 >SHA256SUMS)

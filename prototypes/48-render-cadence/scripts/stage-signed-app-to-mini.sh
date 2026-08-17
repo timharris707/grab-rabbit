@@ -24,6 +24,9 @@ APPROVED_TEAM="F66FM4V88Q"
 APPROVED_SHA1="189EC9780DE0A94CF5B24CC5983CAB3FDAE15638"
 BUNDLE_ID="dev.clickai.grabrabbit.prototype.render-cadence"
 STAGING_DIR=""
+LOCAL_LOCK_DIR="/tmp/grab-rabbit-48-render-cadence-stage.lock"
+LOCAL_LOCK_OWNER="$LOCAL_LOCK_DIR/owner-pid"
+LOCAL_LOCK_HELD=false
 REMOTE_TEMP_DIR="${REMOTE_STABLE_DIR%/*}/.human-gate-staging-$expected_sha"
 REMOTE_BUILD_CREATED=false
 REMOTE_ROLLBACK_ARMED=false
@@ -41,6 +44,91 @@ assert_local_checkpoint() {
         && "$live_remote_head" == "$expected_sha" ]] \
         || { echo "refusing SHA mismatch between expected, local, tracking, and live remote" >&2; return 3; }
     printf '%s\n' "$local_head"
+}
+
+local_lock_path_is_exact() {
+    [[ "$LOCAL_LOCK_DIR" == "/tmp/grab-rabbit-48-render-cadence-stage.lock" \
+        && "$LOCAL_LOCK_OWNER" == "/tmp/grab-rabbit-48-render-cadence-stage.lock/owner-pid" ]]
+}
+
+local_lock_has_exact_owner_entry() {
+    local entry name count=0
+    local_lock_path_is_exact || return 1
+    [[ -d "$LOCAL_LOCK_DIR" && ! -L "$LOCAL_LOCK_DIR" ]] || return 1
+    for entry in "$LOCAL_LOCK_DIR"/* "$LOCAL_LOCK_DIR"/.[!.]* "$LOCAL_LOCK_DIR"/..?*; do
+        [[ -e "$entry" || -L "$entry" ]] || continue
+        name=${entry##*/}
+        [[ "$name" == "owner-pid" ]] || return 1
+        count=$((count + 1))
+    done
+    [[ "$count" -eq 1 && -f "$LOCAL_LOCK_OWNER" && ! -L "$LOCAL_LOCK_OWNER" ]]
+}
+
+process_is_running_without_signal() {
+    local pid=$1 observed="" ps_status=0
+    [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
+    observed=$(ps -p "$pid" -o pid= 2>/dev/null) || ps_status=$?
+    observed=$(tr -d '[:space:]' <<<"$observed")
+    if [[ "$ps_status" -eq 0 && "$observed" == "$pid" ]]; then
+        return 0
+    fi
+    [[ "$ps_status" -eq 1 && -z "$observed" ]] && return 1
+    return 2
+}
+
+create_local_lock() {
+    local_lock_path_is_exact || return 1
+    mkdir -m 700 "$LOCAL_LOCK_DIR" 2>/dev/null || return 1
+    LOCAL_LOCK_HELD=true
+    if ! printf '%s\n' "$$" >"$LOCAL_LOCK_OWNER"; then
+        rmdir "$LOCAL_LOCK_DIR" 2>/dev/null || true
+        LOCAL_LOCK_HELD=false
+        return 1
+    fi
+}
+
+acquire_local_lock() {
+    local owner_pid liveness_status=0
+    local_lock_path_is_exact || { echo "refusing unexpected local lock path" >&2; return 10; }
+    if create_local_lock; then
+        return 0
+    fi
+    if ! local_lock_has_exact_owner_entry; then
+        echo "refusing unknown, symlinked, or extra-entry local staging lock" >&2
+        return 10
+    fi
+    owner_pid=$(<"$LOCAL_LOCK_OWNER")
+    [[ "$owner_pid" =~ ^[1-9][0-9]*$ ]] \
+        || { echo "refusing local staging lock with an invalid owner PID" >&2; return 10; }
+    process_is_running_without_signal "$owner_pid" || liveness_status=$?
+    if [[ "$liveness_status" -eq 0 ]]; then
+        echo "refusing concurrent local staging helper owned by PID $owner_pid" >&2
+        return 10
+    elif [[ "$liveness_status" -ne 1 ]]; then
+        echo "refusing local staging lock whose owner liveness could not be determined" >&2
+        return 10
+    fi
+    rm "$LOCAL_LOCK_OWNER" \
+        || { echo "refusing local staging lock that changed during stale-lock cleanup" >&2; return 10; }
+    rmdir "$LOCAL_LOCK_DIR" \
+        || { echo "refusing local staging lock that gained an unexpected entry" >&2; return 10; }
+    create_local_lock \
+        || { echo "refusing local staging lock acquired concurrently during stale-lock cleanup" >&2; return 10; }
+}
+
+release_local_lock() {
+    local owner_pid
+    [[ "$LOCAL_LOCK_HELD" == true ]] || return 0
+    local_lock_path_is_exact \
+        || { echo "refusing to clean an unexpected local lock path" >&2; return 1; }
+    local_lock_has_exact_owner_entry \
+        || { echo "refusing to clean an altered local staging lock" >&2; return 1; }
+    owner_pid=$(<"$LOCAL_LOCK_OWNER")
+    [[ "$owner_pid" == "$$" ]] \
+        || { echo "refusing to clean another process's local staging lock" >&2; return 1; }
+    rm "$LOCAL_LOCK_OWNER"
+    rmdir "$LOCAL_LOCK_DIR"
+    LOCAL_LOCK_HELD=false
 }
 
 rollback_remote_transaction() {
@@ -97,14 +185,18 @@ REMOTE_ROLLBACK
 }
 
 cleanup() {
-    local code=$?
+    local code=$? lock_cleanup_code=0
     trap - EXIT INT TERM
     if [[ "$code" -ne 0 ]]; then
         rollback_remote_transaction >/dev/null 2>&1 || true
     fi
+    release_local_lock || lock_cleanup_code=$?
     if [[ -n "$STAGING_DIR" && "$STAGING_DIR" == /tmp/grab-rabbit-48-stage.* \
         && -d "$STAGING_DIR" ]]; then
         rm -rf "$STAGING_DIR"
+    fi
+    if [[ "$code" -eq 0 && "$lock_cleanup_code" -ne 0 ]]; then
+        code=$lock_cleanup_code
     fi
     exit "$code"
 }
@@ -126,7 +218,9 @@ codesign --verify --deep --strict --verbose=2 "$staged_app"
 details=$(codesign -dvvv "$staged_app" 2>&1)
 actual_name=$(sed -n 's/^Authority=//p' <<<"$details" | head -1)
 actual_team=$(sed -n 's/^TeamIdentifier=//p' <<<"$details" | head -1)
+actual_cdhash=$(sed -n 's/^CDHash=//p' <<<"$details" | tr '[:upper:]' '[:lower:]')
 grep -Eq '^CodeDirectory .* flags=.*\(runtime\)' <<<"$details"
+[[ "$actual_cdhash" =~ ^[0-9a-f]{40}$ ]]
 actual_bundle=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$staged_app/Contents/Info.plist")
 
 identity_dir=$(mktemp -d "$STAGING_DIR/identity.XXXXXX")
@@ -156,17 +250,20 @@ jq -n \
     --arg common_name "$actual_name" \
     --arg team_id "$actual_team" \
     --arg certificate_sha1 "$actual_sha1" \
+    --arg code_directory_cdhash "$actual_cdhash" \
     --arg generated_at "$generated_at" \
     '{schema:$schema,branch:$branch,git_sha:$git_sha,remote_directory:$remote_directory,
       app_relative_path:$app_relative_path,hashes:{info_plist_sha256:$info_sha256,executable_sha256:$executable_sha256},
-      signing:{bundle_id:$bundle_id,common_name:$common_name,team_id:$team_id,certificate_sha1:$certificate_sha1,hardened_runtime:true},
+      signing:{bundle_id:$bundle_id,common_name:$common_name,team_id:$team_id,certificate_sha1:$certificate_sha1,
+        code_directory_cdhash:$code_directory_cdhash,hardened_runtime:true},
       generated_at:$generated_at,cleanup_owner:"human-gate-wizard"}' >"$manifest"
 
+acquire_local_lock
 REMOTE_ROLLBACK_ARMED=true
 prepare_output="$STAGING_DIR/remote-prepare.txt"
 ssh "$REMOTE_HOST" /bin/bash -s -- \
     "$REMOTE_WORKTREE" "$REMOTE_STABLE_DIR" "$REMOTE_TEMP_DIR" \
-    "$EXPECTED_BRANCH" "$manifest_sha" >"$prepare_output" <<'REMOTE_PREPARE'
+    "$EXPECTED_BRANCH" "$manifest_sha" "$info_sha256" "$actual_cdhash" >"$prepare_output" <<'REMOTE_PREPARE'
 # GRAB_RABBIT_REMOTE_PREPARE
 set -euo pipefail
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
@@ -175,6 +272,8 @@ REMOTE_STABLE_DIR=$2
 REMOTE_TEMP_DIR=$3
 EXPECTED_BRANCH=$4
 expected_sha=$5
+fresh_info_sha256=$6
+fresh_cdhash=$7
 prototype_dir="$REMOTE_WORKTREE/prototypes/48-render-cadence"
 build_dir="$prototype_dir/.build"
 created_build=false
@@ -222,7 +321,7 @@ remove_owned_transaction_directory() {
 }
 
 validate_published_target() {
-    local app manifest info_sha256 executable_sha256 details certificate_dir actual_sha1
+    local app manifest info_sha256 executable_sha256 details actual_cdhash certificate_dir actual_sha1
     app="$REMOTE_STABLE_DIR/Grab Rabbit Live Cadence Probe.app"
     manifest="$REMOTE_STABLE_DIR/staging-manifest.json"
     [[ -d "$REMOTE_STABLE_DIR" && ! -L "$REMOTE_STABLE_DIR" ]] || return 1
@@ -231,19 +330,24 @@ validate_published_target() {
     [[ "$(find "$app" -type l | wc -l | tr -d ' ')" -eq 0 ]] || return 1
     info_sha256=$(shasum -a 256 "$app/Contents/Info.plist" | awk '{print $1}') || return 1
     executable_sha256=$(shasum -a 256 "$app/Contents/MacOS/live-cadence-probe" | awk '{print $1}') || return 1
+    codesign --verify --deep --strict --verbose=2 "$app" || return 1
+    details=$(codesign -dvvv "$app" 2>&1) || return 1
+    actual_cdhash=$(sed -n 's/^CDHash=//p' <<<"$details" | tr '[:upper:]' '[:lower:]')
+    [[ "$actual_cdhash" =~ ^[0-9a-f]{40}$ ]] || return 1
     jq -e --arg branch "$EXPECTED_BRANCH" --arg sha "$expected_sha" --arg directory "$REMOTE_STABLE_DIR" \
-        --arg info "$info_sha256" --arg executable "$executable_sha256" '
+        --arg info "$info_sha256" --arg fresh_info "$fresh_info_sha256" \
+        --arg executable "$executable_sha256" --arg cdhash "$actual_cdhash" --arg fresh_cdhash "$fresh_cdhash" '
         .schema == "grab-rabbit-render-cadence-staged-app-v1" and .branch == $branch and .git_sha == $sha
         and .remote_directory == $directory and .app_relative_path == "Grab Rabbit Live Cadence Probe.app"
-        and .hashes.info_plist_sha256 == $info and .hashes.executable_sha256 == $executable
+        and .hashes.info_plist_sha256 == $info and $info == $fresh_info
+        and .hashes.executable_sha256 == $executable
         and .signing.bundle_id == "dev.clickai.grabrabbit.prototype.render-cadence"
         and .signing.common_name == "Developer ID Application: TIMOTHY G HARRIS (F66FM4V88Q)"
         and .signing.team_id == "F66FM4V88Q"
         and .signing.certificate_sha1 == "189EC9780DE0A94CF5B24CC5983CAB3FDAE15638"
+        and .signing.code_directory_cdhash == $cdhash and $cdhash == $fresh_cdhash
         and .signing.hardened_runtime == true and .cleanup_owner == "human-gate-wizard"' "$manifest" >/dev/null \
         || return 1
-    codesign --verify --deep --strict --verbose=2 "$app" || return 1
-    details=$(codesign -dvvv "$app" 2>&1) || return 1
     [[ "$(sed -n 's/^Authority=//p' <<<"$details" | head -1)" == "Developer ID Application: TIMOTHY G HARRIS (F66FM4V88Q)" ]] \
         || return 1
     [[ "$(sed -n 's/^TeamIdentifier=//p' <<<"$details" | head -1)" == "F66FM4V88Q" ]] || return 1
@@ -262,6 +366,8 @@ validate_published_target() {
 
 [[ "$EXPECTED_BRANCH" == "prototype/48-render-cadence" ]]
 [[ "$expected_sha" =~ ^[0-9a-f]{40}$ ]]
+[[ "$fresh_info_sha256" =~ ^[0-9a-f]{64}$ ]]
+[[ "$fresh_cdhash" =~ ^[0-9a-f]{40}$ ]]
 [[ "$(cd "$REMOTE_WORKTREE" && pwd -P)" == "$REMOTE_WORKTREE" && ! -L "$REMOTE_WORKTREE" ]]
 [[ "$(cd "$prototype_dir" && pwd -P)" == "$prototype_dir" && ! -L "$prototype_dir" ]]
 [[ "$(git -C "$REMOTE_WORKTREE" branch --show-current)" == "$EXPECTED_BRANCH" ]]
@@ -394,17 +500,21 @@ live_remote=$(git -C "$REMOTE_WORKTREE" ls-remote origin "refs/heads/$EXPECTED_B
 [[ "$(find "$app" -type l | wc -l | tr -d ' ')" -eq 0 ]]
 info_sha256=$(shasum -a 256 "$app/Contents/Info.plist" | awk '{print $1}')
 executable_sha256=$(shasum -a 256 "$app/Contents/MacOS/live-cadence-probe" | awk '{print $1}')
+codesign --verify --deep --strict --verbose=2 "$app"
+details=$(codesign -dvvv "$app" 2>&1)
+actual_cdhash=$(sed -n 's/^CDHash=//p' <<<"$details" | tr '[:upper:]' '[:lower:]')
+[[ "$actual_cdhash" =~ ^[0-9a-f]{40}$ ]]
 jq -e --arg branch "$EXPECTED_BRANCH" --arg sha "$expected_sha" --arg directory "$REMOTE_STABLE_DIR" \
     --arg app "$APP_NAME" --arg info "$info_sha256" --arg executable "$executable_sha256" \
-    --arg bundle "$BUNDLE_ID" --arg name "$APPROVED_NAME" --arg team "$APPROVED_TEAM" --arg fingerprint "$APPROVED_SHA1" '
+    --arg bundle "$BUNDLE_ID" --arg name "$APPROVED_NAME" --arg team "$APPROVED_TEAM" \
+    --arg fingerprint "$APPROVED_SHA1" --arg cdhash "$actual_cdhash" '
     .schema == "grab-rabbit-render-cadence-staged-app-v1" and .branch == $branch and .git_sha == $sha
     and .remote_directory == $directory and .app_relative_path == $app
     and .hashes.info_plist_sha256 == $info and .hashes.executable_sha256 == $executable
     and .signing.bundle_id == $bundle and .signing.common_name == $name
     and .signing.team_id == $team and .signing.certificate_sha1 == $fingerprint
+    and .signing.code_directory_cdhash == $cdhash
     and .signing.hardened_runtime == true and .cleanup_owner == "human-gate-wizard"' "$manifest" >/dev/null
-codesign --verify --deep --strict --verbose=2 "$app"
-details=$(codesign -dvvv "$app" 2>&1)
 [[ "$(sed -n 's/^Authority=//p' <<<"$details" | head -1)" == "$APPROVED_NAME" ]]
 [[ "$(sed -n 's/^TeamIdentifier=//p' <<<"$details" | head -1)" == "$APPROVED_TEAM" ]]
 grep -Eq '^CodeDirectory .* flags=.*\(runtime\)' <<<"$details"

@@ -414,7 +414,7 @@ signed_probe_identity_is_approved() {
 }
 
 staged_app_manifest_is_exact() {
-  local info_sha executable_sha details actual_name actual_team actual_bundle certificate_dir actual_sha
+  local info_sha executable_sha details actual_cdhash actual_name actual_team actual_bundle certificate_dir actual_sha
   [[ "$PROTOTYPE_ROOT" == /* ]] || return 1
   [[ "$STABLE_APP_DIR" == "$PROTOTYPE_ROOT/.build/human-gate-stable" ]] || return 1
   [[ "$STABLE_APP" == "$STABLE_APP_DIR/Grab Rabbit Live Cadence Probe.app" ]] || return 1
@@ -426,18 +426,22 @@ staged_app_manifest_is_exact() {
   [[ "$(find "$STABLE_APP" -type l | wc -l | tr -d ' ')" -eq 0 ]] || return 1
   info_sha=$(shasum -a 256 "$STABLE_APP/Contents/Info.plist" | awk '{print $1}') || return 1
   executable_sha=$(shasum -a 256 "$LIVE_PROBE" | awk '{print $1}') || return 1
+  codesign --verify --deep --strict --verbose=2 "$STABLE_APP" || return 1
+  details=$(codesign -dvvv "$STABLE_APP" 2>&1) || return 1
+  actual_cdhash=$(sed -n 's/^CDHash=//p' <<<"$details" | tr '[:upper:]' '[:lower:]')
+  [[ "$actual_cdhash" =~ ^[0-9a-f]{40}$ ]] || return 1
   jq -e --arg branch "$EXPECTED_BRANCH" --arg sha "$RUN_SHA" --arg directory "$STABLE_APP_DIR" \
       --arg info "$info_sha" --arg executable "$executable_sha" --arg bundle "$BUNDLE_ID" \
-      --arg name "$APPROVED_NAME" --arg team "$APPROVED_TEAM" --arg fingerprint "$APPROVED_SHA1" '
+      --arg name "$APPROVED_NAME" --arg team "$APPROVED_TEAM" --arg fingerprint "$APPROVED_SHA1" \
+      --arg cdhash "$actual_cdhash" '
       .schema == "grab-rabbit-render-cadence-staged-app-v1" and .branch == $branch and .git_sha == $sha
       and .remote_directory == $directory and .app_relative_path == "Grab Rabbit Live Cadence Probe.app"
       and .hashes.info_plist_sha256 == $info and .hashes.executable_sha256 == $executable
       and .signing.bundle_id == $bundle and .signing.common_name == $name
       and .signing.team_id == $team and .signing.certificate_sha1 == $fingerprint
+      and .signing.code_directory_cdhash == $cdhash
       and .signing.hardened_runtime == true and .cleanup_owner == "human-gate-wizard"' \
       "$STAGING_MANIFEST" >/dev/null || return 1
-  codesign --verify --deep --strict --verbose=2 "$STABLE_APP" || return 1
-  details=$(codesign -dvvv "$STABLE_APP" 2>&1) || return 1
   actual_name=$(sed -n 's/^Authority=//p' <<<"$details" | head -1)
   actual_team=$(sed -n 's/^TeamIdentifier=//p' <<<"$details" | head -1)
   grep -Eq '^CodeDirectory .* flags=.*\(runtime\)' <<<"$details" || return 1

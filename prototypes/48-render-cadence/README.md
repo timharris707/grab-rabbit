@@ -112,17 +112,21 @@ prototypes/48-render-cadence/scripts/run-human-gate-wizard.sh
 Start from clean, pushed, exact-SHA `prototype/48-render-cadence` checkouts on both machines.
 The laptop helper is the only signing step: it accepts only the approved fingerprint
 `189EC9780DE0A94CF5B24CC5983CAB3FDAE15638`, builds in a temporary local directory, verifies the
-bundle/team/fingerprint/Hardened Runtime and strict signature, writes file hashes bound to the
-exact git SHA, and transfers only the signed app and manifest through the existing `macmini` SSH
-alias. A clean Mini does not need a pre-existing `.build`: the helper validates the exact real
-prototype parent before creating only that ignored directory. It rechecks the local branch,
-cleanliness, HEAD, upstream, and live remote after the build and again immediately before
-transfer. Remote bytes land in an exact per-SHA helper-owned sibling, are verified there, and
-move to the stable path only as the final atomic step. A retry reconciles that exact owned
-transaction after a lost response, and accepts an existing stable target only after repeating all
-manifest, hash, path, bundle, team, fingerprint, Hardened Runtime, and strict-signature checks.
-Transfer or verification failures roll back; unowned, altered, symlinked, or extra-entry targets
-remain untouched hard failures. Never copy signing credentials to the Mini.
+bundle/team/fingerprint/Hardened Runtime and strict signature, and writes file hashes plus the
+normalized host CodeDirectory CDHash bound to the exact git SHA. It transfers only the signed app
+and manifest through the existing `macmini` SSH alias. A clean Mini does not need a pre-existing
+`.build`: the helper validates the exact real prototype parent before creating only that ignored
+directory. It rechecks the local branch, cleanliness, HEAD, upstream, and live remote after the
+build and again immediately before transfer. A PID-owned atomic local lock covers only remote
+preparation through promotion; a live helper, unknown lock, symlink, or extra lock entry fails
+closed, while an exact stale lock is removed without signaling any process. Remote bytes land in
+an exact per-SHA helper-owned sibling, are verified there, and move to the stable path only as the
+final atomic step. A retry reconciles that exact owned transaction after a lost response. It
+accepts an existing stable target only when its actual Info.plist hash and CodeDirectory CDHash
+match both its manifest and the fresh local build, in addition to all path, executable-hash,
+bundle, team, fingerprint, Hardened Runtime, and strict-signature checks. Transfer or verification
+failures roll back; unowned, altered, symlinked, or extra-entry targets remain untouched hard
+failures. Never copy signing credentials to the Mini.
 
 The Mini wizard requires that exact staged pair at
 `prototypes/48-render-cadence/.build/human-gate-stable`, verifies it again without signing, and

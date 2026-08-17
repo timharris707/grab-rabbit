@@ -1076,6 +1076,89 @@ final class WindowCapturePrivacyTests: XCTestCase {
         XCTAssertEqual(legacyFallbackCount, 1)
     }
 
+    func testProductionFastFinalizationPublishesFinishingBeforeWriterCanComplete() throws {
+        let statusSource = try projectSource("QuickRecorder/ViewModel/StatusBar.swift")
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("fast-finalization-status-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let job = try RecordingOutputJob.reserve(
+            in: directory,
+            preferredStem: "fast-finalization",
+            layout: .single(fileExtension: "mov")
+        )
+        XCTAssertTrue(FileManager.default.createFile(
+            atPath: job.inputURL.path,
+            contents: Data("fast finalization".utf8)
+        ))
+        let stream = NSObject()
+        let store = CaptureOutputSessionStore()
+        let writer = DelayedCaptureWriterFinalizer()
+        let session = makeCaptureSession(
+            stream: stream,
+            mode: .transparent,
+            sink: TestVideoDestination(),
+            outputJob: job,
+            writerFinalizer: writer
+        )
+        let resources = CaptureProductionStopResources(
+            outputJob: job,
+            writerFinalizer: writer,
+            isAudioOnly: false,
+            markVideoInputFinished: {}
+        )
+        let statusDismissed = expectation(description: "terminal status dismissal")
+        var isFinalizing = false
+        var renderedStatusWidth: CGFloat?
+        let actions = CaptureProductionStopActions(
+            stopActiveStream: { _ in false },
+            setFinalizing: { isFinalizing = $0 },
+            publishStatus: { status in
+                XCTAssertEqual(status, "Finishing...")
+                CaptureStatusBarUpdateScheduler.schedule(isFinalizing: isFinalizing) {
+                    renderedStatusWidth = isFinalizing ? 112 : nil
+                }
+            },
+            cleanupTerminal: { acknowledge in
+                CaptureStatusBarUpdateScheduler.schedule(isFinalizing: isFinalizing) {
+                    renderedStatusWidth = nil
+                    acknowledge()
+                    statusDismissed.fulfill()
+                }
+            }
+        )
+        let entry = CaptureProductionStopEntry(store: store)
+        let replacementID = UUID()
+
+        XCTAssertTrue(statusSource.contains(
+            "CaptureStatusBarUpdateScheduler.schedule(isFinalizing: SCContext.isFinalizing)"
+        ))
+
+        XCTAssertTrue(store.install(session))
+        XCTAssertTrue(store.deactivate(session))
+        XCTAssertEqual(
+            entry.stop(
+                expectedSession: session,
+                activeStream: nil,
+                resolveResources: { _ in resources },
+                actions: actions
+            ),
+            .handled
+        )
+
+        XCTAssertEqual(renderedStatusWidth, 112)
+        XCTAssertFalse(store.reserve(replacementID), "Start must remain refused while the writer owns A.")
+
+        writer.complete(.success(()))
+
+        XCTAssertEqual(renderedStatusWidth, 112)
+        XCTAssertTrue(store.reserve(replacementID), "Start may succeed after A reaches terminal state.")
+        store.cancelReservation(replacementID)
+        wait(for: [statusDismissed], timeout: 1)
+        XCTAssertNil(renderedStatusWidth)
+    }
+
     func testStaleStopControlCannotStopReplacementBeforeDismissalAcknowledgement() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("stale-stop-replacement-\(UUID().uuidString)", isDirectory: true)

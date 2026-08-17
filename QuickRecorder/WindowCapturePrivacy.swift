@@ -971,6 +971,20 @@ enum CaptureFinalizationPresentation {
     }
 }
 
+enum CaptureStatusBarUpdateScheduler {
+    static func schedule(isFinalizing: Bool, action: @escaping () -> Void) {
+        guard isFinalizing else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: action)
+            return
+        }
+        if Thread.isMainThread {
+            action()
+        } else {
+            DispatchQueue.main.async(execute: action)
+        }
+    }
+}
+
 struct CapturePostStartResourceActivation {
     private let store: CaptureOutputSessionStore
 

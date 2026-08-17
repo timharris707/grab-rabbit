@@ -47,12 +47,12 @@ public enum LiveSourceSelectionError: Error, Equatable, CustomStringConvertible 
         switch self {
         case .noCameras:
             "No real camera is currently enumerated. Connect the selected camera and retry."
-        case .cameraNotFound(let uniqueID):
-            "The exact camera unique ID is unavailable: \(uniqueID). No substitute was selected."
+        case .cameraNotFound:
+            "The exact in-process camera selection is unavailable. No substitute was selected."
         case .noCapturableWindows:
             "No real capturable windows are available. A display or desktop will not be substituted."
-        case .windowNotFound(let windowID):
-            "The exact window ID is unavailable: \(windowID). A display or desktop will not be substituted."
+        case .windowNotFound:
+            "The exact in-process window selection is unavailable. A display or desktop will not be substituted."
         }
     }
 }

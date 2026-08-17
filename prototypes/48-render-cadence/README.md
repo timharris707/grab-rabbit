@@ -40,14 +40,16 @@ named human gate because `powermetrics` requires interactive administrator autho
 `AVCaptureDevice.DiscoverySession`, selects only an exact stable `uniqueID`, and discovers only
 real on-screen `SCWindow` values from `SCShareableContent.excludingDesktopWindows`. Window
 capture constructs only `SCContentFilter(desktopIndependentWindow:)`; there is no display or
-desktop fallback. Screen permission is checked with `CGPreflightScreenCaptureAccess`, and the
-probe never calls a TCC request API.
+desktop fallback. Inventory, preflight, and recording only inspect existing TCC state. The
+separate `authorize` command can invoke macOS-owned Camera, Microphone, and Screen Recording
+requests, but only after its runtime identity contains the exact approved team and Developer ID
+fingerprint.
 
 Unsigned-safe inventory and preflight do not capture or create a movie:
 
 ```bash
 swift run --package-path prototypes/48-render-cadence -c release \
-  live-cadence-probe list-sources --json /absolute/sources.json
+  live-cadence-probe list-sources
 
 swift run --package-path prototypes/48-render-cadence -c release \
   live-cadence-probe preflight \
@@ -57,11 +59,13 @@ swift run --package-path prototypes/48-render-cadence -c release \
   --json /absolute/preflight.json
 ```
 
-The live `record` command refuses to run unless camera/screen/microphone authorization is
-already in the required state and its own runtime certificate is the exact approved Developer
-ID fingerprint `189EC9780DE0A94CF5B24CC5983CAB3FDAE15638`. It never requests permission and never
-selects another camera after disconnect. Camera-driven and fixed-clock runs share the same
-typed sanitized-window cache and real-time H.264/AAC writer:
+Exact camera/window IDs printed by inventory stay transient; the preflight report and live-run
+metrics retain exact-match booleans but not the identifiers. The live `record` command refuses
+to run unless camera/screen/microphone authorization is already in the required state and its
+own runtime certificate is the exact approved Developer ID fingerprint
+`189EC9780DE0A94CF5B24CC5983CAB3FDAE15638`. Recording never requests permission or selects
+another camera after disconnect. Camera-driven and fixed-clock runs share the same typed
+sanitized-window cache and real-time H.264/AAC writer:
 
 ```bash
 live-cadence-probe record \
@@ -89,7 +93,21 @@ identity except the approved name/team/fingerprint and explicitly rejects the `4
 certificate. `scripts/verify-live-probe.sh` is the reproducible compile/test/static/preflight
 gate used before physical capture.
 
-The CLI seams correspond to the six intended human stages—camera verification; stable approved
-signing/TCC; browser selection and cases; shape/pause/disconnect matrix; external powermetrics;
-verification and visual verdict. They deliberately do not define the wizard flow while Tim's
-stage-order confirmation remains pending.
+## Human gate wizard
+
+Tim confirmed the six-stage order: exact camera; approved signing and visible TCC authorization;
+exact browser window and three cases; shape/pause/disconnect matrix; external `sudo powermetrics`;
+then verification, state restoration, and visual verdict. The repeatable path is
+[`scripts/run-human-gate-wizard.sh`](scripts/run-human-gate-wizard.sh):
+
+```bash
+prototypes/48-render-cadence/scripts/run-human-gate-wizard.sh
+```
+
+Start from a clean, pushed `prototype/48-render-cadence` checkout on the Mac Mini. Have the exact
+camera, a browser, the approved certificate/private key already visible in Keychain Access, the
+administrator password, and time to inspect the movies in QuickTime. The stable probe app path
+must be empty, the prohibited `45F21D…` identity must not be live, and protected PIDs 12083 and
+9243 must still be running. The wizard estimates 100 minutes, asks before every stateful or
+interactive phase, lets `sudo` own its foreground password prompt, and never writes a password or
+exact camera/window ID. Do not run it as an automated or unattended gate.

@@ -152,7 +152,7 @@ final class LiveCaptureRuntime: @unchecked Sendable {
             guard let self,
                   let disconnected = notification.object as? AVCaptureDevice,
                   disconnected.uniqueID == self.cameraDevice.uniqueID else { return }
-            self.coordinator.selectedCameraDisconnected(uniqueID: disconnected.uniqueID)
+            self.coordinator.selectedCameraDisconnected()
         }
         cameraSession.startRunning()
         guard cameraSession.isRunning else { throw LiveProbeError.capture("camera session did not start") }

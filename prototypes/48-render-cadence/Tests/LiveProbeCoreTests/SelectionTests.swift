@@ -44,4 +44,16 @@ final class SelectionTests: XCTestCase {
         }
         XCTAssertEqual(try LiveSourceSelection.window(windowID: 42, from: [available]), available)
     }
+
+    func testSelectionErrorsDoNotExposeExactIdentifiers() {
+        let cameraID = "private-camera-identifier"
+        let windowID: UInt32 = 987_654_321
+
+        XCTAssertFalse(
+            LiveSourceSelectionError.cameraNotFound(cameraID).description.contains(cameraID)
+        )
+        XCTAssertFalse(
+            LiveSourceSelectionError.windowNotFound(windowID).description.contains(String(windowID))
+        )
+    }
 }

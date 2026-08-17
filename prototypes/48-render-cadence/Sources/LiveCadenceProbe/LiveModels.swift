@@ -143,8 +143,8 @@ struct LiveRunMetrics: Codable {
     let fps: Int
     let requestedDurationSeconds: Double
     let outputPath: String
-    let selectedCamera: StableCameraSource
-    let selectedWindow: CapturableWindowSource?
+    let selectedCamera: LiveCameraEvidence
+    let selectedWindow: LiveWindowEvidence?
     let authorizationBefore: AuthorizationSnapshot
     let authorizationAfter: AuthorizationSnapshot
     let signing: RuntimeSigningIdentity
@@ -188,6 +188,30 @@ struct LiveRunMetrics: Codable {
     let eventsPath: String
 }
 
+struct LiveCameraEvidence: Codable {
+    let name: String
+    let deviceType: String
+    let exactUniqueIDMatchedInProcess: Bool
+}
+
+struct LiveWindowEvidence: Codable {
+    let applicationName: String
+    let width: Int
+    let height: Int
+    let exactWindowIDMatchedInProcess: Bool
+}
+
+struct AuthorizationReport: Codable {
+    let schema: String
+    let generatedAt: String
+    let signing: RuntimeSigningIdentity
+    let before: AuthorizationSnapshot
+    let cameraGranted: Bool
+    let microphoneGranted: Bool
+    let screenCaptureGranted: Bool
+    let after: AuthorizationSnapshot
+}
+
 enum LiveProbeError: Error, CustomStringConvertible {
     case invalidArguments(String)
     case screenPermissionMissing
@@ -213,7 +237,7 @@ enum LiveProbeError: Error, CustomStringConvertible {
         case .writer(let value): "Writer failure: \(value)"
         case .capture(let value): "Capture failure: \(value)"
         case .privacy(let value): "Privacy boundary failure: \(value)"
-        case .signingNotApproved: "Live recording requires the exact approved Developer ID fingerprint 189EC9780DE0A94CF5B24CC5983CAB3FDAE15638."
+        case .signingNotApproved: "Live capture and authorization require the exact approved Developer ID fingerprint 189EC9780DE0A94CF5B24CC5983CAB3FDAE15638."
         }
     }
 }

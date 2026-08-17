@@ -69,15 +69,21 @@ artifact hash to the exact branch SHA, Mini host, macOS, hardware, toolchain, an
 The Mac Mini currently enumerates no camera. `powermetrics` also requires an interactive
 administrator password; noninteractive sudo is unavailable. No TCC, preference, audio, output,
 or diagnostics state was changed. To close the gate, Tim must make an iPhone Continuity Camera
-or another camera visible to the Mini and approve an interactive Mini run that:
+or another camera visible to the Mini and run the confirmed 100-minute
+[`run-human-gate-wizard.sh`](scripts/run-human-gate-wizard.sh), which:
 
-1. verifies the exact selected device and opens a signed, stable-path probe using only the
-   approved certificate from `docs/release/signing.md`;
-2. selects a real browser window with a static page, a low-change page, and active scrolling;
-3. performs camera-only and camera/browser runs for all three shapes, including pause/resume and
-   physically disconnecting the exact selected camera; and
-4. enters the administrator password once for `powermetrics` so CPU/GPU/ANE/power and thermal
-   samples can be bound to the same manifest.
+1. verifies the exact selected camera without persisting its stable ID;
+2. builds the stable-path probe with only the approved certificate, then explicitly asks before
+   the approved-signed `authorize` command invokes macOS-owned Camera, Microphone, and Screen
+   Recording prompts;
+3. selects one exact real browser window and prepares static, low-change, and active cases;
+4. performs camera-only and camera/browser runs for all three shapes, including pause/resume and
+   physically disconnecting the exact selected camera;
+5. leaves the administrator password entirely in foreground `sudo powermetrics` while binding
+   CPU/GPU/ANE/power and thermal samples to the two comparison runs; and
+6. verifies 28 movies, restores TCC/app/camera/browser/volume/power state, preserves PIDs 12083
+   and 9243, hashes the evidence, and records Tim's `camera-driven`, `fixed-clock`, or `unresolved`
+   verdict.
 
 The Mini's CuaDriver PID 12083 and Screen Sharing PID 9243 were present before and after the
 native run. The 15 prototype-owned render PIDs are recorded in `processes.tsv`; all exited 0,
@@ -95,11 +101,13 @@ compose the live buffers through Metal-backed Core Image into a real-time H.264 
 audio and microphone inputs are separate real-time AAC tracks when explicitly requested and
 already authorized.
 
-The live metrics schema includes exact camera/window IDs, callback cadence and p95 jitter,
-camera latency, browser age, A/V endpoint drift, writer readiness/drops, pause/resume,
+The live metrics schema includes redacted camera/window descriptors plus in-process exact-match
+booleans, callback cadence and p95 jitter, camera latency, browser age, A/V endpoint drift,
+writer readiness/drops, pause/resume,
 disconnect reason, monotonicity, privacy scans, CPU/RSS/thermal, runtime certificate chain/TCC
-state, and a predeclared external-powermetrics path. The tool does not invoke `sudo`, request
-TCC, silently omit requested audio, substitute a display, or switch cameras.
+state, and a predeclared external-powermetrics path. The recording path does not invoke `sudo`,
+request TCC, silently omit requested audio, substitute a display, or switch cameras. Only the
+explicit `authorize` command requests TCC, after verifying the approved runtime fingerprint.
 
 This preparation does not close the physical gate. Until a camera is present and Tim performs
 the signed run, all live metric fields remain unmeasured.

@@ -377,9 +377,9 @@ final class LiveCaptureCoordinator {
         stateLock.lock(); defer { stateLock.unlock() }; return paused
     }
 
-    func selectedCameraDisconnected(uniqueID: String) {
+    func selectedCameraDisconnected() {
         statistics.disconnected()
-        statistics.event("selected-camera-disconnected", detail: uniqueID)
+        statistics.event("selected-camera-disconnected", detail: "exact-selected-device")
         requestStop(reason: "selected-camera-disconnected")
     }
 

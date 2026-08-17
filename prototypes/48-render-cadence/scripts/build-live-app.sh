@@ -44,18 +44,19 @@ grep -Fq "SHA-1 hash: $approved_sha1" <<<"$certificate_listing" || {
     echo "approved certificate fingerprint is not live; refusing to sign" >&2
     exit 5
 }
-if grep -Fq "SHA-1 hash: $disallowed_prefix" <<<"$certificate_listing"; then
-    echo "disallowed certificate unexpectedly matched approved-name query" >&2
+identity_listing=$(security find-identity -v -p codesigning 2>/dev/null || true)
+if grep -Fq "$disallowed_prefix" <<<"$identity_listing"; then
+    echo "disallowed signing identity is live; refusing to sign" >&2
     exit 6
 fi
-security find-identity -v -p codesigning | grep -Fq "$approved_name" || {
+grep -F "$approved_sha1" <<<"$identity_listing" | grep -F "$approved_name" >/dev/null || {
     echo "approved signing identity/private key is unavailable" >&2
     exit 7
 }
 
 codesign --force --options runtime --timestamp \
     --entitlements "$prototype_root/LiveProbe.entitlements" \
-    --sign "$approved_name" "$app"
+    --sign "$approved_sha1" "$app"
 codesign --verify --strict --verbose=2 "$app"
 
 identity_dir=$(mktemp -d /tmp/grab-rabbit-live-identity.XXXXXX)

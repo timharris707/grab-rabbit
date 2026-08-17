@@ -1,4 +1,5 @@
 import AVFoundation
+import CoreGraphics
 import Darwin
 import Foundation
 import LiveProbeCore
@@ -72,6 +73,8 @@ struct LiveCadenceProbeMain {
                 try await listSources(options)
             case "preflight":
                 try await preflight(options)
+            case "authorize":
+                try await authorize(options)
             case "record":
                 try await record(options)
             default:
@@ -114,8 +117,8 @@ struct LiveCadenceProbeMain {
                 "schema": "grab-rabbit-live-cadence-preflight-v1",
                 "generated_at": iso8601Now(),
                 "passed": true,
-                "camera_id": cameraID,
-                "window_id": windowID as Any,
+                "exact_camera_id_matched_in_process": true,
+                "exact_window_id_matched_in_process": windowID != nil,
                 "output_created": false,
                 "output_path": outputPath as Any,
                 "privacy_sentinel_pixels": sentinelResult,
@@ -151,6 +154,40 @@ struct LiveCadenceProbeMain {
             FileHandle.standardError.write(data)
             FileHandle.standardError.write(Data("\n".utf8))
             exit(code)
+        }
+    }
+
+    private static func authorize(_ options: CLIOptions) async throws {
+        let reportURL = URL(fileURLWithPath: try options.required("--json"))
+        try validateNewOutput(reportURL)
+        let signing = RuntimeSigningIdentity.current()
+        guard signing.approvedDeveloperIDPresent else { throw LiveProbeError.signingNotApproved }
+        let before = AuthorizationSnapshot.current()
+        let cameraGranted = before.camera == "authorized"
+            ? true
+            : await AVCaptureDevice.requestAccess(for: .video)
+        let microphoneGranted = before.microphone == "authorized"
+            ? true
+            : await AVCaptureDevice.requestAccess(for: .audio)
+        let screenCaptureGranted = before.screenCapturePreflightGranted
+            ? true
+            : CGRequestScreenCaptureAccess()
+        let report = AuthorizationReport(
+            schema: "grab-rabbit-live-cadence-authorization-v1",
+            generatedAt: iso8601Now(),
+            signing: signing,
+            before: before,
+            cameraGranted: cameraGranted,
+            microphoneGranted: microphoneGranted,
+            screenCaptureGranted: screenCaptureGranted,
+            after: AuthorizationSnapshot.current()
+        )
+        let data = try prettyEncoder().encode(report)
+        try data.write(to: reportURL, options: .atomic)
+        FileHandle.standardOutput.write(data)
+        FileHandle.standardOutput.write(Data("\n".utf8))
+        guard cameraGranted, microphoneGranted, screenCaptureGranted else {
+            throw LiveProbeError.capture("one or more requested TCC grants remain unavailable")
         }
     }
 
@@ -254,8 +291,19 @@ struct LiveCadenceProbeMain {
                 fps: fps,
                 duration: duration,
                 outputURL: outputURL,
-                selectedCamera: selectedCamera,
-                selectedWindow: selectedWindow,
+                selectedCamera: LiveCameraEvidence(
+                    name: selectedCamera.name,
+                    deviceType: selectedCamera.deviceType,
+                    exactUniqueIDMatchedInProcess: true
+                ),
+                selectedWindow: selectedWindow.map {
+                    LiveWindowEvidence(
+                        applicationName: $0.applicationName,
+                        width: $0.width,
+                        height: $0.height,
+                        exactWindowIDMatchedInProcess: true
+                    )
+                },
                 authorizationBefore: authorizationBefore,
                 authorizationAfter: AuthorizationSnapshot.current(),
                 signing: signing,
@@ -286,8 +334,8 @@ struct LiveCadenceProbeMain {
         fps: Int,
         duration: Double,
         outputURL: URL,
-        selectedCamera: StableCameraSource,
-        selectedWindow: CapturableWindowSource?,
+        selectedCamera: LiveCameraEvidence,
+        selectedWindow: LiveWindowEvidence?,
         authorizationBefore: AuthorizationSnapshot,
         authorizationAfter: AuthorizationSnapshot,
         signing: RuntimeSigningIdentity,
@@ -434,6 +482,7 @@ struct LiveCadenceProbeMain {
         usage:
           live-cadence-probe list-sources [--json PATH] [--skip-window-query]
           live-cadence-probe preflight --camera-id ID [--window-id ID] [--output PATH] [--json PATH]
+          live-cadence-probe authorize --json /absolute/authorization.json
           live-cadence-probe record --camera-id ID [--window-id ID] --candidate camera-driven|fixed-clock --canvas 16x9|9x16|square --output PATH --metrics PATH --events PATH [--duration S] [--fps N] [--pause-at S --pause-duration S] [--system-audio] [--microphone] [--powermetrics-path PATH]
         """)
     }

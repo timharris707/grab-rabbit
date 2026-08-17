@@ -1229,6 +1229,7 @@ final class WindowCapturePrivacyTests: XCTestCase {
 
     func testApplicationTerminationStopsReplacementWhileEarlierStopDismissalIsPending() throws {
         let appSource = try projectSource("QuickRecorder/QuickRecorderApp.swift")
+        let contextSource = try projectSource("QuickRecorder/SCContext.swift")
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("termination-stale-stop-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
@@ -1396,6 +1397,24 @@ final class WindowCapturePrivacyTests: XCTestCase {
         XCTAssertTrue(
             appSource.contains("SCContext.stopRecording(origin: .applicationTermination)"),
             "The application delegate must bind Quit to the authoritative production Stop origin."
+        )
+        let stopRecordingStart = try XCTUnwrap(
+            contextSource.range(of: "    static func stopRecording(")
+        )
+        let stopRecordingEnd = try XCTUnwrap(
+            contextSource.range(
+                of: "    private static func finishCompletedAudioPackage(",
+                range: stopRecordingStart.upperBound..<contextSource.endIndex
+            )
+        )
+        let stopRecordingSource = contextSource[
+            stopRecordingStart.lowerBound..<stopRecordingEnd.lowerBound
+        ]
+        XCTAssertTrue(
+            stopRecordingSource.contains(
+                "expectedSession: expectedSession,\n            origin: origin,\n            activeStream: stream,"
+            ),
+            "SCContext must forward Quit's authoritative origin into the production Stop entry."
         )
     }
 

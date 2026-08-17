@@ -1076,6 +1076,157 @@ final class WindowCapturePrivacyTests: XCTestCase {
         XCTAssertEqual(legacyFallbackCount, 1)
     }
 
+    func testStaleStopControlCannotStopReplacementBeforeDismissalAcknowledgement() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("stale-stop-replacement-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        func makeJob(_ stem: String) throws -> RecordingOutputJob {
+            let job = try RecordingOutputJob.reserve(
+                in: directory,
+                preferredStem: stem,
+                layout: .single(fileExtension: "mov")
+            )
+            XCTAssertTrue(FileManager.default.createFile(
+                atPath: job.inputURL.path,
+                contents: Data(stem.utf8)
+            ))
+            return job
+        }
+
+        let store = CaptureOutputSessionStore()
+        let entry = CaptureProductionStopEntry(store: store)
+        let streamA = NSObject()
+        let writerA = ImmediateCaptureWriterFinalizer(result: .success(()))
+        let jobA = try makeJob("recording-a")
+        let sessionA = makeCaptureSession(
+            stream: streamA,
+            mode: .transparent,
+            sink: TestVideoDestination(),
+            outputJob: jobA,
+            writerFinalizer: writerA
+        )
+        let resourcesA = CaptureProductionStopResources(
+            outputJob: jobA,
+            writerFinalizer: writerA,
+            isAudioOnly: false,
+            markVideoInputFinished: {}
+        )
+        var acknowledgeDismissalA: (() -> Void)?
+        let actionsA = CaptureProductionStopActions(
+            stopActiveStream: { _ in false },
+            cleanupTerminal: { acknowledgeDismissalA = $0 }
+        )
+
+        XCTAssertTrue(store.reserve(sessionA.id))
+        XCTAssertTrue(store.install(sessionA))
+        XCTAssertTrue(store.deactivate(sessionA))
+        XCTAssertEqual(
+            entry.stop(
+                expectedSession: sessionA,
+                activeStream: nil,
+                resolveResources: { _ in resourcesA },
+                actions: actionsA
+            ),
+            .handled
+        )
+        XCTAssertEqual(jobA.lifecycle, .terminal)
+        XCTAssertNotNil(acknowledgeDismissalA)
+
+        let streamB = NSObject()
+        let writerB = ImmediateCaptureWriterFinalizer(result: .success(()))
+        let jobB = try makeJob("recording-b")
+        let sessionB = makeCaptureSession(
+            stream: streamB,
+            mode: .transparent,
+            sink: TestVideoDestination(),
+            outputJob: jobB,
+            writerFinalizer: writerB
+        )
+        let resourcesB = CaptureProductionStopResources(
+            outputJob: jobB,
+            writerFinalizer: writerB,
+            isAudioOnly: false,
+            markVideoInputFinished: {}
+        )
+        var replacementStopOfferCount = 0
+        var replacementFinalizationCount = 0
+        var replacementPrepareCount = 0
+        var replacementCleanupCount = 0
+        var replacementActions: CaptureProductionStopActions!
+        let replacementCore = CaptureOutputCore(
+            store: store,
+            failureHandler: { _ in XCTFail("Replacement B must not fail.") },
+            stopHandler: { stoppedSession in
+                replacementFinalizationCount += 1
+                XCTAssertTrue(stoppedSession === sessionB)
+                XCTAssertEqual(
+                    entry.stop(
+                        expectedSession: stoppedSession,
+                        activeStream: nil,
+                        resolveResources: { _ in resourcesB },
+                        actions: replacementActions
+                    ),
+                    .handled
+                )
+            }
+        )
+        let replacementAdapter = CaptureStreamCallbackAdapter(core: replacementCore)
+        replacementActions = CaptureProductionStopActions(
+            stopActiveStream: { activeStream in
+                replacementStopOfferCount += 1
+                return replacementAdapter.handleStop(from: activeStream)
+            },
+            prepareForFinalization: { session, _ in
+                replacementPrepareCount += 1
+                XCTAssertTrue(session === sessionB)
+            },
+            cleanupTerminal: { acknowledge in
+                replacementCleanupCount += 1
+                acknowledge()
+            }
+        )
+
+        XCTAssertTrue(store.reserve(sessionB.id))
+        XCTAssertTrue(store.install(sessionB))
+        XCTAssertEqual(
+            entry.stop(
+                expectedSession: nil,
+                activeStream: streamB,
+                resolveResources: { _ in resourcesB },
+                actions: replacementActions
+            ),
+            .handled
+        )
+        XCTAssertTrue(store.activeSession() === sessionB)
+        XCTAssertEqual(replacementStopOfferCount, 0)
+        XCTAssertEqual(replacementFinalizationCount, 0)
+        XCTAssertEqual(replacementPrepareCount, 0)
+        XCTAssertEqual(replacementCleanupCount, 0)
+        XCTAssertEqual(writerB.finishCallCount, 0)
+        XCTAssertEqual(jobB.lifecycle, .recording)
+        guard store.activeSession() === sessionB else { return }
+
+        acknowledgeDismissalA?()
+        XCTAssertEqual(
+            entry.stop(
+                expectedSession: nil,
+                activeStream: streamB,
+                resolveResources: { _ in resourcesB },
+                actions: replacementActions
+            ),
+            .handled
+        )
+        XCTAssertEqual(replacementStopOfferCount, 1)
+        XCTAssertEqual(replacementFinalizationCount, 1)
+        XCTAssertEqual(replacementPrepareCount, 1)
+        XCTAssertEqual(replacementCleanupCount, 1)
+        XCTAssertEqual(writerB.finishCallCount, 1)
+        XCTAssertEqual(jobB.lifecycle, .terminal)
+        XCTAssertNil(store.activeSession())
+    }
+
     func testEarlierStatusDismissalCannotClearNewerStaleStopGuard() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("overlapping-stop-dismissals-\(UUID().uuidString)", isDirectory: true)

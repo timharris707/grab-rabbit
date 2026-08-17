@@ -799,6 +799,9 @@ final class CaptureProductionStopEntry {
             }
             return .handled
         }
+        if store.hasPendingStopControlDismissal {
+            return .handled
+        }
         if let activeStream, actions.stopActiveStream(activeStream) {
             return .handled
         }
@@ -1870,6 +1873,10 @@ final class CaptureOutputSessionStore {
         lock.withLock {
             !isIdle || terminationApprovalPending || pendingStopControlDismissalCount > 0
         }
+    }
+
+    var hasPendingStopControlDismissal: Bool {
+        lock.withLock { pendingStopControlDismissalCount > 0 }
     }
 
     var shouldSuppressUnownedStop: Bool {

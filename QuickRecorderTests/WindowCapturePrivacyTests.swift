@@ -3105,7 +3105,6 @@ final class WindowCapturePrivacyTests: XCTestCase {
         microphoneInput: (any CaptureVideoSampleDestination)? = nil,
         outputJob: RecordingOutputJob? = nil,
         isAudioOnly: Bool = false,
-        outputJob: RecordingOutputJob? = nil,
         writerFinalizer: (any CaptureWriterFinalizing)? = nil,
         saveFrameHandler: ((CMSampleBuffer) -> Void)? = nil,
         firstFrameHandler: ((CMSampleBuffer) -> Void)? = nil,

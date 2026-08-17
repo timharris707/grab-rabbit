@@ -781,9 +781,14 @@ final class CaptureApplicationTerminationCoordinator {
             return true
         }
         guard shouldRegister else { return true }
-        let idleHandler = { [weak self, scheduleReply] in
-            self?.lock.withLock { self?.isWaiting = false }
-            scheduleReply(replyWhenFinished)
+        let idleHandler = { [weak self, store, scheduleReply] in
+            scheduleReply {
+                defer {
+                    store.completeApplicationTerminationApproval()
+                    self?.lock.withLock { self?.isWaiting = false }
+                }
+                replyWhenFinished()
+            }
         }
         switch store.prepareForApplicationTermination(idleHandler) {
         case .idle:
@@ -1384,6 +1389,8 @@ final class CaptureOutputSessionStore {
     private var finalizingSessionIDs = Set<UUID>()
     private var terminationRequestedSessionID: UUID?
     private var idleHandlers = [() -> Void]()
+    private var terminationApprovalPending = false
+    private var scheduledTerminationApprovalCount = 0
 
     var isIdle: Bool {
         lock.withLock {
@@ -1394,7 +1401,10 @@ final class CaptureOutputSessionStore {
     @discardableResult
     func reserve(_ sessionID: UUID) -> Bool {
         lock.withLock {
-            guard currentSession == nil, retiredSessions.isEmpty, pendingSessionID == nil else {
+            guard !terminationApprovalPending,
+                  currentSession == nil,
+                  retiredSessions.isEmpty,
+                  pendingSessionID == nil else {
                 return false
             }
             pendingSessionID = sessionID
@@ -1419,6 +1429,7 @@ final class CaptureOutputSessionStore {
     func install(_ session: CaptureOutputSession) -> Bool {
         lock.withLock {
             guard currentSession == nil, retiredSessions.isEmpty else { return false }
+            if terminationApprovalPending, pendingSessionID != session.id { return false }
             if let pendingSessionID, pendingSessionID != session.id { return false }
             pendingSessionID = nil
             currentSession = session
@@ -1529,6 +1540,7 @@ final class CaptureOutputSessionStore {
     ) -> TerminationPreparation {
         lock.withLock {
             guard !isIdle else { return .idle }
+            terminationApprovalPending = true
             idleHandlers.append(handler)
             if let pendingSessionID {
                 terminationRequestedSessionID = pendingSessionID
@@ -1547,6 +1559,16 @@ final class CaptureOutputSessionStore {
             }
             terminationRequestedSessionID = nil
             return true
+        }
+    }
+
+    func completeApplicationTerminationApproval() {
+        lock.withLock {
+            guard scheduledTerminationApprovalCount > 0 else { return }
+            scheduledTerminationApprovalCount -= 1
+            if scheduledTerminationApprovalCount == 0, idleHandlers.isEmpty {
+                terminationApprovalPending = false
+            }
         }
     }
 
@@ -1575,6 +1597,7 @@ final class CaptureOutputSessionStore {
     private func takeIdleHandlersIfNeeded() -> [() -> Void] {
         guard isIdle else { return [] }
         terminationRequestedSessionID = nil
+        scheduledTerminationApprovalCount += idleHandlers.count
         defer { idleHandlers.removeAll() }
         return idleHandlers
     }

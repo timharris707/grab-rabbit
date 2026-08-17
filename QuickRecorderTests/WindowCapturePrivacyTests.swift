@@ -1258,6 +1258,51 @@ final class WindowCapturePrivacyTests: XCTestCase {
         ))
     }
 
+    func testQueuedTerminationApprovalCannotBeOvertakenByReplacementReservation() {
+        let stream = NSObject()
+        let store = CaptureOutputSessionStore()
+        let session = makeCaptureSession(
+            stream: stream,
+            mode: .transparent,
+            sink: TestVideoDestination()
+        )
+        var scheduledReply: (() -> Void)?
+        let termination = CaptureApplicationTerminationCoordinator(
+            store: store,
+            scheduleReply: { scheduledReply = $0 }
+        )
+        let replacementID = UUID()
+        var replyCount = 0
+        var replacementWasManagedInsideReply = false
+
+        XCTAssertTrue(store.install(session))
+        XCTAssertTrue(termination.prepareForTermination(
+            stopActiveCapture: {
+                XCTAssertTrue(store.deactivate(session))
+                XCTAssertTrue(store.release(session))
+            },
+            replyWhenFinished: {
+                replyCount += 1
+                replacementWasManagedInsideReply = store.reserve(replacementID)
+                if replacementWasManagedInsideReply { store.cancelReservation(replacementID) }
+            }
+        ))
+
+        XCTAssertNotNil(scheduledReply)
+        XCTAssertFalse(
+            store.reserve(replacementID),
+            "B cannot reserve after A becomes idle while termination approval is still queued."
+        )
+        scheduledReply?()
+        XCTAssertEqual(replyCount, 1)
+        XCTAssertFalse(replacementWasManagedInsideReply)
+        XCTAssertTrue(
+            store.reserve(replacementID),
+            "The latch must clear after the approval callback returns rather than deadlocking legitimate state."
+        )
+        store.cancelReservation(replacementID)
+    }
+
     func testApplicationTerminationDuringPendingPreparationIsObservedAfterInstallation() throws {
         let engineSource = try projectSource("QuickRecorder/RecordEngine.swift")
         let appSource = try projectSource("QuickRecorder/QuickRecorderApp.swift")

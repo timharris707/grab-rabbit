@@ -266,7 +266,7 @@ APPROVED_TEAM="F66FM4V88Q"
 APPROVED_SHA1="189EC9780DE0A94CF5B24CC5983CAB3FDAE15638"
 PROHIBITED_PREFIX="45F21D"
 BUNDLE_ID="dev.clickai.grabrabbit.prototype.render-cadence"
-STABLE_APP_DIR="${HOME}/Applications"
+STABLE_APP_DIR="$PROTOTYPE_ROOT/.build/human-gate-stable"
 STABLE_APP="$STABLE_APP_DIR/Grab Rabbit Live Cadence Probe.app"
 LIVE_PROBE="$STABLE_APP/Contents/MacOS/live-cadence-probe"
 UNSIGNED_PROBE="$PROTOTYPE_ROOT/.build/release/live-cadence-probe"
@@ -286,7 +286,7 @@ SELECTED_WINDOW_APP=""
 LAST_RUN_FAILURE=""
 CAMERA_STATE_MAY_DIFFER=false
 STABLE_APP_MAY_EXIST=false
-STABLE_APP_DIR_CREATED=false
+CREATED_STABLE_APP_DIR=""
 TCC_STATE_MAY_DIFFER=false
 BROWSER_CASE_MAY_BE_OPEN=false
 TCC_BEFORE_FILE="$EVIDENCE_DIR/tcc-before.json"
@@ -331,13 +331,21 @@ untrack_owned_pid() {
   fi
 }
 
+stable_app_directory_is_empty() {
+  local directory="$1" entry
+  [[ -d "$directory" && ! -L "$directory" ]] || return 1
+  for entry in "$directory"/* "$directory"/.[!.]* "$directory"/..?*; do
+    [[ ! -e "$entry" && ! -L "$entry" ]] || return 1
+  done
+}
+
 record_pending_restoration() {
   [[ "$TCC_STATE_MAY_DIFFER" == false ]] \
     || manual "restore the prototype bundle's Camera, Microphone, and Screen Capture TCC state to $TCC_BEFORE_FILE"
   [[ "$STABLE_APP_MAY_EXIST" == false ]] \
     || manual "move only the wizard-created stable probe at $STABLE_APP to Trash after its processes stop"
-  [[ "$STABLE_APP_DIR_CREATED" == false ]] \
-    || manual "remove $STABLE_APP_DIR only if it is still the empty directory created by this wizard"
+  [[ -z "$CREATED_STABLE_APP_DIR" ]] \
+    || manual "after moving the stable probe to Trash, remove only the recorded wizard-created directory $CREATED_STABLE_APP_DIR if it is empty and still equals $PROTOTYPE_ROOT/.build/human-gate-stable"
   [[ "$CAMERA_STATE_MAY_DIFFER" == false ]] \
     || manual "restore the physical camera inventory to its before-run state"
   [[ "$BROWSER_CASE_MAY_BE_OPEN" == false ]] \
@@ -854,12 +862,23 @@ check "the exact approved signer is available and no $PROHIBITED_PREFIX identity
 if ! approved_signer_is_exclusive; then
   fatal_gate "approved signer-only gate is not satisfied; fix Keychain state outside the wizard and rerun"
 fi
-[[ ! -e "$STABLE_APP" ]] || fatal_gate "stable app path already exists; move it safely before rerunning rather than overwriting it"
+[[ "$PROTOTYPE_ROOT" == /* ]] || fatal_gate "the prototype root must be an absolute path"
+[[ "$STABLE_APP_DIR" == "$PROTOTYPE_ROOT/.build/human-gate-stable" ]] \
+  || fatal_gate "the stable app directory is not the exact wizard-owned prototype path"
+[[ "$STABLE_APP" == "$STABLE_APP_DIR/Grab Rabbit Live Cadence Probe.app" ]] \
+  || fatal_gate "the stable app escaped its exact wizard-owned directory"
+[[ ! -e "$STABLE_APP" && ! -L "$STABLE_APP" ]] \
+  || fatal_gate "stable app path already exists; move it safely before rerunning rather than overwriting it"
+[[ ! -e "$STABLE_APP_DIR" && ! -L "$STABLE_APP_DIR" ]] \
+  || fatal_gate "stable app directory already exists; move it safely before rerunning rather than reusing or overwriting it"
 if ! confirm "Create $STABLE_APP_DIR and sign the new probe at the stable path using only $APPROVED_SHA1?"; then
   fatal_gate "stable approved signing was not authorized"
 fi
-if [[ ! -e "$STABLE_APP_DIR" ]]; then STABLE_APP_DIR_CREATED=true; fi
-mkdir -p "$STABLE_APP_DIR" || fatal_gate "could not create the stable app directory"
+CREATED_STABLE_APP_DIR="$STABLE_APP_DIR"
+if ! mkdir "$CREATED_STABLE_APP_DIR"; then
+  CREATED_STABLE_APP_DIR=""
+  fatal_gate "could not create the exact stable app directory"
+fi
 STABLE_APP_MAY_EXIST=true
 "$SCRIPT_DIR/build-live-app.sh" --sign-approved --output "$STABLE_APP" \
   >"$EVIDENCE_DIR/signed-build.txt" 2>"$EVIDENCE_DIR/signed-build.stderr.txt" \
@@ -1054,9 +1073,19 @@ osascript -e "tell application \"Finder\" to delete POSIX file \"$STABLE_APP\"" 
   || fatal_gate "Finder could not move the wizard-created stable probe to Trash"
 required_check "the wizard-created stable app no longer occupies its before-empty path" test ! -e "$STABLE_APP"
 STABLE_APP_MAY_EXIST=false
-if [[ "$STABLE_APP_DIR_CREATED" == true ]]; then
-  rmdir "$STABLE_APP_DIR" || fatal_gate "the wizard-created stable app directory is not empty and could not be restored"
-  STABLE_APP_DIR_CREATED=false
+if [[ -n "$CREATED_STABLE_APP_DIR" ]]; then
+  [[ "$PROTOTYPE_ROOT" == /* ]] || fatal_gate "the prototype root is no longer an absolute path"
+  [[ "$STABLE_APP_DIR" == "$PROTOTYPE_ROOT/.build/human-gate-stable" ]] \
+    || fatal_gate "the stable app directory no longer equals the exact wizard-owned prototype path"
+  [[ "$CREATED_STABLE_APP_DIR" == "$STABLE_APP_DIR" ]] \
+    || fatal_gate "refusing to remove a directory other than the exact directory recorded at creation"
+  [[ ! -e "$STABLE_APP" && ! -L "$STABLE_APP" ]] \
+    || fatal_gate "refusing to remove the recorded directory before the stable app is gone"
+  stable_app_directory_is_empty "$CREATED_STABLE_APP_DIR" \
+    || fatal_gate "the recorded wizard-created stable app directory is not empty"
+  rmdir "$CREATED_STABLE_APP_DIR" \
+    || fatal_gate "the recorded empty wizard-created stable app directory could not be restored"
+  CREATED_STABLE_APP_DIR=""
 fi
 if [[ "$CAMERA_WAS_PRESENT_INITIALLY" == false ]]; then
   say "The selected camera was absent from the initial snapshot, so disconnect it to restore exact physical state."

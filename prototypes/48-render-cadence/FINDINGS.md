@@ -73,7 +73,8 @@ or another camera visible to the Mini and run the confirmed 100-minute
 [`run-human-gate-wizard.sh`](scripts/run-human-gate-wizard.sh), which:
 
 1. verifies the exact selected camera without persisting its stable ID;
-2. builds the stable-path probe with only the approved certificate, then explicitly asks before
+2. refuses any pre-existing `.build/human-gate-stable` path, creates the stable-path probe only
+   beneath that wizard-owned directory with the approved certificate, then explicitly asks before
    the approved-signed `authorize` command invokes macOS-owned Camera, Microphone, and Screen
    Recording prompts;
 3. selects one exact real browser window and prepares static, low-change, and active cases;
@@ -81,9 +82,10 @@ or another camera visible to the Mini and run the confirmed 100-minute
    physically disconnecting the exact selected camera;
 5. leaves the administrator password entirely in foreground `sudo powermetrics` while binding
    CPU/GPU/ANE/power and thermal samples to the two comparison runs; and
-6. verifies 28 movies, restores TCC/app/camera/browser/volume/power state, preserves PIDs 12083
-   and 9243, hashes the evidence, and records Tim's `camera-driven`, `fixed-clock`, or `unresolved`
-   verdict.
+6. verifies 28 movies, restores TCC/app/camera/browser/volume/power state, removes only the exact
+   recorded wizard-created directory after the app is in Trash and the directory is empty,
+   preserves PIDs 12083 and 9243, hashes the evidence, and records Tim's `camera-driven`,
+   `fixed-clock`, or `unresolved` verdict.
 
 The Mini's CuaDriver PID 12083 and Screen Sharing PID 9243 were present before and after the
 native run. The 15 prototype-owned render PIDs are recorded in `processes.tsv`; all exited 0,

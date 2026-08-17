@@ -107,7 +107,10 @@ prototypes/48-render-cadence/scripts/run-human-gate-wizard.sh
 Start from a clean, pushed `prototype/48-render-cadence` checkout on the Mac Mini. Have the exact
 camera, a browser, the approved certificate/private key already visible in Keychain Access, the
 administrator password, and time to inspect the movies in QuickTime. The stable probe app path
-must be empty, the prohibited `45F21D…` identity must not be live, and protected PIDs 12083 and
-9243 must still be running. The wizard estimates 100 minutes, asks before every stateful or
-interactive phase, lets `sudo` own its foreground password prompt, and never writes a password or
-exact camera/window ID. Do not run it as an automated or unattended gate.
+and its exact wizard-owned `prototypes/48-render-cadence/.build/human-gate-stable` parent must not
+exist, the prohibited `45F21D…` identity must not be live, and protected PIDs 12083 and 9243 must
+still be running. The wizard creates the app only beneath that parent and removes only the exact
+directory it recorded creating, after the app is in Trash and the directory is empty. It estimates
+100 minutes, asks before every stateful or interactive phase, lets `sudo` own its foreground
+password prompt, and never writes a password or exact camera/window ID. Do not run it as an
+automated or unattended gate.

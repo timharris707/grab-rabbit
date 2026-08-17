@@ -1738,6 +1738,7 @@ final class CaptureOutputSessionStore {
     func reserve(_ sessionID: UUID) -> Bool {
         lock.withLock {
             guard !terminationApprovalPending,
+                  pendingStopControlDismissalCount == 0,
                   currentSession == nil,
                   retiredSessions.isEmpty,
                   pendingSessionID == nil else {

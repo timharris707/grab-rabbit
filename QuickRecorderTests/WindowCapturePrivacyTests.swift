@@ -833,6 +833,11 @@ final class WindowCapturePrivacyTests: XCTestCase {
                 XCTAssertFalse(FileManager.default.fileExists(atPath: job.finalURL.path))
                 XCTAssertFalse(FileManager.default.fileExists(atPath: job.reservationURL.path))
             }
+            XCTAssertFalse(
+                store.reserve(sessionB),
+                "B must remain blocked until terminal Stop-control dismissal."
+            )
+            store.acknowledgeStopControlDismissal()
             XCTAssertTrue(store.reserve(sessionB), "B may reserve after every terminal writer outcome")
             store.cancelReservation(sessionB)
         }
@@ -981,9 +986,20 @@ final class WindowCapturePrivacyTests: XCTestCase {
         XCTAssertNotNil(pendingStatusDismissal)
         XCTAssertEqual(try terminalResult?.get(), job.finalURL)
         XCTAssertEqual(try Data(contentsOf: job.finalURL), Data("recording-a".utf8))
-        XCTAssertTrue(store.reserve(replacementID), "Replacement may start after exact terminal release.")
-        store.cancelReservation(replacementID)
+        let replacementReservedBeforeDismissal = store.reserve(replacementID)
+        if replacementReservedBeforeDismissal {
+            store.cancelReservation(replacementID)
+        }
+        XCTAssertFalse(
+            replacementReservedBeforeDismissal,
+            "Replacement must remain refused until the visible finishing control is dismissed."
+        )
         pendingStatusDismissal?()
+        XCTAssertTrue(
+            store.reserve(replacementID),
+            "Replacement may start after the finishing control dismissal is acknowledged."
+        )
+        store.cancelReservation(replacementID)
     }
 
     func testFastTerminalCompletionSuppressesStaleStopUntilStatusDismissal() throws {
@@ -1153,10 +1169,14 @@ final class WindowCapturePrivacyTests: XCTestCase {
         writer.complete(.success(()))
 
         XCTAssertEqual(renderedStatusWidth, 112)
-        XCTAssertTrue(store.reserve(replacementID), "Start may succeed after A reaches terminal state.")
-        store.cancelReservation(replacementID)
+        XCTAssertFalse(
+            store.reserve(replacementID),
+            "Start must remain refused while the finishing control is visible."
+        )
         wait(for: [statusDismissed], timeout: 1)
         XCTAssertNil(renderedStatusWidth)
+        XCTAssertTrue(store.reserve(replacementID), "Start may succeed after status dismissal.")
+        store.cancelReservation(replacementID)
     }
 
     func testFinalizationSupersedesOlderQueuedStatusUpdateWithoutAdvancingTerminalDismissal() {
@@ -1391,8 +1411,7 @@ final class WindowCapturePrivacyTests: XCTestCase {
             }
         )
 
-        XCTAssertTrue(store.reserve(sessionB.id))
-        XCTAssertTrue(store.install(sessionB))
+        XCTAssertFalse(store.reserve(sessionB.id))
         XCTAssertEqual(
             entry.stop(
                 expectedSession: nil,
@@ -1402,16 +1421,16 @@ final class WindowCapturePrivacyTests: XCTestCase {
             ),
             .handled
         )
-        XCTAssertTrue(store.activeSession() === sessionB)
+        XCTAssertNil(store.activeSession())
         XCTAssertEqual(replacementStopOfferCount, 0)
         XCTAssertEqual(replacementFinalizationCount, 0)
         XCTAssertEqual(replacementPrepareCount, 0)
         XCTAssertEqual(replacementCleanupCount, 0)
         XCTAssertEqual(writerB.finishCallCount, 0)
         XCTAssertEqual(jobB.lifecycle, .recording)
-        guard store.activeSession() === sessionB else { return }
-
         acknowledgeDismissalA?()
+        XCTAssertTrue(store.reserve(sessionB.id))
+        XCTAssertTrue(store.install(sessionB))
         XCTAssertEqual(
             entry.stop(
                 expectedSession: nil,
@@ -1430,7 +1449,7 @@ final class WindowCapturePrivacyTests: XCTestCase {
         XCTAssertNil(store.activeSession())
     }
 
-    func testApplicationTerminationStopsReplacementWhileEarlierStopDismissalIsPending() throws {
+    func testApplicationTerminationStopsReplacementAfterEarlierStopDismissal() throws {
         let appSource = try projectSource("QuickRecorder/QuickRecorderApp.swift")
         let contextSource = try projectSource("QuickRecorder/SCContext.swift")
         let directory = FileManager.default.temporaryDirectory
@@ -1487,6 +1506,8 @@ final class WindowCapturePrivacyTests: XCTestCase {
         XCTAssertEqual(jobA.lifecycle, .terminal)
         XCTAssertNotNil(acknowledgeDismissalA)
         XCTAssertTrue(store.hasPendingStopControlDismissal)
+        acknowledgeDismissalA?()
+        XCTAssertFalse(store.hasPendingStopControlDismissal)
 
         let streamB = NSObject()
         let writerB = DelayedCaptureWriterFinalizer()
@@ -1567,7 +1588,7 @@ final class WindowCapturePrivacyTests: XCTestCase {
             },
             replyWhenFinished: { replyCount += 1 }
         ))
-        XCTAssertNil(store.activeSession(), "Quit must retire replacement B despite stale UI from A.")
+        XCTAssertNil(store.activeSession(), "Quit must retire replacement B.")
         XCTAssertEqual(terminationStopCount, 1)
         XCTAssertEqual(stopOfferCount, 1)
         XCTAssertEqual(finalizationCount, 1)
@@ -1621,7 +1642,7 @@ final class WindowCapturePrivacyTests: XCTestCase {
         )
     }
 
-    func testEarlierStatusDismissalCannotClearNewerStaleStopGuard() throws {
+    func testEachStatusDismissalMustCompleteBeforeTheNextReservation() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("overlapping-stop-dismissals-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
@@ -1677,10 +1698,12 @@ final class WindowCapturePrivacyTests: XCTestCase {
         }
 
         try finishImmediately("recording-a")
+        XCTAssertEqual(pendingStatusDismissals.count, 1)
+        XCTAssertFalse(store.reserve(UUID()))
+        pendingStatusDismissals[0]()
         try finishImmediately("recording-b")
         XCTAssertEqual(pendingStatusDismissals.count, 2)
 
-        pendingStatusDismissals[0]()
         var fallbackCount = 0
         XCTAssertEqual(
             entry.stop(
@@ -2020,7 +2043,9 @@ final class WindowCapturePrivacyTests: XCTestCase {
         delayedWriter.complete(.success(()))
         XCTAssertEqual(job.lifecycle, .terminal)
         XCTAssertEqual(try Data(contentsOf: job.finalURL), Data("recording-a".utf8))
-        XCTAssertTrue(store.reserve(sessionB), "B may reserve only after A reaches terminal state.")
+        XCTAssertFalse(store.reserve(sessionB), "B remains refused before Stop-control dismissal.")
+        store.acknowledgeStopControlDismissal()
+        XCTAssertTrue(store.reserve(sessionB), "B may reserve after A's Stop control is dismissed.")
         store.cancelReservation(sessionB)
     }
 

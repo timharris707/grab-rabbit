@@ -23,26 +23,35 @@ main_source="$source_root/LiveCadenceProbeMain.swift"
 models_source="$source_root/LiveModels.swift"
 wizard="$prototype_root/scripts/run-human-gate-wizard.sh"
 stager="$prototype_root/scripts/stage-signed-app-to-mini.sh"
+stage_tests="$prototype_root/scripts/test-stage-signed-app.sh"
 
 regex_match_count() {
     (rg -n "$1" "$wizard" 2>/dev/null || true) | wc -l | tr -d ' '
 }
 
-[[ -f "$stager" && -x "$stager" ]] || {
-    echo "laptop-side signed-app stager is missing or not executable" >&2
+[[ -f "$stager" && -x "$stager" && -f "$stage_tests" && -x "$stage_tests" ]] || {
+    echo "laptop-side signed-app stager or its regression tests are missing or not executable" >&2
     exit 7
 }
+"$stage_tests" >"$evidence/stage-signed-app-tests.log"
 rg -n -F 'REMOTE_WORKTREE="/Users/openclaw/grab-rabbit/.worktrees/48-render-cadence"' "$stager" \
     >"$evidence/stager-remote-path-proof.txt"
 rg -n -F 'REMOTE_STABLE_DIR="$REMOTE_WORKTREE/prototypes/48-render-cadence/.build/human-gate-stable"' "$stager" \
     >>"$evidence/stager-remote-path-proof.txt"
 rg -n -F 'EXPECTED_BRANCH="prototype/48-render-cadence"' "$stager" \
     >>"$evidence/stager-remote-path-proof.txt"
-rg -n -F '[[ "$local_head" == "$expected_sha" && "$local_upstream" == "$expected_sha" && "$remote_head" == "$expected_sha" ]]' "$stager" \
+rg -n -F 'post_build_sha=$(assert_local_checkpoint)' "$stager" \
     >"$evidence/stager-sha-proof.txt"
-rg -n -F '[[ -z "$local_status" ]]' "$stager" >>"$evidence/stager-sha-proof.txt"
+rg -n -F 'manifest_sha=$(assert_local_checkpoint)' "$stager" >>"$evidence/stager-sha-proof.txt"
+rg -n -F 'transfer_sha=$(assert_local_checkpoint)' "$stager" >>"$evidence/stager-sha-proof.txt"
+rg -n -F -- '--arg git_sha "$manifest_sha"' "$stager" >>"$evidence/stager-sha-proof.txt"
 rg -n -F '[[ ! -e "$REMOTE_STABLE_DIR" && ! -L "$REMOTE_STABLE_DIR" ]]' "$stager" \
     >"$evidence/stager-refusal-proof.txt"
+rg -n -F 'mkdir "$build_dir"' "$stager" >"$evidence/stager-absent-parent-proof.txt"
+rg -n -F 'remote_temp=$(mktemp -d "$build_dir/.human-gate-staging-$expected_sha.XXXXXX")' "$stager" \
+    >"$evidence/stager-transaction-proof.txt"
+rg -n -F 'rollback_remote_transaction' "$stager" >>"$evidence/stager-transaction-proof.txt"
+rg -n -F 'mv "$REMOTE_TEMP_DIR" "$REMOTE_STABLE_DIR"' "$stager" >>"$evidence/stager-transaction-proof.txt"
 rg -n -F '[[ "$(find "$STABLE_APP_DIR" -mindepth 1 -maxdepth 1 | wc -l | tr -d '\'' '\'')" -eq 2 ]]' "$wizard" \
     >>"$evidence/stager-refusal-proof.txt"
 rg -n -F 'export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"' "$wizard" \

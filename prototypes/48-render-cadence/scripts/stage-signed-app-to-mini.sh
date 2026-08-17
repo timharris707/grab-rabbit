@@ -23,44 +23,101 @@ APPROVED_NAME="Developer ID Application: TIMOTHY G HARRIS (F66FM4V88Q)"
 APPROVED_TEAM="F66FM4V88Q"
 APPROVED_SHA1="189EC9780DE0A94CF5B24CC5983CAB3FDAE15638"
 BUNDLE_ID="dev.clickai.grabrabbit.prototype.render-cadence"
+STAGING_DIR=""
+REMOTE_TEMP_DIR=""
+REMOTE_BUILD_CREATED=false
+REMOTE_ROLLBACK_ARMED=false
 
-local_branch=$(git -C "$REPOSITORY_ROOT" branch --show-current)
-local_status=$(git -C "$REPOSITORY_ROOT" status --porcelain)
-local_head=$(git -C "$REPOSITORY_ROOT" rev-parse HEAD)
-local_upstream=$(git -C "$REPOSITORY_ROOT" rev-parse '@{upstream}')
-remote_head=$(git -C "$REPOSITORY_ROOT" ls-remote origin "refs/heads/$EXPECTED_BRANCH" | awk '{print $1}')
-[[ "$local_branch" == "$EXPECTED_BRANCH" ]] || { echo "refusing wrong local branch" >&2; exit 3; }
-[[ -z "$local_status" ]] || { echo "refusing dirty local checkout" >&2; exit 3; }
-[[ "$local_head" == "$expected_sha" && "$local_upstream" == "$expected_sha" && "$remote_head" == "$expected_sha" ]] \
-    || { echo "refusing SHA mismatch between expected, local, tracking, and remote" >&2; exit 3; }
+assert_local_checkpoint() {
+    local local_branch local_status local_head local_upstream live_remote_head
+    local_branch=$(git -C "$REPOSITORY_ROOT" branch --show-current)
+    local_status=$(git -C "$REPOSITORY_ROOT" status --porcelain)
+    local_head=$(git -C "$REPOSITORY_ROOT" rev-parse HEAD)
+    local_upstream=$(git -C "$REPOSITORY_ROOT" rev-parse '@{upstream}')
+    live_remote_head=$(git -C "$REPOSITORY_ROOT" ls-remote origin "refs/heads/$EXPECTED_BRANCH" | awk '{print $1}')
+    [[ "$local_branch" == "$EXPECTED_BRANCH" ]] || { echo "refusing wrong local branch" >&2; return 3; }
+    [[ -z "$local_status" ]] || { echo "refusing dirty local checkout" >&2; return 3; }
+    [[ "$local_head" == "$expected_sha" && "$local_upstream" == "$expected_sha" \
+        && "$live_remote_head" == "$expected_sha" ]] \
+        || { echo "refusing SHA mismatch between expected, local, tracking, and live remote" >&2; return 3; }
+    printf '%s\n' "$local_head"
+}
 
-ssh "$REMOTE_HOST" /bin/bash -s -- "$REMOTE_WORKTREE" "$REMOTE_STABLE_DIR" "$EXPECTED_BRANCH" "$expected_sha" <<'REMOTE_GUARD'
+rollback_remote_transaction() {
+    [[ "$REMOTE_ROLLBACK_ARMED" == true && -n "$REMOTE_TEMP_DIR" ]] || return 0
+    ssh "$REMOTE_HOST" /bin/bash -s -- \
+        "$REMOTE_WORKTREE" "$REMOTE_STABLE_DIR" "$REMOTE_TEMP_DIR" \
+        "$EXPECTED_BRANCH" "$expected_sha" "$REMOTE_BUILD_CREATED" <<'REMOTE_ROLLBACK'
+# GRAB_RABBIT_REMOTE_ROLLBACK
 set -euo pipefail
 REMOTE_WORKTREE=$1
 REMOTE_STABLE_DIR=$2
-EXPECTED_BRANCH=$3
-expected_sha=$4
-[[ "$(cd "$REMOTE_WORKTREE" && pwd -P)" == "$REMOTE_WORKTREE" ]]
-[[ ! -L "$REMOTE_WORKTREE" ]]
-[[ "$(git -C "$REMOTE_WORKTREE" branch --show-current)" == "$EXPECTED_BRANCH" ]]
-[[ "$(git -C "$REMOTE_WORKTREE" rev-parse HEAD)" == "$expected_sha" ]]
-[[ -z "$(git -C "$REMOTE_WORKTREE" status --porcelain)" ]]
-[[ ! -e "$REMOTE_STABLE_DIR" && ! -L "$REMOTE_STABLE_DIR" ]]
-stable_parent=${REMOTE_STABLE_DIR%/*}
-[[ -d "$stable_parent" && ! -L "$stable_parent" ]]
-[[ "$(cd "$stable_parent" && pwd -P)" == "$stable_parent" ]]
-REMOTE_GUARD
+REMOTE_TEMP_DIR=$3
+EXPECTED_BRANCH=$4
+expected_sha=$5
+build_created=$6
+build_dir="$REMOTE_WORKTREE/prototypes/48-render-cadence/.build"
+
+[[ "$EXPECTED_BRANCH" == "prototype/48-render-cadence" ]]
+[[ "$expected_sha" =~ ^[0-9a-f]{40}$ ]]
+[[ "$(cd "$REMOTE_WORKTREE" && pwd -P)" == "$REMOTE_WORKTREE" && ! -L "$REMOTE_WORKTREE" ]]
+[[ "$REMOTE_STABLE_DIR" == "$build_dir/human-gate-stable" ]]
+[[ "${REMOTE_TEMP_DIR%/*}" == "$build_dir" ]]
+temp_name=${REMOTE_TEMP_DIR##*/}
+[[ "$temp_name" =~ ^[.]human-gate-staging-${expected_sha}[.][A-Za-z0-9]+$ ]]
+
+remove_owned_transaction_directory() {
+    local directory=$1 entry name owner
+    [[ -d "$directory" && ! -L "$directory" ]]
+    owner="$directory/.grab-rabbit-stage-owner"
+    [[ -f "$owner" && ! -L "$owner" && "$(cat "$owner")" == "$expected_sha" ]]
+    for entry in "$directory"/* "$directory"/.[!.]* "$directory"/..?*; do
+        [[ -e "$entry" || -L "$entry" ]] || continue
+        name=${entry##*/}
+        case "$name" in
+            '.grab-rabbit-stage-owner'|'Grab Rabbit Live Cadence Probe.app'|'staging-manifest.json'|'.certificate-verification') ;;
+            *) echo "refusing unexpected transaction entry: $entry" >&2; return 1 ;;
+        esac
+    done
+    rm -rf "$directory"
+}
+
+if [[ -e "$REMOTE_TEMP_DIR" || -L "$REMOTE_TEMP_DIR" ]]; then
+    remove_owned_transaction_directory "$REMOTE_TEMP_DIR"
+elif [[ -e "$REMOTE_STABLE_DIR/.grab-rabbit-stage-owner" ]]; then
+    remove_owned_transaction_directory "$REMOTE_STABLE_DIR"
+fi
+if [[ "$build_created" == true && -d "$build_dir" && ! -L "$build_dir" ]]; then
+    rmdir "$build_dir" 2>/dev/null || true
+fi
+REMOTE_ROLLBACK
+}
+
+cleanup() {
+    local code=$?
+    trap - EXIT INT TERM
+    if [[ "$code" -ne 0 ]]; then
+        rollback_remote_transaction >/dev/null 2>&1 || true
+    fi
+    if [[ -n "$STAGING_DIR" && "$STAGING_DIR" == /tmp/grab-rabbit-48-stage.* \
+        && -d "$STAGING_DIR" ]]; then
+        rm -rf "$STAGING_DIR"
+    fi
+    exit "$code"
+}
+trap cleanup EXIT
+trap 'exit 130' INT TERM
+
+initial_sha=$(assert_local_checkpoint)
+[[ "$initial_sha" == "$expected_sha" ]]
 
 STAGING_DIR=$(mktemp -d /tmp/grab-rabbit-48-stage.XXXXXX)
-cleanup_local_stage() {
-    [[ "$STAGING_DIR" == /tmp/grab-rabbit-48-stage.* && -d "$STAGING_DIR" ]] || return 0
-    rm -rf "$STAGING_DIR"
-}
-trap cleanup_local_stage EXIT
-
 staged_app="$STAGING_DIR/$APP_NAME"
 manifest="$STAGING_DIR/$MANIFEST_NAME"
 "$SCRIPT_DIR/build-live-app.sh" --sign-approved --output "$staged_app"
+
+post_build_sha=$(assert_local_checkpoint)
+[[ "$post_build_sha" == "$initial_sha" ]]
 codesign --verify --deep --strict --verbose=2 "$staged_app"
 
 details=$(codesign -dvvv "$staged_app" 2>&1)
@@ -77,15 +134,17 @@ actual_sha1=$(openssl x509 -inform DER -in "$identity_dir/cert-0" -noout -finger
 [[ "$actual_team" == "$APPROVED_TEAM" ]]
 [[ "$actual_sha1" == "$APPROVED_SHA1" ]]
 [[ "$actual_bundle" == "$BUNDLE_ID" ]]
-
 [[ "$(find "$staged_app" -type l | wc -l | tr -d ' ')" -eq 0 ]]
+
 info_sha256=$(shasum -a 256 "$staged_app/Contents/Info.plist" | awk '{print $1}')
 executable_sha256=$(shasum -a 256 "$staged_app/Contents/MacOS/live-cadence-probe" | awk '{print $1}')
+manifest_sha=$(assert_local_checkpoint)
+[[ "$manifest_sha" == "$post_build_sha" ]]
 generated_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 jq -n \
     --arg schema "grab-rabbit-render-cadence-staged-app-v1" \
     --arg branch "$EXPECTED_BRANCH" \
-    --arg git_sha "$expected_sha" \
+    --arg git_sha "$manifest_sha" \
     --arg remote_directory "$REMOTE_STABLE_DIR" \
     --arg app_relative_path "$APP_NAME" \
     --arg info_sha256 "$info_sha256" \
@@ -100,31 +159,148 @@ jq -n \
       signing:{bundle_id:$bundle_id,common_name:$common_name,team_id:$team_id,certificate_sha1:$certificate_sha1,hardened_runtime:true},
       generated_at:$generated_at,cleanup_owner:"human-gate-wizard"}' >"$manifest"
 
-ssh "$REMOTE_HOST" /bin/mkdir "$REMOTE_STABLE_DIR"
-(cd "$STAGING_DIR" && tar -cf - "$APP_NAME" "$MANIFEST_NAME") \
-    | ssh "$REMOTE_HOST" /usr/bin/tar -xf - -C "$REMOTE_STABLE_DIR"
-
+prepare_result=$(
 ssh "$REMOTE_HOST" /bin/bash -s -- \
-    "$REMOTE_WORKTREE" "$REMOTE_STABLE_DIR" "$EXPECTED_BRANCH" "$expected_sha" <<'REMOTE_VERIFY'
+    "$REMOTE_WORKTREE" "$REMOTE_STABLE_DIR" "$EXPECTED_BRANCH" "$manifest_sha" <<'REMOTE_PREPARE'
+# GRAB_RABBIT_REMOTE_PREPARE
 set -euo pipefail
-export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 REMOTE_WORKTREE=$1
 REMOTE_STABLE_DIR=$2
 EXPECTED_BRANCH=$3
 expected_sha=$4
+prototype_dir="$REMOTE_WORKTREE/prototypes/48-render-cadence"
+build_dir="$prototype_dir/.build"
+created_build=false
+remote_temp=""
+
+cleanup_prepare() {
+    local code=$?
+    trap - EXIT
+    if [[ "$code" -ne 0 ]]; then
+        if [[ -n "$remote_temp" && "${remote_temp%/*}" == "$build_dir" \
+            && -f "$remote_temp/.grab-rabbit-stage-owner" \
+            && "$(cat "$remote_temp/.grab-rabbit-stage-owner")" == "$expected_sha" ]]; then
+            rm -rf "$remote_temp"
+        fi
+        if [[ "$created_build" == true && -d "$build_dir" && ! -L "$build_dir" ]]; then
+            rmdir "$build_dir" 2>/dev/null || true
+        fi
+    fi
+    exit "$code"
+}
+trap cleanup_prepare EXIT
+
+[[ "$EXPECTED_BRANCH" == "prototype/48-render-cadence" ]]
+[[ "$expected_sha" =~ ^[0-9a-f]{40}$ ]]
+[[ "$(cd "$REMOTE_WORKTREE" && pwd -P)" == "$REMOTE_WORKTREE" && ! -L "$REMOTE_WORKTREE" ]]
+[[ "$(cd "$prototype_dir" && pwd -P)" == "$prototype_dir" && ! -L "$prototype_dir" ]]
+[[ "$(git -C "$REMOTE_WORKTREE" branch --show-current)" == "$EXPECTED_BRANCH" ]]
+[[ "$(git -C "$REMOTE_WORKTREE" rev-parse HEAD)" == "$expected_sha" ]]
+[[ "$(git -C "$REMOTE_WORKTREE" rev-parse '@{upstream}')" == "$expected_sha" ]]
+live_remote=$(git -C "$REMOTE_WORKTREE" ls-remote origin "refs/heads/$EXPECTED_BRANCH" | awk '{print $1}')
+[[ "$live_remote" == "$expected_sha" && -z "$(git -C "$REMOTE_WORKTREE" status --porcelain)" ]]
+[[ "$REMOTE_STABLE_DIR" == "$build_dir/human-gate-stable" ]]
+[[ ! -e "$REMOTE_STABLE_DIR" && ! -L "$REMOTE_STABLE_DIR" ]]
+if [[ ! -e "$build_dir" && ! -L "$build_dir" ]]; then
+    mkdir "$build_dir"
+    created_build=true
+else
+    [[ -d "$build_dir" && ! -L "$build_dir" && "$(cd "$build_dir" && pwd -P)" == "$build_dir" ]]
+fi
+remote_temp=$(mktemp -d "$build_dir/.human-gate-staging-$expected_sha.XXXXXX")
+printf '%s\n' "$expected_sha" >"$remote_temp/.grab-rabbit-stage-owner"
+trap - EXIT
+printf '%s|%s\n' "$created_build" "$remote_temp"
+REMOTE_PREPARE
+)
+
+REMOTE_BUILD_CREATED=${prepare_result%%|*}
+REMOTE_TEMP_DIR=${prepare_result#*|}
+[[ "$REMOTE_BUILD_CREATED" == true || "$REMOTE_BUILD_CREATED" == false ]]
+[[ "${REMOTE_TEMP_DIR%/*}" == "${REMOTE_STABLE_DIR%/*}" ]]
+remote_temp_name=${REMOTE_TEMP_DIR##*/}
+[[ "$remote_temp_name" =~ ^[.]human-gate-staging-${manifest_sha}[.][A-Za-z0-9]+$ ]]
+REMOTE_ROLLBACK_ARMED=true
+
+transfer_sha=$(assert_local_checkpoint)
+[[ "$transfer_sha" == "$manifest_sha" ]]
+(cd "$STAGING_DIR" && tar -cf - "$MANIFEST_NAME" "$APP_NAME") \
+    | ssh "$REMOTE_HOST" /usr/bin/tar -xf - -C "$REMOTE_TEMP_DIR"
+
+ssh "$REMOTE_HOST" /bin/bash -s -- \
+    "$REMOTE_WORKTREE" "$REMOTE_STABLE_DIR" "$REMOTE_TEMP_DIR" \
+    "$EXPECTED_BRANCH" "$transfer_sha" "$REMOTE_BUILD_CREATED" <<'REMOTE_VERIFY_AND_PROMOTE'
+# GRAB_RABBIT_REMOTE_VERIFY_AND_PROMOTE
+set -euo pipefail
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+REMOTE_WORKTREE=$1
+REMOTE_STABLE_DIR=$2
+REMOTE_TEMP_DIR=$3
+EXPECTED_BRANCH=$4
+expected_sha=$5
+build_created=$6
 APP_NAME="Grab Rabbit Live Cadence Probe.app"
 MANIFEST_NAME="staging-manifest.json"
 APPROVED_NAME="Developer ID Application: TIMOTHY G HARRIS (F66FM4V88Q)"
 APPROVED_TEAM="F66FM4V88Q"
 APPROVED_SHA1="189EC9780DE0A94CF5B24CC5983CAB3FDAE15638"
 BUNDLE_ID="dev.clickai.grabrabbit.prototype.render-cadence"
-app="$REMOTE_STABLE_DIR/$APP_NAME"
-manifest="$REMOTE_STABLE_DIR/$MANIFEST_NAME"
+build_dir="$REMOTE_WORKTREE/prototypes/48-render-cadence/.build"
+app="$REMOTE_TEMP_DIR/$APP_NAME"
+manifest="$REMOTE_TEMP_DIR/$MANIFEST_NAME"
+owner="$REMOTE_TEMP_DIR/.grab-rabbit-stage-owner"
+promoted=false
+
+remove_owned_transaction_directory() {
+    local directory=$1 entry name directory_owner
+    [[ -d "$directory" && ! -L "$directory" ]]
+    directory_owner="$directory/.grab-rabbit-stage-owner"
+    [[ -f "$directory_owner" && ! -L "$directory_owner" \
+        && "$(cat "$directory_owner")" == "$expected_sha" ]]
+    for entry in "$directory"/* "$directory"/.[!.]* "$directory"/..?*; do
+        [[ -e "$entry" || -L "$entry" ]] || continue
+        name=${entry##*/}
+        case "$name" in
+            '.grab-rabbit-stage-owner'|'Grab Rabbit Live Cadence Probe.app'|'staging-manifest.json'|'.certificate-verification') ;;
+            *) echo "refusing unexpected transaction entry: $entry" >&2; return 1 ;;
+        esac
+    done
+    rm -rf "$directory"
+}
+
+rollback_verify() {
+    local code=$?
+    trap - EXIT
+    if [[ "$code" -ne 0 ]]; then
+        if [[ "$promoted" == true && -e "$REMOTE_STABLE_DIR/.grab-rabbit-stage-owner" ]]; then
+            remove_owned_transaction_directory "$REMOTE_STABLE_DIR" || true
+        elif [[ -e "$REMOTE_TEMP_DIR/.grab-rabbit-stage-owner" ]]; then
+            remove_owned_transaction_directory "$REMOTE_TEMP_DIR" || true
+        fi
+        if [[ "$build_created" == true && -d "$build_dir" && ! -L "$build_dir" ]]; then
+            rmdir "$build_dir" 2>/dev/null || true
+        fi
+    fi
+    exit "$code"
+}
+trap rollback_verify EXIT
+
+[[ "$EXPECTED_BRANCH" == "prototype/48-render-cadence" ]]
+[[ "$expected_sha" =~ ^[0-9a-f]{40}$ ]]
+[[ "$(cd "$REMOTE_WORKTREE" && pwd -P)" == "$REMOTE_WORKTREE" && ! -L "$REMOTE_WORKTREE" ]]
+[[ "$REMOTE_STABLE_DIR" == "$build_dir/human-gate-stable" ]]
+[[ "${REMOTE_TEMP_DIR%/*}" == "$build_dir" ]]
+temp_name=${REMOTE_TEMP_DIR##*/}
+[[ "$temp_name" =~ ^[.]human-gate-staging-${expected_sha}[.][A-Za-z0-9]+$ ]]
+[[ -f "$owner" && ! -L "$owner" && "$(cat "$owner")" == "$expected_sha" ]]
 [[ "$(git -C "$REMOTE_WORKTREE" branch --show-current)" == "$EXPECTED_BRANCH" ]]
 [[ "$(git -C "$REMOTE_WORKTREE" rev-parse HEAD)" == "$expected_sha" ]]
-[[ -z "$(git -C "$REMOTE_WORKTREE" status --porcelain)" ]]
+[[ "$(git -C "$REMOTE_WORKTREE" rev-parse '@{upstream}')" == "$expected_sha" ]]
+live_remote=$(git -C "$REMOTE_WORKTREE" ls-remote origin "refs/heads/$EXPECTED_BRANCH" | awk '{print $1}')
+[[ "$live_remote" == "$expected_sha" && -z "$(git -C "$REMOTE_WORKTREE" status --porcelain)" ]]
+[[ ! -e "$REMOTE_STABLE_DIR" && ! -L "$REMOTE_STABLE_DIR" ]]
 [[ -d "$app" && ! -L "$app" && -f "$manifest" && ! -L "$manifest" ]]
-[[ "$(find "$REMOTE_STABLE_DIR" -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')" -eq 2 ]]
+[[ "$(find "$REMOTE_TEMP_DIR" -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')" -eq 3 ]]
 [[ "$(find "$app" -type l | wc -l | tr -d ' ')" -eq 0 ]]
 info_sha256=$(shasum -a 256 "$app/Contents/Info.plist" | awk '{print $1}')
 executable_sha256=$(shasum -a 256 "$app/Contents/MacOS/live-cadence-probe" | awk '{print $1}')
@@ -143,12 +319,22 @@ details=$(codesign -dvvv "$app" 2>&1)
 [[ "$(sed -n 's/^TeamIdentifier=//p' <<<"$details" | head -1)" == "$APPROVED_TEAM" ]]
 grep -Eq '^CodeDirectory .* flags=.*\(runtime\)' <<<"$details"
 [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Contents/Info.plist")" == "$BUNDLE_ID" ]]
-certificate_dir=$(mktemp -d /tmp/grab-rabbit-48-remote-cert.XXXXXX)
-trap 'rm -rf "$certificate_dir"' EXIT
+certificate_dir="$REMOTE_TEMP_DIR/.certificate-verification"
+[[ ! -e "$certificate_dir" && ! -L "$certificate_dir" ]]
+mkdir "$certificate_dir"
 codesign -d --extract-certificates="$certificate_dir/cert-" "$app"
-actual_sha1=$(openssl x509 -inform DER -in "$certificate_dir/cert-0" -noout -fingerprint -sha1 | cut -d= -f2 | tr -d ':')
+actual_sha1=$(openssl x509 -inform DER -in "$certificate_dir/cert-0" -noout -fingerprint -sha1 \
+    | cut -d= -f2 | tr -d ':')
 [[ "$actual_sha1" == "$APPROVED_SHA1" ]]
-REMOTE_VERIFY
+find "$certificate_dir" -mindepth 1 -maxdepth 1 -type f -name 'cert-*' -delete
+rmdir "$certificate_dir"
+mv "$REMOTE_TEMP_DIR" "$REMOTE_STABLE_DIR"
+promoted=true
+rm "$REMOTE_STABLE_DIR/.grab-rabbit-stage-owner"
+trap - EXIT
+REMOTE_VERIFY_AND_PROMOTE
 
+REMOTE_ROLLBACK_ARMED=false
+REMOTE_TEMP_DIR=""
 printf 'staged_sha=%s\nremote_app=%s/%s\nremote_manifest=%s/%s\n' \
-    "$expected_sha" "$REMOTE_STABLE_DIR" "$APP_NAME" "$REMOTE_STABLE_DIR" "$MANIFEST_NAME"
+    "$transfer_sha" "$REMOTE_STABLE_DIR" "$APP_NAME" "$REMOTE_STABLE_DIR" "$MANIFEST_NAME"

@@ -117,10 +117,12 @@ exact git SHA, and transfers only the signed app and manifest through the existi
 alias. A clean Mini does not need a pre-existing `.build`: the helper validates the exact real
 prototype parent before creating only that ignored directory. It rechecks the local branch,
 cleanliness, HEAD, upstream, and live remote after the build and again immediately before
-transfer. Remote bytes land in a unique helper-owned sibling, are verified there, and move to the
-stable path only as the final atomic step; transfer or verification failure rolls that transaction
-back so a retry starts clean. It refuses an existing, symlinked, dirty, moved, or unexpected
-target instead of overwriting it. Never copy signing credentials to the Mini.
+transfer. Remote bytes land in an exact per-SHA helper-owned sibling, are verified there, and
+move to the stable path only as the final atomic step. A retry reconciles that exact owned
+transaction after a lost response, and accepts an existing stable target only after repeating all
+manifest, hash, path, bundle, team, fingerprint, Hardened Runtime, and strict-signature checks.
+Transfer or verification failures roll back; unowned, altered, symlinked, or extra-entry targets
+remain untouched hard failures. Never copy signing credentials to the Mini.
 
 The Mini wizard requires that exact staged pair at
 `prototypes/48-render-cadence/.build/human-gate-stable`, verifies it again without signing, and

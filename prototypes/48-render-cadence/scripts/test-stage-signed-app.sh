@@ -21,6 +21,12 @@ fail() {
     exit 1
 }
 
+tree_fingerprint() {
+    local directory=$1
+    (cd "$directory" \
+        && find . -type f -print0 | sort -z | xargs -0 shasum -a 256 | shasum -a 256 | awk '{print $1}')
+}
+
 write_fake_tools() {
     local case_root=$1 fake_bin="$1/fake-bin"
     mkdir -p "$fake_bin"
@@ -94,10 +100,34 @@ write_fake_tools() {
         '  shift 2' \
         '  if rg -q GRAB_RABBIT_REMOTE_PREPARE "$script"; then' \
         '    printf "prepare\\n" >>"$FAKE_EVENTS"' \
-        '    output=$(PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" /bin/bash "$script" "$worktree" "$stable" "$@")' \
+        '    remote_temp=$(map_path "$1")' \
+        '    shift' \
+        '    if [[ -f "$stable/staging-manifest.json" ]]; then' \
+        '      manifest="$stable/staging-manifest.json"' \
+        '      rewritten_manifest="$manifest.rewritten"' \
+        '      jq --arg directory "$stable" '\''.remote_directory = $directory'\'' "$manifest" >"$rewritten_manifest"' \
+        '      mv "$rewritten_manifest" "$manifest"' \
+        '    fi' \
+        '    rewritten="$script.rewritten"' \
+        '    awk -v replacement="export PATH=\\\"$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin\\\"" '\''/^export PATH=/ { print replacement; next } { print }'\'' "$script" >"$rewritten"' \
+        '    prepare_output="$script.prepare-output"' \
+        '    set +e' \
+        '    /bin/bash "$rewritten" "$worktree" "$stable" "$remote_temp" "$@" >"$prepare_output"' \
+        '    prepare_code=$?' \
+        '    set -e' \
+        '    output=$(<"$prepare_output")' \
+        '    if [[ -f "$stable/staging-manifest.json" ]]; then' \
+        '      manifest="$stable/staging-manifest.json"' \
+        '      rewritten_manifest="$manifest.rewritten"' \
+        '      jq --arg directory "$original_stable" '\''.remote_directory = $directory'\'' "$manifest" >"$rewritten_manifest"' \
+        '      mv "$rewritten_manifest" "$manifest"' \
+        '    fi' \
+        '    [[ "$prepare_code" -eq 0 ]] || exit "$prepare_code"' \
+        '    if [[ -f "$FAKE_STATE/drop-prepare-response-once" ]]; then rm "$FAKE_STATE/drop-prepare-response-once"; exit 83; fi' \
         '    printf "%s\\n" "${output//$FAKE_REMOTE_WORKTREE/$FAKE_REMOTE_PREFIX}"' \
         '  elif rg -q GRAB_RABBIT_REMOTE_ROLLBACK "$script"; then' \
         '    printf "rollback\\n" >>"$FAKE_EVENTS"' \
+        '    if [[ -f "$FAKE_STATE/rollback-unavailable-once" ]]; then rm "$FAKE_STATE/rollback-unavailable-once"; exit 84; fi' \
         '    remote_temp=$(map_path "$1")' \
         '    shift' \
         '    PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" /bin/bash "$script" "$worktree" "$stable" "$remote_temp" "$@"' \
@@ -121,6 +151,7 @@ write_fake_tools() {
         '    jq --arg directory "$original_stable" '\''.remote_directory = $directory'\'' "$manifest" >"$rewritten_manifest"' \
         '    mv "$rewritten_manifest" "$manifest"' \
         '    printf "promote\\n" >>"$FAKE_EVENTS"' \
+        '    if [[ -f "$FAKE_STATE/drop-promote-response-once" ]]; then rm "$FAKE_STATE/drop-promote-response-once"; exit 85; fi' \
         '  else' \
         '    PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" /bin/bash "$script" "$worktree" "$stable" "$@"' \
         '  fi' \
@@ -225,6 +256,85 @@ test_verification_rollback_and_retry() {
     assert_published_manifest "$case_root"
 }
 
+test_prepare_response_loss_and_rollback_outage() {
+    local case_root code transaction
+    case_root=$(new_case prepare-response-loss)
+    : >"$case_root/state/drop-prepare-response-once"
+    : >"$case_root/state/rollback-unavailable-once"
+    set +e
+    run_stager "$case_root" >/dev/null 2>&1
+    code=$?
+    set -e
+    [[ "$code" -ne 0 ]] || fail "lost PREPARE response reported success"
+    transaction="$case_root/remote/prototypes/48-render-cadence/.build/.human-gate-staging-$EXPECTED_SHA"
+    [[ -f "$transaction/.grab-rabbit-stage-owner" ]] \
+        || fail "lost PREPARE response did not leave the deterministically discoverable owned transaction"
+    run_stager "$case_root" >/dev/null
+    assert_published_manifest "$case_root"
+    [[ ! -e "$transaction" ]] || fail "retry left the reconciled PREPARE transaction behind"
+}
+
+test_promotion_response_loss_is_idempotent() {
+    local case_root code tar_count promote_count
+    case_root=$(new_case promotion-response-loss)
+    : >"$case_root/state/drop-promote-response-once"
+    set +e
+    run_stager "$case_root" >/dev/null 2>&1
+    code=$?
+    set -e
+    [[ "$code" -ne 0 ]] || fail "lost promotion response reported success"
+    assert_published_manifest "$case_root"
+    run_stager "$case_root" >/dev/null
+    assert_published_manifest "$case_root"
+    tar_count=$(awk '$0 == "tar" { count += 1 } END { print count + 0 }' "$case_root/events")
+    promote_count=$(awk '$0 == "promote" { count += 1 } END { print count + 0 }' "$case_root/events")
+    [[ "$tar_count" -eq 1 && "$promote_count" -eq 1 ]] \
+        || fail "idempotent retry retransferred or repromoted the exact stable target"
+}
+
+test_invalid_existing_targets_are_refused() {
+    local case_root stable code before_hash after_hash
+
+    case_root=$(new_case unowned-target)
+    stable="$case_root/remote/prototypes/48-render-cadence/.build/human-gate-stable"
+    mkdir -p "$stable"
+    printf unowned >"$stable/unrelated.txt"
+    before_hash=$(tree_fingerprint "$stable")
+    set +e
+    run_stager "$case_root" >/dev/null 2>&1
+    code=$?
+    set -e
+    after_hash=$(tree_fingerprint "$stable")
+    [[ "$code" -ne 0 && "$before_hash" == "$after_hash" ]] \
+        || fail "unowned stable target was accepted or altered"
+
+    case_root=$(new_case extra-entry-target)
+    run_stager "$case_root" >/dev/null
+    stable="$case_root/remote/prototypes/48-render-cadence/.build/human-gate-stable"
+    printf unrelated >"$stable/unrelated.txt"
+    before_hash=$(tree_fingerprint "$stable")
+    set +e
+    run_stager "$case_root" >/dev/null 2>&1
+    code=$?
+    set -e
+    after_hash=$(tree_fingerprint "$stable")
+    [[ "$code" -ne 0 && "$before_hash" == "$after_hash" ]] \
+        || fail "extra-entry stable target was accepted or altered (exit $code)"
+
+    case_root=$(new_case tampered-target)
+    run_stager "$case_root" >/dev/null
+    stable="$case_root/remote/prototypes/48-render-cadence/.build/human-gate-stable"
+    printf tampered >"$stable/Grab Rabbit Live Cadence Probe.app/Contents/MacOS/live-cadence-probe"
+    before_hash=$(tree_fingerprint "$stable")
+    set +e
+    run_stager "$case_root" >/dev/null 2>&1
+    code=$?
+    set -e
+    after_hash=$(tree_fingerprint "$stable")
+    [[ "$code" -ne 0 && "$before_hash" == "$after_hash" ]] \
+        || fail "tampered stable target was accepted or altered"
+}
+
 test_exact_stage_order() {
     local expected actual
     expected=$(printf '%s\n' \
@@ -244,5 +354,8 @@ test_absent_parent_startup
 test_post_build_drift_refusal
 test_transfer_rollback_and_retry
 test_verification_rollback_and_retry
+test_prepare_response_loss_and_rollback_outage
+test_promotion_response_loss_is_idempotent
+test_invalid_existing_targets_are_refused
 test_exact_stage_order
-echo "stage-signed-app tests passed (5/5)"
+echo "stage-signed-app tests passed (8/8)"

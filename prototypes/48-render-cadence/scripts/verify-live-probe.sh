@@ -34,6 +34,9 @@ regex_match_count() {
     exit 7
 }
 "$stage_tests" >"$evidence/stage-signed-app-tests.log"
+grep -Fxq 'stage-signed-app tests passed (8/8)' "$evidence/stage-signed-app-tests.log"
+rg -n '^test_prepare_response_loss_and_rollback_outage\(\)|^test_promotion_response_loss_is_idempotent\(\)|^test_invalid_existing_targets_are_refused\(\)' \
+    "$stage_tests" >"$evidence/stager-response-loss-test-proof.txt"
 rg -n -F 'REMOTE_WORKTREE="/Users/openclaw/grab-rabbit/.worktrees/48-render-cadence"' "$stager" \
     >"$evidence/stager-remote-path-proof.txt"
 rg -n -F 'REMOTE_STABLE_DIR="$REMOTE_WORKTREE/prototypes/48-render-cadence/.build/human-gate-stable"' "$stager" \
@@ -48,8 +51,12 @@ rg -n -F -- '--arg git_sha "$manifest_sha"' "$stager" >>"$evidence/stager-sha-pr
 rg -n -F '[[ ! -e "$REMOTE_STABLE_DIR" && ! -L "$REMOTE_STABLE_DIR" ]]' "$stager" \
     >"$evidence/stager-refusal-proof.txt"
 rg -n -F 'mkdir "$build_dir"' "$stager" >"$evidence/stager-absent-parent-proof.txt"
-rg -n -F 'remote_temp=$(mktemp -d "$build_dir/.human-gate-staging-$expected_sha.XXXXXX")' "$stager" \
+rg -n -F 'REMOTE_TEMP_DIR="${REMOTE_STABLE_DIR%/*}/.human-gate-staging-$expected_sha"' "$stager" \
     >"$evidence/stager-transaction-proof.txt"
+rg -n -F 'remove_owned_transaction_directory "$REMOTE_TEMP_DIR"' "$stager" \
+    >>"$evidence/stager-transaction-proof.txt"
+rg -n -F 'validate_published_target || exit 9' "$stager" \
+    >>"$evidence/stager-transaction-proof.txt"
 rg -n -F 'rollback_remote_transaction' "$stager" >>"$evidence/stager-transaction-proof.txt"
 rg -n -F 'mv "$REMOTE_TEMP_DIR" "$REMOTE_STABLE_DIR"' "$stager" >>"$evidence/stager-transaction-proof.txt"
 rg -n -F '[[ "$(find "$STABLE_APP_DIR" -mindepth 1 -maxdepth 1 | wc -l | tr -d '\'' '\'')" -eq 2 ]]' "$wizard" \

@@ -375,6 +375,12 @@ fatal_gate() {
   exit 1
 }
 
+required_confirm() {
+  local question="$1"
+  warn "Choosing No ends this wizard run. Re-run it when you are ready to continue."
+  confirm "$question"
+}
+
 required_tool() {
   if ! require "$1" "$2"; then
     fatal_gate "install $1 before running this gate"
@@ -383,10 +389,16 @@ required_tool() {
 
 required_check() {
   local description="$1"; shift
-  check "$description" "$@"
-  if ! "$@" >/dev/null 2>&1; then
-    fatal_gate "$description"
-  fi
+  while true; do
+    printf '  %s⋯%s checking %s\n' "$DIM" "$RESET" "$description"
+    if "$@" >/dev/null 2>&1; then
+      ok "$description"
+      return 0
+    fi
+    bad "$description — not yet"
+    required_confirm "Retry this required check?" \
+      || fatal_gate "$description"
+  done
 }
 
 camera_id_is_present() {
@@ -558,7 +570,7 @@ run_owned_record_no_confirm() {
 run_owned_record() {
   local stem="$1" expected_disconnect="$2"
   shift 2
-  if ! confirm "Create and record the non-overwriting evidence run '$stem' now?"; then
+  if ! required_confirm "Create and record the non-overwriting evidence run '$stem' now?"; then
     fatal_gate "run $stem was not authorized"
   fi
   if ! run_owned_record_no_confirm "$stem" "$expected_disconnect" "$@"; then
@@ -577,7 +589,7 @@ run_disconnect_record() {
   local stderr="$RUNS_DIR/$stem.stderr.txt"
   [[ ! -e "$movie" && ! -e "$metrics" && ! -e "$events" && ! -e "$stdout" && ! -e "$stderr" ]] \
     || fatal_gate "refusing to overwrite evidence for $stem"
-  if ! confirm "Start the $candidate physical-disconnect run? You will unplug only the selected camera when prompted."; then
+  if ! required_confirm "Start the $candidate physical-disconnect run? You will unplug only the selected camera when prompted."; then
     fatal_gate "$candidate physical-disconnect run was not authorized"
   fi
   started=$(date -u +%Y-%m-%dT%H:%M:%SZ) || fatal_gate "could not timestamp $stem"
@@ -598,7 +610,7 @@ run_disconnect_record() {
     fatal_gate "$stem stopped before the physical-disconnect prompt (exit $code)"
   fi
   say "The exact selected camera is recording. Do not disconnect Screen Sharing or any other device."
-  if ! confirm "Physically disconnect only the selected camera now?"; then
+  if ! required_confirm "Physically disconnect only the selected camera now?"; then
     if owned_pid_is_running "$pid"; then kill -INT "$pid" >/dev/null 2>&1 || true; fi
     if wait "$pid"; then code=0; else code=$?; fi
     untrack_owned_pid "$pid"
@@ -691,7 +703,17 @@ host_is_mac_mini() {
 }
 
 camera_count_is_positive() {
+  local inventory
+  inventory=$("$UNSIGNED_PROBE" list-sources --skip-window-query) || return 1
+  jq -e '.cameras | type == "array"' <<<"$inventory" >/dev/null || return 1
+  SOURCE_JSON="$inventory"
   jq -e '.cameras | length > 0' <<<"$SOURCE_JSON" >/dev/null
+}
+
+print_camera_inventory() {
+  jq -r '.cameras[]
+    | "  Camera: \(.name | gsub("[[:cntrl:]]"; "?")) [\(.deviceType | gsub("[[:cntrl:]]"; "?"))]\n  Stable ID: \(.uniqueID | gsub("[[:cntrl:]]"; "?"))"' \
+    <<<"$SOURCE_JSON"
 }
 
 window_id_is_valid_number() {
@@ -841,7 +863,10 @@ required_check "the checkout is clean before evidence begins" checkout_is_clean
 required_check "HEAD is bound to the pushed prototype branch" head_is_pushed
 required_check "this host is a Mac mini" host_is_mac_mini
 required_check "protected CuaDriver PID 12083 and Screen Sharing PID 9243 are live" protected_processes_are_live
-if ! confirm "Create the dedicated ignored evidence directory, snapshot read-only host state, and build the unsigned inventory probe?"; then
+say "Camera route requirement before any evidence or camera scan: Continuity Camera works only when the iPhone and this Mini use the same primary two-factor-authenticated Apple Account."
+step "If that exact Apple Account requirement is not already satisfied, do not use the iPhone route; connect a standard UVC external webcam instead."
+step "The wizard does not ask for, read, or save any Apple Account identifier. Apple's informational setup reference is https://support.apple.com/en-us/102546."
+if ! required_confirm "Create the dedicated ignored evidence directory, snapshot read-only host state, and build the unsigned inventory probe?"; then
   fatal_gate "evidence initialization was not authorized"
 fi
 [[ ! -e "$EVIDENCE_DIR" ]] || fatal_gate "refusing to overwrite evidence directory $EVIDENCE_DIR"
@@ -866,20 +891,13 @@ INITIAL_SOURCE_JSON=$("$UNSIGNED_PROBE" list-sources --skip-window-query) \
   || fatal_gate "the unsigned probe could not read the initial camera inventory"
 jq -e '.cameras | type == "array"' <<<"$INITIAL_SOURCE_JSON" >/dev/null \
   || fatal_gate "the initial camera inventory was not valid JSON"
-if ! confirm "Open Apple's Continuity Camera setup article before connecting the camera?"; then
-  fatal_gate "primary-source camera setup was not reviewed"
-fi
-open_url "https://support.apple.com/en-us/102546"
-step "For iPhone: on the iPhone, open Settings → General → AirPlay & Continuity (or AirPlay & Handoff), and make sure Continuity Camera is on. Apple documents this exact path."
-step "Make sure the iPhone and Mini use the same two-factor-authenticated Apple Account, are near each other, and have Bluetooth and Wi-Fi on. For USB, unlock the iPhone and accept Trust if macOS asks."
-step "Mount the iPhone stably with its rear cameras unobstructed, or connect the other real camera. Do not use Screen Sharing as a camera."
+step "For an eligible iPhone: open Settings → General → AirPlay & Continuity (or AirPlay & Handoff), make sure Continuity Camera is on, keep both devices near each other with Bluetooth and Wi-Fi on, then unlock and Trust over USB if macOS asks."
+step "Mount the eligible iPhone stably with its rear cameras unobstructed, or connect the standard UVC external webcam. Do not use Screen Sharing as a camera."
 CAMERA_STATE_MAY_DIFFER=true
 pause "Connect the camera and wait for macOS to finish discovering it, then press Enter."
-SOURCE_JSON=$("$UNSIGNED_PROBE" list-sources --skip-window-query) \
-  || fatal_gate "the unsigned probe could not read the connected camera inventory"
-jq -r '.cameras[] | "  Camera: \(.name) [\(.deviceType)]\n  Stable ID: \(.uniqueID)"' <<<"$SOURCE_JSON" \
-  || fatal_gate "the connected camera inventory was not valid JSON"
 required_check "at least one real camera is enumerated" camera_count_is_positive
+print_camera_inventory \
+  || fatal_gate "the current connected camera inventory was not valid JSON"
 ask CAMERA_ID "Paste the exact Stable ID shown for the camera you will physically use:"
 [[ -n "$CAMERA_ID" ]] || fatal_gate "an exact camera ID is required"
 required_check "the exact selected camera ID is present with no substitution" camera_id_is_present
@@ -918,7 +936,7 @@ required_check "the stable probe runtime identity is exactly approved" signed_pr
 "$LIVE_PROBE" list-sources --skip-window-query \
   | jq '{authorization,signing}' >"$TCC_BEFORE_FILE" \
   || fatal_gate "could not snapshot the signed probe's before-run TCC state"
-if ! confirm "Invoke the approved-signed probe's Camera, Microphone, and Screen Recording permission requests now? macOS owns every prompt."; then
+if ! required_confirm "Invoke the approved-signed probe's Camera, Microphone, and Screen Recording permission requests now? macOS owns every prompt."; then
   fatal_gate "visible TCC authorization was not authorized"
 fi
 TCC_STATE_MAY_DIFFER=true
@@ -929,9 +947,7 @@ else
   AUTHORIZATION_EXIT=$?
 fi
 note "The authorization command exited $AUTHORIZATION_EXIT; macOS may require you to finish toggles in System Settings."
-if ! confirm "Open the Privacy & Security pane and the three primary Apple help pages before checking toggles?"; then
-  fatal_gate "TCC settings review was not authorized"
-fi
+note "Opening the Privacy & Security pane and informational Apple help pages; this is not an authorization gate."
 open "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension" >/dev/null 2>&1 \
   || warn "The convenience System Settings deep link (not documented by Apple) did not open; use the verified path below."
 open_url "https://support.apple.com/guide/mac-help/control-access-to-your-camera-mchlf6d108da/mac"
@@ -949,7 +965,7 @@ required_check "the same exact selected camera remains present after TCC authori
 
 stage "Select one real browser window and prepare three cases" 10
 say "What and why: the privacy contract permits one exact SCWindow only. The probe never constructs a display filter. Your camera/window IDs remain shell variables and are never written to evidence or .env."
-if ! confirm "Create and open the local non-secret browser-case page in your default browser?"; then
+if ! required_confirm "Create and open the local non-secret browser-case page in your default browser?"; then
   fatal_gate "browser-case page creation was not authorized"
 fi
 BROWSER_CASES_FILE="$EVIDENCE_DIR/browser-cases.html"
@@ -1014,7 +1030,7 @@ POWER_DONE_FILE="$EVIDENCE_DIR/powermetrics.done"
 PERF_ERROR_FILE="$EVIDENCE_DIR/performance-helper.error.txt"
 [[ ! -e "$POWER_FILE" && ! -e "$POWER_DONE_FILE" && ! -e "$PERF_ERROR_FILE" ]] \
   || fatal_gate "refusing to overwrite powermetrics/performance-helper evidence"
-if ! confirm "Start the two wizard-owned probe runs and invoke sudo powermetrics directly now?"; then
+if ! required_confirm "Start the two wizard-owned probe runs and invoke sudo powermetrics directly now?"; then
   fatal_gate "external powermetrics sampling was not authorized"
 fi
 (run_performance_pair) &
@@ -1064,9 +1080,7 @@ say "What and why: the gate is not complete until every artifact is playable and
 required_check "all 28 expected outputs are playable, monotonic, approved-signed, and privacy-clean" verify_all_outputs
 required_check "every wizard-owned process has stopped" no_owned_process_is_live
 required_check "protected CuaDriver PID 12083 and Screen Sharing PID 9243 are still live" protected_processes_are_live
-if ! confirm "Open Privacy & Security so you can restore the prototype app's TCC toggles to the before snapshot?"; then
-  fatal_gate "TCC restoration was not authorized"
-fi
+note "Opening Privacy & Security for required restoration; opening the pane itself is informational."
 open "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension" >/dev/null 2>&1 \
   || warn "The convenience deep link did not open; use Apple menu → System Settings → Privacy & Security."
 step "Use the same Apple-verified Camera, Microphone, and Screen & System Audio Recording panes. Return the prototype app's toggles to their before-run state shown next."
@@ -1079,7 +1093,7 @@ BEFORE_MICROPHONE=$(jq -er '.authorization.microphone' "$TCC_BEFORE_FILE") \
 BEFORE_SCREEN=$(jq -er '.authorization.screenCapturePreflightGranted' "$TCC_BEFORE_FILE") \
   || fatal_gate "the before-run Screen Capture TCC snapshot is unreadable"
 if [[ "$BEFORE_CAMERA" == "not-determined" || "$BEFORE_MICROPHONE" == "not-determined" || "$BEFORE_SCREEN" == "false" ]]; then
-  if ! confirm "Reset only the prototype bundle's originally-unset TCC entries so the machine returns to the snapshot?"; then
+  if ! required_confirm "Reset only the prototype bundle's originally-unset TCC entries so the machine returns to the snapshot?"; then
     fatal_gate "exact prototype TCC restoration was declined"
   fi
   if [[ "$BEFORE_CAMERA" == "not-determined" ]]; then
@@ -1097,7 +1111,7 @@ fi
   || fatal_gate "could not snapshot the restored TCC state"
 required_check "Camera, Microphone, and Screen TCC state matches the before snapshot" tcc_matches_snapshot
 TCC_STATE_MAY_DIFFER=false
-if ! confirm "Move the two manifest-verified staged artifacts to Trash and remove their helper-created parent only if it is then empty?"; then
+if ! required_confirm "Move the two manifest-verified staged artifacts to Trash and remove their helper-created parent only if it is then empty?"; then
   fatal_gate "stable app-path restoration was declined"
 fi
 osascript -e "tell application \"Finder\" to delete POSIX file \"$STABLE_APP\"" >/dev/null \
@@ -1125,7 +1139,7 @@ if [[ -n "$CREATED_STABLE_APP_DIR" ]]; then
 fi
 if [[ "$CAMERA_WAS_PRESENT_INITIALLY" == false ]]; then
   say "The selected camera was absent from the initial snapshot, so disconnect it to restore exact physical state."
-  if ! confirm "Physically disconnect only the selected camera now?"; then
+  if ! required_confirm "Physically disconnect only the selected camera now?"; then
     fatal_gate "selected-camera restoration was declined"
   fi
   pause "Disconnect it and wait for camera discovery to update, then press Enter."
@@ -1145,9 +1159,7 @@ required_check "audio volume/mute state matches the before snapshot" cmp -s "$VO
 required_check "power preferences match the before snapshot" cmp -s "$POWER_BEFORE_FILE" "$EVIDENCE_DIR/power-after.txt"
 ps -p 12083,9243 -o pid=,comm=,etime= >"$EVIDENCE_DIR/protected-after.txt" \
   || fatal_gate "could not snapshot the protected processes after the run"
-if ! confirm "Open the evidence movies so Tim can compare camera-driven and fixed-clock motion/resource feel?"; then
-  fatal_gate "visual adjudication was not authorized"
-fi
+note "Opening the evidence folder for required visual adjudication; opening it is informational."
 open "$RUNS_DIR" >/dev/null 2>&1 || warn "Could not open Finder; inspect $RUNS_DIR manually."
 step "In QuickTime Player, compare matched camera-driven/fixed-clock files for camera fluidity over Static, Low change, and Active pages; watch pause/resume and all three shapes."
 step "Use the JSON metrics and powermetrics evidence for cadence, latency, drift, drops, CPU/GPU/ANE, and thermal differences."
@@ -1155,7 +1167,7 @@ ask VERDICT "Enter exactly camera-driven, fixed-clock, or unresolved:"
 required_check "Tim entered one permitted visual/runtime verdict" verdict_is_valid
 ask VERDICT_REASON "Enter a concise non-secret reason for the verdict:"
 [[ -n "$VERDICT_REASON" ]] || fatal_gate "a verdict reason is required"
-if ! confirm "Write Tim's non-secret verdict and the final hash-bound manifest now?"; then
+if ! required_confirm "Write Tim's non-secret verdict and the final hash-bound manifest now?"; then
   fatal_gate "verdict/manifest write was not authorized"
 fi
 VERDICT_RECORDED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ) || fatal_gate "could not timestamp Tim's verdict"

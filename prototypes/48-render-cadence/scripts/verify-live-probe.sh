@@ -24,6 +24,7 @@ models_source="$source_root/LiveModels.swift"
 wizard="$prototype_root/scripts/run-human-gate-wizard.sh"
 stager="$prototype_root/scripts/stage-signed-app-to-mini.sh"
 stage_tests="$prototype_root/scripts/test-stage-signed-app.sh"
+wizard_tests="$prototype_root/scripts/test-human-gate-wizard.sh"
 
 regex_match_count() {
     (rg -n "$1" "$wizard" 2>/dev/null || true) | wc -l | tr -d ' '
@@ -33,6 +34,12 @@ regex_match_count() {
     echo "laptop-side signed-app stager or its regression tests are missing or not executable" >&2
     exit 7
 }
+[[ -f "$wizard_tests" && -x "$wizard_tests" ]] || {
+    echo "human-gate wizard regression tests are missing or not executable" >&2
+    exit 7
+}
+"$wizard_tests" >"$evidence/human-gate-wizard-tests.log"
+grep -Fxq 'human-gate wizard tests passed (2/2)' "$evidence/human-gate-wizard-tests.log"
 "$stage_tests" >"$evidence/stage-signed-app-tests.log"
 grep -Fxq 'stage-signed-app tests passed (10/10)' "$evidence/stage-signed-app-tests.log"
 rg -n '^test_prepare_response_loss_and_rollback_outage\(\)|^test_promotion_response_loss_is_idempotent\(\)|^test_invalid_existing_targets_are_refused\(\)|^test_same_sha_different_code_identity_is_refused\(\)|^test_concurrent_invocation_lock\(\)' \

@@ -454,11 +454,6 @@ class SCContext {
 
     static func stopRecording(session expectedSession: CaptureOutputSession? = nil) {
         let sessions = AppDelegate.shared.captureOutputSessions
-        if expectedSession == nil, let activeStream = stream {
-            if AppDelegate.shared.captureStreamCallbackAdapter.handleStop(from: activeStream) {
-                return
-            }
-        }
 
         let stopBody: (@escaping () -> Void) -> Void = { releaseSession in
             let finishedJob = expectedSession?.outputJob ?? outputJob
@@ -476,7 +471,9 @@ class SCContext {
             let completeStop = {
                 let cleanup = {
                     isPaused = false
-                    isFinalizing = false
+                    CaptureFinalizationPresentation.complete(
+                        setFinalizing: { isFinalizing = $0 }
+                    )
                     hideMousePointer = false
                     window = nil
                     screen = nil
@@ -538,7 +535,10 @@ class SCContext {
             recordCam = ""
             recordDevice = ""
             isMagnifierEnabled = false
-            isFinalizing = true
+            CaptureFinalizationPresentation.begin(
+                setFinalizing: { isFinalizing = $0 },
+                publishStatus: { _ in updateStatusBar() }
+            )
             streamType = nil
             mousePointer.orderOut(nil)
             screenMagnifier.orderOut(nil)
@@ -548,7 +548,6 @@ class SCContext {
                 body: "Finalizing recording...".local,
                 id: "quickrecorder.processing.\(UUID().uuidString)"
             )
-            updateStatusBar()
 
             if let w = NSApp.windows.first(where:  { $0.title == "Area Overlayer".local }) { w.close() }
             if let activeStream = stream { activeStream.stopCapture() }
@@ -722,10 +721,16 @@ class SCContext {
             }
         }
 
-        if let expectedSession {
-            let stopPipeline = CaptureSessionStopPipeline(store: sessions)
-            stopPipeline.stop(expectedSession, finalization: stopBody)
-        } else {
+        let stopPipeline = CaptureSessionStopPipeline(store: sessions)
+        let disposition = stopPipeline.stop(
+            expectedSession: expectedSession,
+            activeStream: stream,
+            stopActiveStream: { activeStream in
+                AppDelegate.shared.captureStreamCallbackAdapter.handleStop(from: activeStream)
+            },
+            finalization: { _, releaseSession in stopBody(releaseSession) }
+        )
+        if disposition == .fallback {
             stopBody({})
         }
     }

@@ -36,7 +36,7 @@ struct StatusBarItem: View {
                     HStack(spacing: 6) {
                         ProgressView()
                             .controlSize(.small)
-                        Text("Finishing...".local)
+                        Text(CaptureFinalizationPresentation.statusText.local)
                             .foregroundStyle(.white)
                     }
                     .padding(.horizontal, 8)

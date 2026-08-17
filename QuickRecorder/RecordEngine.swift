@@ -511,6 +511,20 @@ extension AppDelegate {
             }
             if recordMic { try startMicRecording(session: session) }
             try await stream.startCapture()
+            guard CapturePostStartResourceActivation(store: captureOutputSessions).activate(
+                session: session,
+                stream: stream,
+                registerMouseMonitor: {
+                    if !audioOnly { registerGlobalMouseMonitor() }
+                },
+                preventSleep: {
+                    if preventSleep {
+                        SleepPreventer.shared.preventSleep(reason: "Screen recording in progress")
+                    }
+                }
+            ) else {
+                return
+            }
         } catch {
             let recordingError = (error as? RecordingExportError)
                 ?? .preparation(stage: .first, message: error.localizedDescription)
@@ -557,9 +571,7 @@ extension AppDelegate {
             }
             return
         }
-        if !audioOnly { registerGlobalMouseMonitor() }
         DispatchQueue.main.async { updateStatusBar() }
-        if preventSleep { SleepPreventer.shared.preventSleep(reason: "Screen recording in progress") }
     }
 
     private func discardCaptureAfterFailedStart(

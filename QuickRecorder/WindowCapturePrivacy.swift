@@ -625,11 +625,41 @@ final class CaptureSessionFinalizationCoordinator {
     }
 }
 
+enum CaptureStopDisposition: Equatable {
+    case handled
+    case fallback
+}
+
 final class CaptureSessionStopPipeline {
+    typealias Finalization = (
+        _ session: CaptureOutputSession,
+        _ releaseSession: @escaping () -> Void
+    ) -> Void
+
+    private let store: CaptureOutputSessionStore
     private let finalizer: CaptureSessionFinalizationCoordinator
 
     init(store: CaptureOutputSessionStore) {
+        self.store = store
         finalizer = CaptureSessionFinalizationCoordinator(store: store)
+    }
+
+    func stop(
+        expectedSession: CaptureOutputSession?,
+        activeStream: AnyObject?,
+        stopActiveStream: (AnyObject) -> Bool,
+        finalization: @escaping Finalization
+    ) -> CaptureStopDisposition {
+        if let expectedSession {
+            _ = finalizer.finalize(expectedSession) { releaseSession in
+                finalization(expectedSession, releaseSession)
+            }
+            return .handled
+        }
+        if let activeStream, stopActiveStream(activeStream) {
+            return .handled
+        }
+        return store.hasManagedCapture ? .handled : .fallback
     }
 
     @discardableResult
@@ -638,6 +668,42 @@ final class CaptureSessionStopPipeline {
         finalization: (@escaping () -> Void) -> Void
     ) -> Bool {
         finalizer.finalize(session, finalization)
+    }
+}
+
+enum CaptureFinalizationPresentation {
+    static let statusText = "Finishing..."
+
+    static func begin(
+        setFinalizing: (Bool) -> Void,
+        publishStatus: (String) -> Void
+    ) {
+        setFinalizing(true)
+        publishStatus(statusText)
+    }
+
+    static func complete(setFinalizing: (Bool) -> Void) {
+        setFinalizing(false)
+    }
+}
+
+struct CapturePostStartResourceActivation {
+    private let store: CaptureOutputSessionStore
+
+    init(store: CaptureOutputSessionStore) {
+        self.store = store
+    }
+
+    func activate(
+        session: CaptureOutputSession,
+        stream: AnyObject,
+        registerMouseMonitor: () -> Void,
+        preventSleep: () -> Void
+    ) -> Bool {
+        store.activatePostStartResources(for: session, stream: stream) {
+            registerMouseMonitor()
+            preventSleep()
+        }
     }
 }
 
@@ -1480,6 +1546,24 @@ final class CaptureOutputSessionStore {
                 return false
             }
             terminationRequestedSessionID = nil
+            return true
+        }
+    }
+
+    var hasManagedCapture: Bool {
+        lock.withLock { !isIdle }
+    }
+
+    func activatePostStartResources(
+        for session: CaptureOutputSession,
+        stream: AnyObject,
+        _ activate: () -> Void
+    ) -> Bool {
+        lock.withLock {
+            guard currentSession === session, session.owns(stream: stream) else {
+                return false
+            }
+            activate()
             return true
         }
     }

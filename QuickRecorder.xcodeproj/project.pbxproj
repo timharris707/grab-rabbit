@@ -17,6 +17,10 @@
 		B23000010000000000000001 /* WindowCapturePrivacy.swift in Sources */ = {isa = PBXBuildFile; fileRef = B23000020000000000000001 /* WindowCapturePrivacy.swift */; };
 		B23000010000000000000002 /* WindowCapturePrivacy.swift in Sources */ = {isa = PBXBuildFile; fileRef = B23000020000000000000001 /* WindowCapturePrivacy.swift */; };
 		B23000010000000000000003 /* WindowCapturePrivacyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B23000020000000000000002 /* WindowCapturePrivacyTests.swift */; };
+		C42000010000000000000001 /* WindowSelectorRefreshAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = C42000020000000000000001 /* WindowSelectorRefreshAdapter.swift */; };
+		C42000010000000000000002 /* WindowSelectorRefreshAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = C42000020000000000000001 /* WindowSelectorRefreshAdapter.swift */; };
+		C42000010000000000000003 /* WindowSelectorRefreshAdapterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C42000020000000000000002 /* WindowSelectorRefreshAdapterTests.swift */; };
+		C42000010000000000000004 /* WindowSelectorThumbnailProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = C42000020000000000000003 /* WindowSelectorThumbnailProvider.swift */; };
 		181724052BE3BEA600F5F539 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 181724042BE3BEA600F5F539 /* Sparkle */; };
 		1821F2E82CF4B226004A2EC0 /* ContentViewNew.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1821F2E72CF4B226004A2EC0 /* ContentViewNew.swift */; };
 		184506CE2C69213400AFDA45 /* MatrixColorSelector in Frameworks */ = {isa = PBXBuildFile; productRef = 184506CD2C69213400AFDA45 /* MatrixColorSelector */; };
@@ -64,6 +68,9 @@
 		A40000020000000000000002 /* RecordingOutputIsolationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingOutputIsolationTests.swift; sourceTree = "<group>"; };
 		B23000020000000000000001 /* WindowCapturePrivacy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowCapturePrivacy.swift; sourceTree = "<group>"; };
 		B23000020000000000000002 /* WindowCapturePrivacyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowCapturePrivacyTests.swift; sourceTree = "<group>"; };
+		C42000020000000000000001 /* WindowSelectorRefreshAdapter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowSelectorRefreshAdapter.swift; sourceTree = "<group>"; };
+		C42000020000000000000002 /* WindowSelectorRefreshAdapterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowSelectorRefreshAdapterTests.swift; sourceTree = "<group>"; };
+		C42000020000000000000003 /* WindowSelectorThumbnailProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowSelectorThumbnailProvider.swift; sourceTree = "<group>"; };
 		1821F2E72CF4B226004A2EC0 /* ContentViewNew.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentViewNew.swift; sourceTree = "<group>"; };
 		184CAEC62BDCCC2300D61D57 /* AVContext.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AVContext.swift; sourceTree = "<group>"; };
 		184CAEC82BDDEC6800D61D57 /* AppBlockSelector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppBlockSelector.swift; sourceTree = "<group>"; };
@@ -171,6 +178,8 @@
 				27000000000000000000000C /* ScreenRecordingPermissionCoordinator.swift */,
 				A40000020000000000000001 /* RecordingOutputJob.swift */,
 				B23000020000000000000001 /* WindowCapturePrivacy.swift */,
+				C42000020000000000000001 /* WindowSelectorRefreshAdapter.swift */,
+				C42000020000000000000003 /* WindowSelectorThumbnailProvider.swift */,
 				18FEBDA92BCF8200003F09BC /* RecordEngine.swift */,
 				18D3BE032BCEC847006CFFC0 /* SCContext.swift */,
 				184CAEC62BDCCC2300D61D57 /* AVContext.swift */,
@@ -191,6 +200,7 @@
 				27000000000000000000000F /* ScreenRecordingPermissionCoordinatorTests.swift */,
 				A40000020000000000000002 /* RecordingOutputIsolationTests.swift */,
 				B23000020000000000000002 /* WindowCapturePrivacyTests.swift */,
+				C42000020000000000000002 /* WindowSelectorRefreshAdapterTests.swift */,
 			);
 			path = QuickRecorderTests;
 			sourceTree = "<group>";
@@ -377,6 +387,8 @@
 				A40000010000000000000003 /* RecordingOutputIsolationTests.swift in Sources */,
 				B23000010000000000000002 /* WindowCapturePrivacy.swift in Sources */,
 				B23000010000000000000003 /* WindowCapturePrivacyTests.swift in Sources */,
+				C42000010000000000000002 /* WindowSelectorRefreshAdapter.swift in Sources */,
+				C42000010000000000000003 /* WindowSelectorRefreshAdapterTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -386,6 +398,8 @@
 			files = (
 				A40000010000000000000001 /* RecordingOutputJob.swift in Sources */,
 				B23000010000000000000001 /* WindowCapturePrivacy.swift in Sources */,
+				C42000010000000000000001 /* WindowSelectorRefreshAdapter.swift in Sources */,
+				C42000010000000000000004 /* WindowSelectorThumbnailProvider.swift in Sources */,
 				18FEBDAE2BD10ED1003F09BC /* ScreenSelector.swift in Sources */,
 				189BD5ED2BDE971B0056D06C /* VideoEditor.swift in Sources */,
 				189BD5F52BDF8A800056D06C /* CameraOverlayer.swift in Sources */,

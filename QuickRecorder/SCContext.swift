@@ -120,6 +120,26 @@ class SCContext {
         }
     }
 
+    static func fetchWindowSelectorContent(
+        completion: @escaping (Result<SCShareableContent, ScreenRecordingContentError>) -> Void
+    ) {
+        WindowSelectorContentAccessPolicy().fetch(
+            preflightAuthorized: CGPreflightScreenCaptureAccess(),
+            provider: { fetchAvailableContent(completion: $0) },
+            permissionDenied: {
+                DispatchQueue.main.async {
+                    captureReadiness.updateRecoveryActionAvailability(true)
+                }
+            },
+            completion: completion
+        )
+    }
+
+    static func applyWindowSelectorContent(_ content: SCShareableContent) {
+        contentState.apply(.success(content))
+        scPerm = true
+    }
+
     static func recoverScreenRecordingAccess() {
         if CGPreflightScreenCaptureAccess() {
             DispatchQueue.main.async {

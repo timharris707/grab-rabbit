@@ -972,15 +972,35 @@ enum CaptureFinalizationPresentation {
 }
 
 enum CaptureStatusBarUpdateScheduler {
-    static func schedule(isFinalizing: Bool, action: @escaping () -> Void) {
+    private static let generationLock = NSLock()
+    private static var finalizationGeneration: UInt = 0
+
+    static func schedule(
+        isFinalizing: Bool,
+        completion: @escaping () -> Void = {},
+        action: @escaping () -> Void
+    ) {
+        let scheduledGeneration = generationLock.withLock {
+            if isFinalizing {
+                finalizationGeneration &+= 1
+            }
+            return finalizationGeneration
+        }
+        let perform = {
+            defer { completion() }
+            guard generationLock.withLock({
+                scheduledGeneration == finalizationGeneration
+            }) else { return }
+            action()
+        }
         guard isFinalizing else {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: action)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: perform)
             return
         }
         if Thread.isMainThread {
-            action()
+            perform()
         } else {
-            DispatchQueue.main.async(execute: action)
+            DispatchQueue.main.async(execute: perform)
         }
     }
 }

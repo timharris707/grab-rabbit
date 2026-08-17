@@ -238,8 +238,10 @@ struct StatusBarItem: View {
 }
 
 func updateStatusBar(completion: (() -> Void)? = nil) {
-    CaptureStatusBarUpdateScheduler.schedule(isFinalizing: SCContext.isFinalizing) {
-        defer { completion?() }
+    CaptureStatusBarUpdateScheduler.schedule(
+        isFinalizing: SCContext.isFinalizing,
+        completion: { completion?() }
+    ) {
         if !SCContext.isFinalizing && SCContext.streamType == nil && !ud.bool(forKey: "showMenubar") {
             statusBarItem.isVisible = false
             return

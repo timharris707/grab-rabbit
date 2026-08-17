@@ -1131,9 +1131,9 @@ final class WindowCapturePrivacyTests: XCTestCase {
         let entry = CaptureProductionStopEntry(store: store)
         let replacementID = UUID()
 
-        XCTAssertTrue(statusSource.contains(
-            "CaptureStatusBarUpdateScheduler.schedule(isFinalizing: SCContext.isFinalizing)"
-        ))
+        XCTAssertTrue(statusSource.contains("CaptureStatusBarUpdateScheduler.schedule("))
+        XCTAssertTrue(statusSource.contains("isFinalizing: SCContext.isFinalizing"))
+        XCTAssertTrue(statusSource.contains("completion: { completion?() }"))
 
         XCTAssertTrue(store.install(session))
         XCTAssertTrue(store.deactivate(session))
@@ -1157,6 +1157,45 @@ final class WindowCapturePrivacyTests: XCTestCase {
         store.cancelReservation(replacementID)
         wait(for: [statusDismissed], timeout: 1)
         XCTAssertNil(renderedStatusWidth)
+    }
+
+    func testFinalizationSupersedesOlderQueuedStatusUpdateWithoutAdvancingTerminalDismissal() {
+        XCTAssertTrue(Thread.isMainThread)
+        let olderUpdate = expectation(description: "older status update stays superseded")
+        olderUpdate.isInverted = true
+        let terminalDismissal = expectation(description: "terminal dismissal")
+        var events = [String]()
+        var terminalRenderCount = 0
+        var terminalDismissalCount = 0
+
+        CaptureStatusBarUpdateScheduler.schedule(isFinalizing: false) {
+            events.append("older")
+            olderUpdate.fulfill()
+        }
+        CaptureStatusBarUpdateScheduler.schedule(isFinalizing: true) {
+            events.append("finishing")
+        }
+        let finalizationPublishedAt = ProcessInfo.processInfo.systemUptime
+        CaptureStatusBarUpdateScheduler.schedule(
+            isFinalizing: false,
+            completion: {
+                terminalDismissalCount += 1
+                XCTAssertGreaterThanOrEqual(
+                    ProcessInfo.processInfo.systemUptime - finalizationPublishedAt,
+                    0.18
+                )
+                terminalDismissal.fulfill()
+            }
+        ) {
+            terminalRenderCount += 1
+            events.append("terminal")
+        }
+
+        XCTAssertEqual(events, ["finishing"])
+        wait(for: [terminalDismissal, olderUpdate], timeout: 0.5)
+        XCTAssertEqual(events, ["finishing", "terminal"])
+        XCTAssertEqual(terminalRenderCount, 1)
+        XCTAssertEqual(terminalDismissalCount, 1)
     }
 
     func testStaleStopControlCannotStopReplacementBeforeDismissalAcknowledgement() throws {

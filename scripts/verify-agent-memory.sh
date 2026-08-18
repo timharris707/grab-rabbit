@@ -76,6 +76,9 @@ required_agent_contracts=(
     'Refresh `.claude/handoff.md` before compaction or session succession.'
     '`scripts/verify-handoff-integrity.sh` before handing the session off.'
     'Refresh repository bindings by re-running the ClickAI setup skill;'
+    'For ClickAI session-scope conduct,'
+    'Before writing any pull-request description or GitHub comment on behalf of'
+    'read `references/pr-writing.md` from the installed ClickAI `orchestrate`'
 )
 
 for required_contract in "${required_agent_contracts[@]}"; do
@@ -221,6 +224,37 @@ required_handoff_contracts=(
 for required_contract in "${required_handoff_contracts[@]}"; do
     if ! grep -Fq "$required_contract" docs/agents/team-workflow.md; then
         fail "team-workflow binding is missing the $required_contract handoff contract"
+    fi
+done
+
+required_team_workflow_contracts=(
+    '_Pack version: team-workflow v1.5.2'
+    '**Implicit-repo check**: mismatch'
+    'xcodebuild -project QuickRecorder.xcodeproj -scheme QuickRecorder -configuration Debug'
+    '**Announce model/effort**: on.'
+    '**Runner inventory**: a Claude Code orchestrator session'
+    '**Runner policy**: orchestration and integration run on Claude Code'
+    '**Review-tier policy** (decider-set 2026-08-16):'
+    '## Session-scope conduct'
+    '## Accepted drift'
+)
+
+for required_contract in "${required_team_workflow_contracts[@]}"; do
+    if ! grep -Fq "$required_contract" docs/agents/team-workflow.md; then
+        fail "team-workflow binding is missing the $required_contract setup contract"
+    fi
+done
+
+required_lane_brief_contracts=(
+    'gh issue view <N> --repo timharris707/grab-rabbit --comments'
+    'installed ClickAI `diagnose` skill'
+    'Skipped checks: none'
+    'never the full diff or transcript'
+)
+
+for required_contract in "${required_lane_brief_contracts[@]}"; do
+    if ! grep -Fq "$required_contract" docs/agents/lane-brief.md; then
+        fail "lane brief is missing the $required_contract setup contract"
     fi
 done
 

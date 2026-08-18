@@ -20,6 +20,11 @@ Every GitHub issue number and pull-request number in every user-facing update,
 including repeated status lists, must be a clickable Markdown link to its canonical
 GitHub URL.
 
+For ClickAI session-scope conduct, `docs/agents/team-workflow.md` is the repository
+binding. Before writing any pull-request description or GitHub comment on behalf of
+Tim Harris, read `references/pr-writing.md` from the installed ClickAI `orchestrate`
+skill.
+
 Refresh `.claude/handoff.md` before compaction or session succession. Keep it as a
 hot pointer: active branches, artifacts, blockers, the exact next action, current-
 session `DONE`, and expensive session-specific `GOTCHAS`. Durable fundamentals stay

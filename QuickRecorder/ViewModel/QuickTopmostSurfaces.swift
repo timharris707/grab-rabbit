@@ -42,6 +42,7 @@ struct QuickTopmostPillView: View {
         .padding(.vertical, 7)
         .background(Color.black.opacity(0.9), in: Capsule())
         .onReceive(updateTimer) { _ in snapshot = state.snapshot() }
+        .onChange(of: state.revision) { _ in snapshot = state.snapshot() }
     }
 }
 
@@ -77,6 +78,7 @@ struct QuickTopmostIndicatorView: View {
         .frame(height: 20)
         .background(quickTopmostLive, in: RoundedRectangle(cornerRadius: 5))
         .onReceive(updateTimer) { _ in snapshot = state.snapshot() }
+        .onChange(of: state.revision) { _ in snapshot = state.snapshot() }
     }
 }
 

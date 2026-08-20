@@ -70,6 +70,9 @@ final class QuickTopmostRecordingState: ObservableObject {
 
     @Published private(set) var isRecording = false
     @Published private(set) var windowTitle = ""
+    /// Bumped whenever the recording changes in a way the surfaces must show at once, so
+    /// neither of them waits for the next timer tick.
+    @Published private(set) var revision: UInt64 = 0
 
     /// Installed once at launch with the app's single stop and pause functions and its
     /// recording clock.
@@ -80,11 +83,13 @@ final class QuickTopmostRecordingState: ObservableObject {
     func begin(windowTitle: String) {
         self.windowTitle = windowTitle
         isRecording = true
+        revision &+= 1
     }
 
     func end() {
         isRecording = false
         windowTitle = ""
+        revision &+= 1
     }
 
     func requestStop() {
@@ -95,7 +100,7 @@ final class QuickTopmostRecordingState: ObservableObject {
     func requestPause() {
         guard isRecording else { return }
         pauseHandler?()
-        objectWillChange.send()
+        revision &+= 1
     }
 
     func snapshot() -> Snapshot {

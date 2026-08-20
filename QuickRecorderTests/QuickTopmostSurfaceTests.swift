@@ -96,6 +96,33 @@ final class QuickTopmostSurfaceTests: XCTestCase {
         XCTAssertEqual(state.snapshot().elapsed, "0:20")
     }
 
+    func testPauseReachesBothSurfacesWithoutWaitingForATimerTick() throws {
+        let state = QuickTopmostRecordingState()
+        var isPaused = false
+        state.pauseHandler = { isPaused.toggle() }
+        state.clock = { QuickTopmostClockReading(elapsed: 12, isPaused: isPaused) }
+        state.begin(windowTitle: "Quarterly Dashboard")
+
+        // No timer tick between the request and the assertions.
+        let revisionBeforePause = state.revision
+        state.requestPause()
+        XCTAssertNotEqual(state.revision, revisionBeforePause)
+        XCTAssertTrue(state.snapshot().isPaused)
+
+        let revisionBeforeResume = state.revision
+        state.requestPause()
+        XCTAssertNotEqual(state.revision, revisionBeforeResume)
+        XCTAssertFalse(state.snapshot().isPaused)
+
+        // Both surfaces refresh their rendered snapshot on that revision, so the paused
+        // label and the pause glyph cannot lag a tick behind the state.
+        let surfaces = try projectSource("QuickRecorder/ViewModel/QuickTopmostSurfaces.swift")
+        XCTAssertEqual(
+            occurrences(of: ".onChange(of: state.revision) { _ in snapshot = state.snapshot() }", in: surfaces),
+            2
+        )
+    }
+
     func testAutoStopEnforcesTheConfiguredLimitOnBothStatusBarBranches() throws {
         XCTAssertFalse(CaptureAutoStop.shouldStop(autoStopMinutes: 0, elapsed: 6000))
         XCTAssertFalse(CaptureAutoStop.shouldStop(autoStopMinutes: 5, elapsed: 299))
@@ -147,7 +174,10 @@ final class QuickTopmostSurfaceTests: XCTestCase {
         XCTAssertFalse(surfaces.contains("SCContext.stopRecording"))
         XCTAssertFalse(surfaces.contains("SCContext.pauseRecording"))
         XCTAssertFalse(surfaces.contains("DateComponentsFormatter"))
-        XCTAssertEqual(occurrences(of: "snapshot = state.snapshot()", in: surfaces), 2)
+        // Each surface refreshes from the one snapshot twice: on the timer tick and on the
+        // state's revision.
+        XCTAssertEqual(occurrences(of: ".onReceive(updateTimer) { _ in snapshot = state.snapshot() }", in: surfaces), 2)
+        XCTAssertEqual(occurrences(of: "snapshot = state.snapshot()", in: surfaces), 4)
         XCTAssertTrue(surfaces.contains("QuickTopmostPillWindowSettings.excludedFromCapture.apply(to: panel)"))
     }
 

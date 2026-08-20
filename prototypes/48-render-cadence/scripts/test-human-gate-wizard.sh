@@ -18,6 +18,347 @@ awk '/^banner "Grab Rabbit render-cadence human gate"/ { exit } { print }' "$wiz
 source "$harness"
 trap 'rm -rf "$test_root"' EXIT
 
+declare -F run_live_probe >/dev/null \
+  || fail "the wizard has no LaunchServices seam for the signed probe"
+
+completion_report="$test_root/completion.json"
+if completion_report_is_successful "$completion_report"; then
+  fail "a missing record completion report unexpectedly passed"
+fi
+printf '%s\n' '{"schema":"wrong","exit_code":0}' >"$completion_report"
+if completion_report_is_successful "$completion_report"; then
+  fail "a record completion report with the wrong schema unexpectedly passed"
+fi
+printf '%s\n' '{"schema":"grab-rabbit-live-cadence-completion-v1","exit_code":42}' >"$completion_report"
+if completion_report_is_successful "$completion_report"; then
+  fail "a nonzero record completion report unexpectedly passed"
+fi
+printf '%s\n' '{"schema":"grab-rabbit-live-cadence-completion-v1","exit_code":0}' >"$completion_report"
+completion_report_is_successful "$completion_report" \
+  || fail "a successful record completion report was rejected"
+rg -Fq 'wizard-owned process cleanup could not prove completion' "$wizard" \
+  || fail "the EXIT trap does not surface an unresolved process cleanup"
+
+launch_log="$test_root/live-probe-open-args.txt"
+WIZARD_TEST_PREFLIGHT_FAIL=false
+WIZARD_TEST_SYNC_INTERRUPT=false
+WIZARD_TEST_SYNC_ENUMERATION_FAIL=false
+WIZARD_TEST_SYNC_MARKER="$test_root/sync-opened"
+open() {
+  local stdout_path="" stderr_path="" json_path="" argument
+  local is_record=false is_preflight=false
+  : >"$launch_log"
+  while (( $# )); do
+    argument=$1
+    printf '%s\n' "$argument" >>"$launch_log"
+    shift
+    case "$argument" in
+      -o) stdout_path=$1 ;;
+      --stderr) stderr_path=$1 ;;
+      --json) json_path=$1 ;;
+      record) is_record=true ;;
+      preflight) is_preflight=true ;;
+    esac
+  done
+  if [[ "$is_record" == true ]]; then
+    : >"$stdout_path"
+    : >"$stderr_path"
+    command sleep 2
+    return 0
+  fi
+  if [[ "$is_preflight" == true ]]; then
+    if [[ "$WIZARD_TEST_PREFLIGHT_FAIL" == true ]]; then
+      printf '%s\n' '{"schema":"grab-rabbit-live-cadence-failure-v1","exitCode":23,"outputCreated":false}' \
+        >"$json_path"
+    else
+      printf '%s\n' '{"schema":"grab-rabbit-live-cadence-preflight-v1","passed":true,"exact_camera_id_matched_in_process":true,"exact_window_id_matched_in_process":true,"output_created":false,"privacy_sentinel_pixels":0}' \
+        >"$json_path"
+    fi
+    : >"$stdout_path"
+    : >"$stderr_path"
+    return 0
+  fi
+  printf '%s\n' '{"authorization":{"camera":"authorized","microphone":"authorized","screenCapturePreflightGranted":true}}' \
+    >"$json_path"
+  : >"$stderr_path"
+  if [[ "$WIZARD_TEST_SYNC_INTERRUPT" == true ]]; then
+    : >"$WIZARD_TEST_SYNC_MARKER"
+    return 130
+  fi
+}
+STABLE_APP="$test_root/Grab Rabbit Live Cadence Probe.app"
+mkdir -p "$STABLE_APP"
+run_live_probe list-sources --skip-window-query \
+  || fail "the LaunchServices probe seam did not propagate success"
+jq -e '.authorization.camera == "authorized"' <<<"$LIVE_PROBE_JSON" >/dev/null \
+  || fail "the LaunchServices probe seam did not return the app's stdout"
+expected_launch_arguments=$(printf '%s\n' \
+  -n -W -g -o /dev/null --stderr /dev/null \
+  "$STABLE_APP" --args list-sources --skip-window-query \
+  --json /private/tmp/grab-rabbit-48-live-probe-launch.TOKEN/result.json \
+  --launch-token /private/tmp/grab-rabbit-48-live-probe-launch.TOKEN)
+normalized_launch_arguments=$(sed -E \
+  's#/private/tmp/grab-rabbit-48-live-probe-launch\.[^/[:space:]]+#/private/tmp/grab-rabbit-48-live-probe-launch.TOKEN#' \
+  "$launch_log")
+[[ "$normalized_launch_arguments" == "$expected_launch_arguments" ]] \
+  || fail "the signed probe was not launched through its exact app bundle with isolated output"
+
+LIVE_PROBE="$STABLE_APP/Contents/MacOS/live-cadence-probe"
+EVIDENCE_DIR="$test_root/preflight-evidence"
+mkdir -p "$EVIDENCE_DIR"
+CAMERA_ID=stable-camera-id
+WINDOW_ID=123
+WIZARD_TEST_PREFLIGHT_FAIL=true
+if exact_preflight_passes_without_output; then
+  fail "a failing LaunchServices preflight was accepted from the open waiter's zero exit"
+fi
+[[ ! -e "$EVIDENCE_DIR/preflight-must-not-exist.mov" \
+    && ! -e "$EVIDENCE_DIR/preflight.json" ]] \
+  || fail "a failed preflight left output that prevented a safe retry"
+WIZARD_TEST_PREFLIGHT_FAIL=false
+exact_preflight_passes_without_output \
+  || fail "a successful machine-readable LaunchServices preflight was rejected"
+
+record_stdout="$test_root/record.stdout"
+record_stderr="$test_root/record.stderr"
+record_movie="$test_root/record.mov"
+record_metrics="$test_root/record.metrics.json"
+record_events="$test_root/record.events.jsonl"
+record_completion="$test_root/record.completion.json"
+WIZARD_TEST_RECORD_PID=42424
+WIZARD_TEST_PRIOR_RECORD_PID=42423
+WIZARD_TEST_RECORD_PARENT_PID=1
+WIZARD_TEST_RECORD_STARTED_AT='Thu Aug 20 14:00:00 2026'
+WIZARD_TEST_RECORD_BASE_ARGUMENTS="$LIVE_PROBE record --candidate fixed-clock --output $record_movie --metrics $record_metrics --events $record_events --completion-json $record_completion"
+WIZARD_TEST_RECORD_ARGUMENT_SUFFIX=""
+WIZARD_TEST_RECORD_PS_FAIL=false
+WIZARD_TEST_RECORD_VISIBLE=true
+WIZARD_TEST_RECORD_DUPLICATE=false
+wizard_test_record_arguments() {
+  local token
+  token=$(awk 'previous == "--launch-token" { print; exit } { previous = $0 }' "$launch_log")
+  [[ -n "$token" ]] || return 1
+  printf '%s --launch-token %s%s' \
+    "$WIZARD_TEST_RECORD_BASE_ARGUMENTS" "$token" "$WIZARD_TEST_RECORD_ARGUMENT_SUFFIX"
+}
+ps() {
+  local record_arguments
+  case "$*" in
+    '-ww -axo pid=,args=')
+      if [[ "$WIZARD_TEST_SYNC_ENUMERATION_FAIL" == true && -e "$WIZARD_TEST_SYNC_MARKER" ]]; then
+        return 17
+      fi
+      printf ' %s %s\n' "$WIZARD_TEST_PRIOR_RECORD_PID" "$WIZARD_TEST_RECORD_BASE_ARGUMENTS"
+      if record_arguments=$(wizard_test_record_arguments); then
+        printf ' %s %s\n' "$WIZARD_TEST_RECORD_PID" "$record_arguments"
+        if [[ "$WIZARD_TEST_RECORD_DUPLICATE" == true ]]; then
+          printf ' %s %s\n' 42425 "$record_arguments"
+        fi
+      fi
+      [[ "$WIZARD_TEST_RECORD_PS_FAIL" == false ]]
+      ;;
+    "-ww -p $WIZARD_TEST_RECORD_PID -o ppid=")
+      [[ "$WIZARD_TEST_RECORD_VISIBLE" == true ]] || return 1
+      printf '%s\n' "$WIZARD_TEST_RECORD_PARENT_PID"
+      ;;
+    "-ww -p $WIZARD_TEST_RECORD_PID -o comm=")
+      [[ "$WIZARD_TEST_RECORD_VISIBLE" == true ]] || return 1
+      printf '%s\n' "$LIVE_PROBE"
+      ;;
+    "-ww -p $WIZARD_TEST_RECORD_PID -o lstart=")
+      [[ "$WIZARD_TEST_RECORD_VISIBLE" == true ]] || return 1
+      printf '%s\n' "$WIZARD_TEST_RECORD_STARTED_AT"
+      ;;
+    "-ww -p $WIZARD_TEST_RECORD_PID -o args=")
+      [[ "$WIZARD_TEST_RECORD_VISIBLE" == true ]] || return 1
+      wizard_test_record_arguments
+      ;;
+    "-ww -p 42425 -o ppid=") printf '%s\n' "$WIZARD_TEST_RECORD_PARENT_PID" ;;
+    "-ww -p 42425 -o comm=") printf '%s\n' "$LIVE_PROBE" ;;
+    "-ww -p 42425 -o lstart=") printf '%s\n' "$WIZARD_TEST_RECORD_STARTED_AT" ;;
+    "-ww -p 42425 -o args=") wizard_test_record_arguments ;;
+    *) command ps "$@" ;;
+  esac
+}
+kill() {
+  if [[ "$1" == -0 && "$2" == "$WIZARD_TEST_RECORD_PID" ]]; then
+    [[ "$WIZARD_TEST_RECORD_VISIBLE" == true ]]
+    return
+  fi
+  command kill "$@"
+}
+redirect_target="$test_root/redirect-target"
+ln -s "$redirect_target" "$record_stdout"
+if launch_live_probe_record "$record_stdout" "$record_stderr" \
+    record --candidate fixed-clock \
+    --output "$record_movie" --metrics "$record_metrics" --events "$record_events" \
+    --completion-json "$record_completion"; then
+  fail "a dangling LaunchServices stdout symlink unexpectedly passed"
+fi
+[[ ! -e "$redirect_target" ]] \
+  || fail "LaunchServices followed a dangling stdout symlink"
+rm "$record_stdout"
+remove_live_probe_launch_dir "$LAST_LIVE_PROBE_LAUNCH_DIR" \
+  || fail "the refused redirect launch marker was not removed"
+launch_live_probe_record "$record_stdout" "$record_stderr" \
+  record --candidate fixed-clock \
+  --output "$record_movie" --metrics "$record_metrics" --events "$record_events" \
+  --completion-json "$record_completion" \
+  || fail "the background signed probe was not launched and pinned"
+record_pid="$LAST_LIVE_PROBE_PID"
+record_waiter_pid="$LAST_LIVE_PROBE_WAITER_PID"
+[[ "$record_pid" == "$WIZARD_TEST_RECORD_PID" && "$record_pid" != "$record_waiter_pid" ]] \
+  || fail "the LaunchServices waiter was mistaken for the actual signed probe"
+[[ "$record_pid" != "$WIZARD_TEST_PRIOR_RECORD_PID" ]] \
+  || fail "a pre-existing identical recording was mistaken for the newly launched probe"
+live_probe_process_is_running "$record_pid" \
+  || fail "the pinned signed-probe identity did not remain live"
+WIZARD_TEST_RECORD_PS_FAIL=true
+if discover_live_probe_process "${LIVE_PROBE_OWNED_ARGUMENTS[0]}"; then
+  fail "partial failed process enumeration unexpectedly established uniqueness"
+fi
+WIZARD_TEST_RECORD_PS_FAIL=false
+expected_record_launch_arguments=$(printf '%s\n' \
+  -n -W -g -o /dev/null --stderr /dev/null \
+  "$STABLE_APP" --args record --candidate fixed-clock \
+  --output "$record_movie" --metrics "$record_metrics" --events "$record_events" \
+  --completion-json "$record_completion" \
+  --launch-token /private/tmp/grab-rabbit-48-record-launch.TOKEN)
+normalized_record_launch_arguments=$(sed -E \
+  's#/private/tmp/grab-rabbit-48-record-launch\.[^/[:space:]]+#/private/tmp/grab-rabbit-48-record-launch.TOKEN#' \
+  "$launch_log")
+[[ "$normalized_record_launch_arguments" == "$expected_record_launch_arguments" ]] \
+  || fail "the background recording bypassed the signed app's LaunchServices identity"
+WIZARD_TEST_KILL_SIGNALS=""
+kill() {
+  WIZARD_TEST_KILL_SIGNALS="$WIZARD_TEST_KILL_SIGNALS $1"
+}
+sleep() { :; }
+if cleanup_live_probe_processes >/dev/null; then
+  fail "cleanup accepted a signed probe that remained live after every owned signal"
+fi
+[[ "${#LIVE_PROBE_OWNED_PIDS[@]}" -eq 1 \
+    && "$WIZARD_TEST_KILL_SIGNALS" == *'-INT'* \
+    && "$WIZARD_TEST_KILL_SIGNALS" == *'-TERM'* \
+    && "$WIZARD_TEST_KILL_SIGNALS" == *'-KILL'* ]] \
+  || fail "cleanup forgot a still-live signed probe or skipped its escalation"
+unset -f kill sleep
+kill() {
+  if [[ "$1" == -0 && "$2" == "$WIZARD_TEST_RECORD_PID" ]]; then
+    [[ "$WIZARD_TEST_RECORD_VISIBLE" == true ]]
+    return
+  fi
+  command kill "$@"
+}
+WIZARD_TEST_RECORD_ARGUMENT_SUFFIX=' --recycled'
+if live_probe_process_is_running "$record_pid"; then
+  fail "a changed signed-probe argument identity unexpectedly remained owned"
+fi
+if live_probe_process_is_stopped "$record_pid"; then
+  fail "an unobservable live signed probe was mistaken for a stopped process"
+fi
+WIZARD_TEST_RECORD_ARGUMENT_SUFFIX=""
+WIZARD_TEST_RECORD_STARTED_AT='Thu Aug 20 14:00:01 2026'
+if live_probe_process_is_running "$record_pid"; then
+  fail "a recycled signed-probe PID unexpectedly remained owned"
+fi
+wait "$record_waiter_pid" >/dev/null 2>&1 || true
+untrack_owned_pid "$record_waiter_pid"
+untrack_live_probe_process "$record_pid"
+remove_live_probe_launch_dir "$LAST_LIVE_PROBE_LAUNCH_DIR" \
+  || fail "the exact empty background launch marker was not removed"
+WIZARD_TEST_RECORD_STARTED_AT='Thu Aug 20 14:00:00 2026'
+WIZARD_TEST_RECORD_VISIBLE=true
+pending_arguments=$(wizard_test_record_arguments)
+track_pending_live_probe_launch "$pending_arguments" 52525
+WIZARD_TEST_PENDING_KILL_SIGNALS=""
+kill() {
+  if [[ "$1" == -0 && "$2" == "$WIZARD_TEST_RECORD_PID" ]]; then
+    [[ "$WIZARD_TEST_RECORD_VISIBLE" == true ]]
+    return
+  fi
+  WIZARD_TEST_PENDING_KILL_SIGNALS="$WIZARD_TEST_PENDING_KILL_SIGNALS $1"
+  WIZARD_TEST_RECORD_VISIBLE=false
+}
+sleep() { :; }
+cleanup_live_probe_processes \
+  || fail "cleanup did not recover and stop a delayed LaunchServices child"
+unset -f kill sleep
+[[ "${#LIVE_PROBE_PENDING_WAITER_PIDS[@]}" -eq 0 \
+    && "${#LIVE_PROBE_OWNED_PIDS[@]}" -eq 0 \
+    && "$WIZARD_TEST_PENDING_KILL_SIGNALS" == *'-INT'* ]] \
+  || fail "a delayed LaunchServices child escaped pending-launch cleanup"
+
+WIZARD_TEST_RECORD_VISIBLE=true
+WIZARD_TEST_RECORD_DUPLICATE=true
+track_pending_live_probe_launch "$(wizard_test_record_arguments)" 62626
+sleep() { :; }
+if cleanup_live_probe_processes >/dev/null; then
+  fail "ambiguous signed-probe discovery unexpectedly passed cleanup"
+fi
+unset -f sleep
+[[ "${#LIVE_PROBE_PENDING_WAITER_PIDS[@]}" -eq 1 ]] \
+  || fail "ambiguous signed-probe cleanup forgot its exact pending identity"
+LIVE_PROBE_PENDING_ARGUMENTS=()
+LIVE_PROBE_PENDING_WAITER_PIDS=()
+WIZARD_TEST_RECORD_DUPLICATE=false
+
+residue_dir=$(mktemp -d /tmp/grab-rabbit-48-live-probe-launch.XXXXXX)
+residue_dir=$(cd "$residue_dir" && pwd -P)
+track_live_probe_launch_dir "$residue_dir" \
+  || fail "the temporary residue directory was not identity-pinned"
+printf '%s\n' '{"cameras":[{"uniqueID":"must-not-remain"}]}' >"$residue_dir/result.json"
+remove_live_probe_launch_dir "$residue_dir" \
+  || fail "owned transient source identifiers were not securely removed"
+[[ ! -e "$residue_dir" ]] \
+  || fail "the transient source-identifier directory remained after cleanup"
+
+unproven_dir=$(mktemp -d /tmp/grab-rabbit-48-live-probe-launch.XXXXXX)
+unproven_dir=$(cd "$unproven_dir" && pwd -P)
+track_live_probe_launch_dir "$unproven_dir" \
+  || fail "the unproven cleanup directory was not identity-pinned"
+printf '%s\n' unexpected >"$unproven_dir/unexpected"
+if cleanup_live_probe_processes >/dev/null; then
+  fail "an unproven launch-directory cleanup unexpectedly passed"
+fi
+[[ "${#LIVE_PROBE_LAUNCH_DIRS[@]}" -eq 1 \
+    && "${LIVE_PROBE_LAUNCH_DIRS[0]}" == "$unproven_dir" ]] \
+  || fail "an unproven launch-directory cleanup forgot its exact ownership metadata"
+rm "$unproven_dir/unexpected"
+remove_live_probe_launch_dir "$unproven_dir" \
+  || fail "the repaired unproven cleanup directory was not removed"
+
+WIZARD_TEST_SYNC_INTERRUPT=true
+WIZARD_TEST_SYNC_ENUMERATION_FAIL=true
+if run_live_probe list-sources --skip-window-query; then
+  fail "an interrupted synchronous LaunchServices probe unexpectedly passed"
+fi
+[[ "${#LIVE_PROBE_PENDING_WAITER_PIDS[@]}" -eq 1 ]] \
+  || fail "an interrupted synchronous launch forgot its pending process identity"
+WIZARD_TEST_SYNC_INTERRUPT=false
+WIZARD_TEST_SYNC_ENUMERATION_FAIL=false
+LIVE_PROBE_PENDING_ARGUMENTS=()
+LIVE_PROBE_PENDING_WAITER_PIDS=()
+sync_launch_index=$((${#LIVE_PROBE_LAUNCH_DIRS[@]} - 1))
+sync_launch_dir="${LIVE_PROBE_LAUNCH_DIRS[$sync_launch_index]}"
+remove_live_probe_launch_dir "$sync_launch_dir" \
+  || fail "the interrupted synchronous launch residue was not removed"
+
+: >"$WIZARD_TEST_SYNC_MARKER"
+WIZARD_TEST_SYNC_INTERRUPT=true
+if run_live_probe list-sources --skip-window-query; then
+  fail "an interrupted synchronous launch with empty enumeration unexpectedly passed"
+fi
+[[ "${#LIVE_PROBE_PENDING_WAITER_PIDS[@]}" -eq 1 ]] \
+  || fail "an interrupted synchronous launch forgot its identity after an empty process snapshot"
+WIZARD_TEST_SYNC_INTERRUPT=false
+LIVE_PROBE_PENDING_ARGUMENTS=()
+LIVE_PROBE_PENDING_WAITER_PIDS=()
+sync_launch_index=$((${#LIVE_PROBE_LAUNCH_DIRS[@]} - 1))
+sync_launch_dir="${LIVE_PROBE_LAUNCH_DIRS[$sync_launch_index]}"
+remove_live_probe_launch_dir "$sync_launch_dir" \
+  || fail "the interrupted empty-snapshot launch residue was not removed"
+
 gate_output=""
 if gate_output=$(required_confirm "Continue the required test action?" <<<"n" 2>&1); then
   fail "a No response unexpectedly passed the required continuation gate"

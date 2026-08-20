@@ -220,6 +220,12 @@ stage_minutes=$(awk '/^stage "/ { total += $(NF) } END { print total + 0 }' "$wi
 rg -n -F 'TOTAL_STAGES=6' "$wizard" >"$evidence/wizard-stage-proof.txt"
 rg -n -F 'TOTAL_MINUTES=100' "$wizard" >>"$evidence/wizard-stage-proof.txt"
 rg -n -F '[[ "$count" -eq 28 ]]' "$wizard" >"$evidence/wizard-output-count-proof.txt"
+rg -n -F -- '--completion-json "$completion"' "$wizard" \
+    >"$evidence/wizard-completion-contract-proof.txt"
+rg -n -F '"schema": "grab-rabbit-live-cadence-completion-v1"' "$main_source" \
+    >>"$evidence/wizard-completion-contract-proof.txt"
+rg -n -F '.schema == "grab-rabbit-live-cadence-completion-v1" and .exit_code == 0' "$wizard" \
+    >>"$evidence/wizard-completion-contract-proof.txt"
 
 rg -n 'SCContentFilter\(desktopIndependentWindow:' "$source_root/LiveSources.swift" \
     >"$evidence/window-filter-proof.txt"

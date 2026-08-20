@@ -279,6 +279,15 @@ RUNS_DIR="$EVIDENCE_DIR/runs"
 PROCESS_LEDGER="$EVIDENCE_DIR/processes.tsv"
 ENV_FILE=/dev/null
 WIZARD_OWNED_PIDS=()
+LIVE_PROBE_OWNED_PIDS=()
+LIVE_PROBE_OWNED_PARENT_PIDS=()
+LIVE_PROBE_OWNED_STARTED_AT=()
+LIVE_PROBE_OWNED_ARGUMENTS=()
+LIVE_PROBE_OWNED_WAITER_PIDS=()
+LIVE_PROBE_LAUNCH_DIRS=()
+LIVE_PROBE_LAUNCH_IDENTITIES=()
+LIVE_PROBE_PENDING_ARGUMENTS=()
+LIVE_PROBE_PENDING_WAITER_PIDS=()
 CAMERA_WAS_PRESENT_INITIALLY=false
 CAMERA_ID=""
 WINDOW_ID=""
@@ -321,7 +330,8 @@ owned_pid_is_running() {
 }
 
 cleanup_owned_processes() {
-  local pid
+  local pid cleanup_failed=false
+  cleanup_live_probe_processes || cleanup_failed=true
   for pid in "${WIZARD_OWNED_PIDS[@]-}"; do
     [[ -n "$pid" ]] || continue
     if protected_pid_is_still_protected "$pid"; then
@@ -333,6 +343,7 @@ cleanup_owned_processes() {
     fi
   done
   WIZARD_OWNED_PIDS=()
+  [[ "$cleanup_failed" == false ]]
 }
 
 untrack_owned_pid() {
@@ -377,7 +388,7 @@ on_interrupt() {
   exit 130
 }
 
-trap cleanup_owned_processes EXIT
+trap 'cleanup_owned_processes || { bad "wizard-owned process cleanup could not prove completion"; exit 1; }' EXIT
 trap on_interrupt INT TERM
 
 fatal_gate() {
@@ -414,28 +425,507 @@ required_check() {
   done
 }
 
+run_live_probe() {
+  local launch_dir launch_identity stdout_path stderr_path report_path expected_arguments waiter_pid
+  local probe_pid="" owns_report=false code=0 attempt=0
+  launch_dir=$(mktemp -d /tmp/grab-rabbit-48-live-probe-launch.XXXXXX) || return 1
+  launch_dir=$(cd "$launch_dir" && pwd -P) || return 1
+  stdout_path="$launch_dir/stdout"
+  stderr_path="$launch_dir/stderr"
+  if ! [[ -d "$launch_dir" && ! -L "$launch_dir" ]]; then
+    return 1
+  fi
+  track_live_probe_launch_dir "$launch_dir" || return 1
+  launch_identity=$(stat -f '%d:%i' "$launch_dir") || return 1
+  report_path=$(live_probe_json_path_from_arguments "$@" || true)
+  if [[ -z "$report_path" ]]; then
+    report_path="$launch_dir/result.json"
+    owns_report=true
+    set -- "$@" --json "$report_path"
+  fi
+  expected_arguments=$(live_probe_expected_arguments "$@" --launch-token "$launch_dir") || return 1
+  if discover_live_probe_process "$expected_arguments"; then
+    return 1
+  fi
+  start_live_probe_open "$stdout_path" "$stderr_path" \
+    "$@" --launch-token "$launch_dir" || return 1
+  waiter_pid="$LAST_OPEN_WAITER_PID"
+  WIZARD_OWNED_PIDS+=("$waiter_pid")
+  track_pending_live_probe_launch "$expected_arguments" "$waiter_pid"
+  while (( attempt < 100 )) && owned_pid_is_running "$waiter_pid"; do
+    if discover_live_probe_process "$expected_arguments"; then
+      track_live_probe_process \
+        "$DISCOVERED_LIVE_PROBE_PID" \
+        "$DISCOVERED_LIVE_PROBE_PARENT_PID" \
+        "$DISCOVERED_LIVE_PROBE_STARTED_AT" \
+        "$DISCOVERED_LIVE_PROBE_ARGUMENTS" \
+        "$waiter_pid"
+      untrack_pending_live_probe_launch "$waiter_pid"
+      probe_pid="$DISCOVERED_LIVE_PROBE_PID"
+      break
+    fi
+    sleep 0.05
+    attempt=$((attempt + 1))
+  done
+  if wait "$waiter_pid"; then code=0; else code=$?; fi
+  untrack_owned_pid "$waiter_pid"
+  if [[ -z "$probe_pid" ]] && discover_live_probe_process "$expected_arguments"; then
+    track_live_probe_process \
+      "$DISCOVERED_LIVE_PROBE_PID" \
+      "$DISCOVERED_LIVE_PROBE_PARENT_PID" \
+      "$DISCOVERED_LIVE_PROBE_STARTED_AT" \
+      "$DISCOVERED_LIVE_PROBE_ARGUMENTS" \
+      "$waiter_pid"
+    probe_pid="$DISCOVERED_LIVE_PROBE_PID"
+  fi
+  if [[ -z "$probe_pid" ]]; then
+    if [[ "$code" -ne 0 \
+        || "${DISCOVERED_LIVE_PROBE_ENUMERATION_FAILED:-false}" == true \
+        || "${DISCOVERED_LIVE_PROBE_MATCH_COUNT:-0}" -gt 0 ]]; then
+      return 1
+    fi
+    untrack_pending_live_probe_launch "$waiter_pid"
+  fi
+  if [[ -n "$probe_pid" ]]; then
+    untrack_pending_live_probe_launch "$waiter_pid"
+    live_probe_process_is_stopped "$probe_pid" || return 1
+    untrack_live_probe_process "$probe_pid"
+  fi
+  live_probe_launch_dir_matches "$launch_dir" "$launch_identity" \
+    || return 1
+  if [[ ! -f "$stdout_path" || -L "$stdout_path" \
+      || ! -f "$stderr_path" || -L "$stderr_path" \
+      || ! -f "$report_path" || -L "$report_path" ]]; then
+    return 1
+  fi
+  LIVE_PROBE_JSON=$(<"$report_path")
+  [[ -n "$LIVE_PROBE_JSON" ]] || return 1
+  live_probe_launch_dir_matches "$launch_dir" "$launch_identity" \
+    || return 1
+  if [[ "$owns_report" == true ]]; then
+    rm -f "$report_path"
+  fi
+  rm -f "$stdout_path" "$stderr_path"
+  remove_live_probe_launch_dir "$launch_dir" || return 1
+  return "$code"
+}
+
+live_probe_json_path_from_arguments() {
+  local previous="" argument result=""
+  for argument in "$@"; do
+    if [[ "$previous" == --json ]]; then
+      result="$argument"
+    fi
+    previous="$argument"
+  done
+  [[ -n "$result" ]] || return 1
+  printf '%s' "$result"
+}
+
+live_probe_expected_arguments() {
+  local argument expected="$LIVE_PROBE"
+  for argument in "$@"; do
+    [[ "$argument" != *$'\n'* && "$argument" != *$'\r'* ]] || return 1
+    expected="$expected $argument"
+  done
+  printf '%s' "$expected"
+}
+
+start_live_probe_open() {
+  local stdout_path="$1" stderr_path="$2" waiter_pid
+  shift 2
+  [[ ! -e "$stdout_path" && ! -L "$stdout_path" \
+      && ! -e "$stderr_path" && ! -L "$stderr_path" ]] || return 1
+  set -o noclobber
+  if ! : >"$stdout_path"; then
+    set +o noclobber
+    return 1
+  fi
+  if ! : >"$stderr_path"; then
+    set +o noclobber
+    return 1
+  fi
+  set +o noclobber
+  open -n -W -g -o /dev/null --stderr /dev/null \
+    "$STABLE_APP" --args "$@" &
+  waiter_pid=$!
+  LAST_OPEN_WAITER_PID="$waiter_pid"
+}
+
+live_probe_process_observation_matches() {
+  local pid="$1" expected_parent_pid="$2" expected_started_at="$3" expected_arguments="$4"
+  local actual_parent_pid actual_path actual_started_at actual_arguments
+  [[ "$pid" =~ ^[1-9][0-9]*$ && "$expected_parent_pid" =~ ^[1-9][0-9]*$ \
+      && -n "$expected_started_at" && -n "$expected_arguments" ]] || return 1
+  actual_parent_pid=$(protected_process_parent_pid "$pid") || return 1
+  actual_path=$(LC_ALL=C ps -ww -p "$pid" -o comm=) || return 1
+  actual_started_at=$(protected_process_started_at "$pid") || return 1
+  actual_arguments=$(protected_process_arguments "$pid") || return 1
+  actual_path=${actual_path#"${actual_path%%[![:space:]]*}"}
+  actual_path=${actual_path%"${actual_path##*[![:space:]]}"}
+  [[ "$actual_parent_pid" == "$expected_parent_pid" \
+      && "$actual_path" == "$LIVE_PROBE" \
+      && "$actual_started_at" == "$expected_started_at" \
+      && "$actual_arguments" == "$expected_arguments" ]]
+}
+
+discover_live_probe_process() {
+  local expected_arguments="$1" process_list rows pid ignored parent_pid started_at arguments
+  local matched_pid="" matched_parent_pid="" matched_started_at="" matched_arguments="" match_count=0
+  DISCOVERED_LIVE_PROBE_ENUMERATION_FAILED=true
+  DISCOVERED_LIVE_PROBE_MATCH_COUNT=0
+  process_list=$(LC_ALL=C ps -ww -axo pid=,args=) || return 2
+  DISCOVERED_LIVE_PROBE_ENUMERATION_FAILED=false
+  rows=$(grep -F -- "$expected_arguments" <<<"$process_list" || true)
+  while read -r pid ignored; do
+    [[ "$pid" =~ ^[1-9][0-9]*$ ]] || continue
+    parent_pid=$(protected_process_parent_pid "$pid") || continue
+    started_at=$(protected_process_started_at "$pid") || continue
+    arguments=$(protected_process_arguments "$pid") || continue
+    live_probe_process_observation_matches \
+      "$pid" "$parent_pid" "$started_at" "$expected_arguments" || continue
+    [[ "$arguments" == "$expected_arguments" ]] || continue
+    live_probe_process_observation_matches \
+      "$pid" "$parent_pid" "$started_at" "$expected_arguments" || continue
+    matched_pid="$pid"
+    matched_parent_pid="$parent_pid"
+    matched_started_at="$started_at"
+    matched_arguments="$arguments"
+    match_count=$((match_count + 1))
+  done <<<"$rows"
+  DISCOVERED_LIVE_PROBE_MATCH_COUNT="$match_count"
+  [[ "$match_count" -eq 1 ]] || return 1
+  DISCOVERED_LIVE_PROBE_PID="$matched_pid"
+  DISCOVERED_LIVE_PROBE_PARENT_PID="$matched_parent_pid"
+  DISCOVERED_LIVE_PROBE_STARTED_AT="$matched_started_at"
+  DISCOVERED_LIVE_PROBE_ARGUMENTS="$matched_arguments"
+}
+
+track_live_probe_process() {
+  LIVE_PROBE_OWNED_PIDS+=("$1")
+  LIVE_PROBE_OWNED_PARENT_PIDS+=("$2")
+  LIVE_PROBE_OWNED_STARTED_AT+=("$3")
+  LIVE_PROBE_OWNED_ARGUMENTS+=("$4")
+  LIVE_PROBE_OWNED_WAITER_PIDS+=("$5")
+}
+
+track_pending_live_probe_launch() {
+  LIVE_PROBE_PENDING_ARGUMENTS+=("$1")
+  LIVE_PROBE_PENDING_WAITER_PIDS+=("$2")
+}
+
+untrack_pending_live_probe_launch() {
+  local target="$1" index
+  local arguments=() waiter_pids=()
+  for (( index=0; index<${#LIVE_PROBE_PENDING_WAITER_PIDS[@]}; index++ )); do
+    [[ "${LIVE_PROBE_PENDING_WAITER_PIDS[$index]}" == "$target" ]] && continue
+    arguments+=("${LIVE_PROBE_PENDING_ARGUMENTS[$index]}")
+    waiter_pids+=("${LIVE_PROBE_PENDING_WAITER_PIDS[$index]}")
+  done
+  if (( ${#waiter_pids[@]} )); then
+    LIVE_PROBE_PENDING_ARGUMENTS=("${arguments[@]}")
+    LIVE_PROBE_PENDING_WAITER_PIDS=("${waiter_pids[@]}")
+  else
+    LIVE_PROBE_PENDING_ARGUMENTS=()
+    LIVE_PROBE_PENDING_WAITER_PIDS=()
+  fi
+}
+
+live_probe_process_is_running() {
+  live_probe_process_state "$1"
+  [[ "$?" -eq 0 ]]
+}
+
+live_probe_process_is_stopped() {
+  local state=0
+  live_probe_process_state "$1" || state=$?
+  [[ "$state" -eq 1 ]]
+}
+
+live_probe_process_state() {
+  local target="$1" index
+  for (( index=0; index<${#LIVE_PROBE_OWNED_PIDS[@]}; index++ )); do
+    [[ "${LIVE_PROBE_OWNED_PIDS[$index]}" == "$target" ]] || continue
+    if ! kill -0 "$target" >/dev/null 2>&1; then
+      return 1
+    fi
+    if live_probe_process_observation_matches \
+      "$target" \
+      "${LIVE_PROBE_OWNED_PARENT_PIDS[$index]}" \
+      "${LIVE_PROBE_OWNED_STARTED_AT[$index]}" \
+      "${LIVE_PROBE_OWNED_ARGUMENTS[$index]}"; then
+      return 0
+    fi
+    return 2
+  done
+  return 3
+}
+
+untrack_live_probe_process() {
+  local target="$1" index
+  local pids=() parent_pids=() started_at=() arguments=() waiter_pids=()
+  for (( index=0; index<${#LIVE_PROBE_OWNED_PIDS[@]}; index++ )); do
+    [[ "${LIVE_PROBE_OWNED_PIDS[$index]}" == "$target" ]] && continue
+    pids+=("${LIVE_PROBE_OWNED_PIDS[$index]}")
+    parent_pids+=("${LIVE_PROBE_OWNED_PARENT_PIDS[$index]}")
+    started_at+=("${LIVE_PROBE_OWNED_STARTED_AT[$index]}")
+    arguments+=("${LIVE_PROBE_OWNED_ARGUMENTS[$index]}")
+    waiter_pids+=("${LIVE_PROBE_OWNED_WAITER_PIDS[$index]}")
+  done
+  if (( ${#pids[@]} )); then
+    LIVE_PROBE_OWNED_PIDS=("${pids[@]}")
+    LIVE_PROBE_OWNED_PARENT_PIDS=("${parent_pids[@]}")
+    LIVE_PROBE_OWNED_STARTED_AT=("${started_at[@]}")
+    LIVE_PROBE_OWNED_ARGUMENTS=("${arguments[@]}")
+    LIVE_PROBE_OWNED_WAITER_PIDS=("${waiter_pids[@]}")
+  else
+    LIVE_PROBE_OWNED_PIDS=()
+    LIVE_PROBE_OWNED_PARENT_PIDS=()
+    LIVE_PROBE_OWNED_STARTED_AT=()
+    LIVE_PROBE_OWNED_ARGUMENTS=()
+    LIVE_PROBE_OWNED_WAITER_PIDS=()
+  fi
+}
+
+cleanup_live_probe_processes() {
+  local pid launch_dir expected_arguments waiter_pid attempt index state cleanup_failed=false
+  local pending_resolved
+  local pending_arguments=() pending_waiter_pids=()
+  for (( index=0; index<${#LIVE_PROBE_PENDING_WAITER_PIDS[@]}; index++ )); do
+    waiter_pid="${LIVE_PROBE_PENDING_WAITER_PIDS[$index]}"
+    expected_arguments="${LIVE_PROBE_PENDING_ARGUMENTS[$index]}"
+    if owned_pid_is_running "$waiter_pid"; then
+      kill -INT "$waiter_pid" >/dev/null 2>&1 || true
+      wait "$waiter_pid" >/dev/null 2>&1 || true
+      untrack_owned_pid "$waiter_pid"
+    fi
+    attempt=0
+    pending_resolved=false
+    while (( attempt < 50 )); do
+      if discover_live_probe_process "$expected_arguments"; then
+        track_live_probe_process \
+          "$DISCOVERED_LIVE_PROBE_PID" \
+          "$DISCOVERED_LIVE_PROBE_PARENT_PID" \
+          "$DISCOVERED_LIVE_PROBE_STARTED_AT" \
+          "$DISCOVERED_LIVE_PROBE_ARGUMENTS" \
+          "$waiter_pid"
+        pending_resolved=true
+        break
+      fi
+      if [[ "${DISCOVERED_LIVE_PROBE_ENUMERATION_FAILED:-false}" == true \
+          || "${DISCOVERED_LIVE_PROBE_MATCH_COUNT:-0}" -gt 1 ]]; then
+        cleanup_failed=true
+        break
+      fi
+      sleep 0.1
+      attempt=$((attempt + 1))
+    done
+    if [[ "$pending_resolved" == false ]]; then
+      pending_arguments+=("$expected_arguments")
+      pending_waiter_pids+=("$waiter_pid")
+      cleanup_failed=true
+    fi
+  done
+  if (( ${#pending_waiter_pids[@]} )); then
+    LIVE_PROBE_PENDING_ARGUMENTS=("${pending_arguments[@]}")
+    LIVE_PROBE_PENDING_WAITER_PIDS=("${pending_waiter_pids[@]}")
+  else
+    LIVE_PROBE_PENDING_ARGUMENTS=()
+    LIVE_PROBE_PENDING_WAITER_PIDS=()
+  fi
+  for pid in "${LIVE_PROBE_OWNED_PIDS[@]-}"; do
+    [[ -n "$pid" ]] || continue
+    state=0
+    live_probe_process_state "$pid" || state=$?
+    if [[ "$state" -eq 0 ]]; then
+      kill -INT "$pid" >/dev/null 2>&1 || true
+      attempt=0
+      while (( attempt < 50 )); do
+        state=0
+        live_probe_process_state "$pid" || state=$?
+        [[ "$state" -eq 0 ]] || break
+        sleep 0.1
+        attempt=$((attempt + 1))
+      done
+      state=0
+      live_probe_process_state "$pid" || state=$?
+      if [[ "$state" -eq 0 ]]; then
+        kill -TERM "$pid" >/dev/null 2>&1 || true
+        attempt=0
+        while (( attempt < 50 )); do
+          state=0
+          live_probe_process_state "$pid" || state=$?
+          [[ "$state" -eq 0 ]] || break
+          sleep 0.1
+          attempt=$((attempt + 1))
+        done
+      fi
+      state=0
+      live_probe_process_state "$pid" || state=$?
+      if [[ "$state" -eq 0 ]]; then
+        kill -KILL "$pid" >/dev/null 2>&1 || true
+        attempt=0
+        while (( attempt < 50 )); do
+          state=0
+          live_probe_process_state "$pid" || state=$?
+          [[ "$state" -eq 0 ]] || break
+          sleep 0.1
+          attempt=$((attempt + 1))
+        done
+      fi
+    elif [[ "$state" -eq 2 ]]; then
+      cleanup_failed=true
+    fi
+    unset state
+  done
+  for pid in "${LIVE_PROBE_OWNED_PIDS[@]-}"; do
+    [[ -n "$pid" ]] || continue
+    state=0
+    live_probe_process_state "$pid" || state=$?
+    if [[ "$state" -eq 0 || "$state" -eq 2 ]]; then
+      warn "exact wizard-owned signed probe PID $pid could not be proven stopped; ownership metadata is retained"
+      cleanup_failed=true
+    else
+      untrack_live_probe_process "$pid"
+    fi
+    unset state
+  done
+  [[ "$cleanup_failed" == false ]] || return 1
+  while (( ${#LIVE_PROBE_LAUNCH_DIRS[@]} )); do
+    launch_dir="${LIVE_PROBE_LAUNCH_DIRS[0]}"
+    if ! remove_live_probe_launch_dir "$launch_dir"; then
+      warn "exact wizard-owned launch directory cleanup could not be proven; ownership metadata is retained"
+      return 1
+    fi
+  done
+}
+
+live_probe_launch_dir_matches() {
+  local target="$1" expected_identity="$2" physical actual_identity
+  [[ "$target" == /private/tmp/grab-rabbit-48-*.* \
+      && -d "$target" && ! -L "$target" \
+      && -n "$expected_identity" ]] || return 1
+  physical=$(cd "$target" && pwd -P) || return 1
+  [[ "$physical" == "$target" ]] || return 1
+  actual_identity=$(stat -f '%d:%i' "$target") || return 1
+  [[ "$actual_identity" == "$expected_identity" ]]
+}
+
+track_live_probe_launch_dir() {
+  local target="$1" identity
+  identity=$(stat -f '%d:%i' "$target") || return 1
+  live_probe_launch_dir_matches "$target" "$identity" || return 1
+  LIVE_PROBE_LAUNCH_DIRS+=("$target")
+  LIVE_PROBE_LAUNCH_IDENTITIES+=("$identity")
+}
+
+remove_live_probe_launch_dir() {
+  local target="$1" directory entry entry_name index expected_identity=""
+  local remaining=() remaining_identities=()
+  for (( index=0; index<${#LIVE_PROBE_LAUNCH_DIRS[@]}; index++ )); do
+    if [[ "${LIVE_PROBE_LAUNCH_DIRS[$index]}" == "$target" ]]; then
+      expected_identity="${LIVE_PROBE_LAUNCH_IDENTITIES[$index]}"
+      break
+    fi
+  done
+  live_probe_launch_dir_matches "$target" "$expected_identity" || return 1
+  for entry in "$target"/* "$target"/.[!.]* "$target"/..?*; do
+    [[ -e "$entry" || -L "$entry" ]] || continue
+    entry_name=${entry##*/}
+    case "$entry_name" in stdout|stderr|result.json) ;; *) return 1 ;; esac
+    [[ -f "$entry" && ! -L "$entry" ]] || return 1
+    live_probe_launch_dir_matches "$target" "$expected_identity" || return 1
+    rm -f "$entry" || return 1
+  done
+  live_probe_launch_dir_matches "$target" "$expected_identity" || return 1
+  stable_app_directory_is_empty "$target" || return 1
+  rmdir "$target" || return 1
+  for (( index=0; index<${#LIVE_PROBE_LAUNCH_DIRS[@]}; index++ )); do
+    directory="${LIVE_PROBE_LAUNCH_DIRS[$index]}"
+    [[ -n "$directory" && "$directory" != "$target" ]] || continue
+    remaining+=("$directory")
+    remaining_identities+=("${LIVE_PROBE_LAUNCH_IDENTITIES[$index]}")
+  done
+  if (( ${#remaining[@]} )); then
+    LIVE_PROBE_LAUNCH_DIRS=("${remaining[@]}")
+    LIVE_PROBE_LAUNCH_IDENTITIES=("${remaining_identities[@]}")
+  else
+    LIVE_PROBE_LAUNCH_DIRS=()
+    LIVE_PROBE_LAUNCH_IDENTITIES=()
+  fi
+}
+
+launch_live_probe_record() {
+  local stdout_path="$1" stderr_path="$2" expected_arguments waiter_pid launch_dir attempt=0
+  shift 2
+  launch_dir=$(mktemp -d /tmp/grab-rabbit-48-record-launch.XXXXXX) || return 1
+  launch_dir=$(cd "$launch_dir" && pwd -P) || return 1
+  if ! [[ -d "$launch_dir" && ! -L "$launch_dir" ]]; then
+    return 1
+  fi
+  track_live_probe_launch_dir "$launch_dir" || return 1
+  expected_arguments=$(live_probe_expected_arguments "$@" --launch-token "$launch_dir") || return 1
+  LAST_LIVE_PROBE_PID=""
+  LAST_LIVE_PROBE_WAITER_PID=""
+  LAST_LIVE_PROBE_LAUNCH_DIR="$launch_dir"
+  if discover_live_probe_process "$expected_arguments"; then
+    return 1
+  fi
+  start_live_probe_open "$stdout_path" "$stderr_path" \
+    "$@" --launch-token "$launch_dir" || return 1
+  waiter_pid="$LAST_OPEN_WAITER_PID"
+  LAST_LIVE_PROBE_WAITER_PID="$waiter_pid"
+  WIZARD_OWNED_PIDS+=("$waiter_pid")
+  track_pending_live_probe_launch "$expected_arguments" "$waiter_pid"
+  while (( attempt < 100 )); do
+    if discover_live_probe_process "$expected_arguments"; then
+      live_probe_process_observation_matches \
+        "$DISCOVERED_LIVE_PROBE_PID" \
+        "$DISCOVERED_LIVE_PROBE_PARENT_PID" \
+        "$DISCOVERED_LIVE_PROBE_STARTED_AT" \
+        "$DISCOVERED_LIVE_PROBE_ARGUMENTS" || return 1
+      track_live_probe_process \
+        "$DISCOVERED_LIVE_PROBE_PID" \
+        "$DISCOVERED_LIVE_PROBE_PARENT_PID" \
+        "$DISCOVERED_LIVE_PROBE_STARTED_AT" \
+        "$DISCOVERED_LIVE_PROBE_ARGUMENTS" \
+        "$waiter_pid"
+      untrack_pending_live_probe_launch "$waiter_pid"
+      LAST_LIVE_PROBE_PID="$DISCOVERED_LIVE_PROBE_PID"
+      return 0
+    fi
+    owned_pid_is_running "$waiter_pid" || return 1
+    sleep 0.1
+    attempt=$((attempt + 1))
+  done
+  return 1
+}
+
 camera_id_is_present() {
   "$UNSIGNED_PROBE" list-sources --skip-window-query \
     | jq -e --arg camera_id "$CAMERA_ID" '.cameras | any(.uniqueID == $camera_id)' >/dev/null
 }
 
 signed_camera_id_is_present() {
-  "$LIVE_PROBE" list-sources --skip-window-query \
-    | jq -e --arg camera_id "$CAMERA_ID" '.cameras | any(.uniqueID == $camera_id)' >/dev/null
+  run_live_probe list-sources --skip-window-query || return 1
+  jq -e --arg camera_id "$CAMERA_ID" \
+    '.cameras | any(.uniqueID == $camera_id)' <<<"$LIVE_PROBE_JSON" >/dev/null
 }
 
 window_id_is_present() {
-  "$LIVE_PROBE" list-sources \
-    | jq -e --argjson window_id "$WINDOW_ID" '.windows | any(.windowID == $window_id)' >/dev/null
+  run_live_probe list-sources || return 1
+  jq -e --argjson window_id "$WINDOW_ID" \
+    '.windows | any(.windowID == $window_id)' <<<"$LIVE_PROBE_JSON" >/dev/null
 }
 
 signed_probe_identity_is_approved() {
   [[ -x "$LIVE_PROBE" ]] || return 1
-  "$LIVE_PROBE" list-sources --skip-window-query \
-    | jq -e --arg sha "$APPROVED_SHA1" --arg team "$APPROVED_TEAM" \
-      '.signing.approvedDeveloperIDPresent == true
-       and .signing.teamIdentifier == $team
-       and (.signing.certificateSHA1s | index($sha) != null)' >/dev/null
+  run_live_probe list-sources --skip-window-query || return 1
+  jq -e --arg sha "$APPROVED_SHA1" --arg team "$APPROVED_TEAM" \
+    '.signing.approvedDeveloperIDPresent == true
+     and .signing.teamIdentifier == $team
+     and (.signing.certificateSHA1s | index($sha) != null)' \
+    <<<"$LIVE_PROBE_JSON" >/dev/null
 }
 
 staged_app_manifest_is_exact() {
@@ -485,20 +975,37 @@ staged_app_manifest_is_exact() {
 }
 
 tcc_is_granted() {
-  "$LIVE_PROBE" list-sources --skip-window-query \
-    | jq -e '.authorization.camera == "authorized"
-             and .authorization.microphone == "authorized"
-             and .authorization.screenCapturePreflightGranted == true' >/dev/null
+  run_live_probe list-sources --skip-window-query || return 1
+  jq -e '.authorization.camera == "authorized"
+         and .authorization.microphone == "authorized"
+         and .authorization.screenCapturePreflightGranted == true' \
+    <<<"$LIVE_PROBE_JSON" >/dev/null
 }
 
 exact_preflight_passes_without_output() {
   local forbidden="$EVIDENCE_DIR/preflight-must-not-exist.mov"
-  [[ ! -e "$forbidden" ]] || return 1
-  "$LIVE_PROBE" preflight \
-    --camera-id "$CAMERA_ID" \
-    --window-id "$WINDOW_ID" \
-    --output "$forbidden" >/dev/null 2>&1 \
-    && [[ ! -e "$forbidden" ]]
+  local report="$EVIDENCE_DIR/preflight.json"
+  [[ ! -e "$forbidden" && ! -L "$forbidden" \
+      && ! -e "$report" && ! -L "$report" ]] || return 1
+  if run_live_probe preflight \
+      --camera-id "$CAMERA_ID" \
+      --window-id "$WINDOW_ID" \
+      --output "$forbidden" \
+      --json "$report" >/dev/null 2>&1 \
+      && [[ ! -e "$forbidden" && -f "$report" && ! -L "$report" ]] \
+      && jq -e '
+        .schema == "grab-rabbit-live-cadence-preflight-v1"
+        and .passed == true
+        and .exact_camera_id_matched_in_process == true
+        and .exact_window_id_matched_in_process == true
+        and .output_created == false
+        and .privacy_sentinel_pixels == 0' "$report" >/dev/null; then
+    return 0
+  fi
+  if [[ -f "$report" && ! -L "$report" ]]; then
+    rm -f "$report"
+  fi
+  return 1
 }
 
 log_process() {
@@ -543,28 +1050,54 @@ validate_live_run() {
            end)' "$metrics" >/dev/null
 }
 
+completion_report_is_successful() {
+  local completion="$1"
+  [[ -f "$completion" && ! -L "$completion" ]] \
+    && jq -e '.schema == "grab-rabbit-live-cadence-completion-v1" and .exit_code == 0' \
+      "$completion" >/dev/null
+}
+
 run_owned_record_no_confirm() {
-  local stem="$1" expected_disconnect="$2" started stopped code pid
+  local stem="$1" expected_disconnect="$2" started stopped code=1 pid waiter_pid
   shift 2
   local movie="$RUNS_DIR/$stem.mov"
   local metrics="$RUNS_DIR/$stem.metrics.json"
   local events="$RUNS_DIR/$stem.events.jsonl"
+  local completion="$RUNS_DIR/$stem.completion.json"
   local stdout="$RUNS_DIR/$stem.stdout.json"
   local stderr="$RUNS_DIR/$stem.stderr.txt"
   LAST_RUN_FAILURE=""
-  [[ ! -e "$movie" && ! -e "$metrics" && ! -e "$events" && ! -e "$stdout" && ! -e "$stderr" ]] \
+  [[ ! -e "$movie" && ! -L "$movie" \
+      && ! -e "$metrics" && ! -L "$metrics" \
+      && ! -e "$events" && ! -L "$events" \
+      && ! -e "$completion" && ! -L "$completion" \
+      && ! -e "$stdout" && ! -L "$stdout" \
+      && ! -e "$stderr" && ! -L "$stderr" ]] \
     || { LAST_RUN_FAILURE="refusing to overwrite evidence for $stem"; return 1; }
   started=$(date -u +%Y-%m-%dT%H:%M:%SZ) \
     || { LAST_RUN_FAILURE="could not timestamp $stem"; return 1; }
-  "$LIVE_PROBE" record "$@" \
+  if ! launch_live_probe_record "$stdout" "$stderr" record "$@" \
     --output "$movie" \
     --metrics "$metrics" \
     --events "$events" \
-    >"$stdout" 2>"$stderr" &
-  pid=$!
-  WIZARD_OWNED_PIDS+=("$pid")
-  if wait "$pid"; then code=0; else code=$?; fi
-  untrack_owned_pid "$pid"
+    --completion-json "$completion"; then
+    LAST_RUN_FAILURE="could not launch and pin the signed probe process for $stem"
+    return 1
+  fi
+  pid="$LAST_LIVE_PROBE_PID"
+  waiter_pid="$LAST_LIVE_PROBE_WAITER_PID"
+  wait "$waiter_pid" >/dev/null 2>&1 || true
+  untrack_owned_pid "$waiter_pid"
+  if ! live_probe_process_is_stopped "$pid"; then
+    LAST_RUN_FAILURE="the LaunchServices waiter for $stem exited while its signed probe remained live"
+    return 1
+  fi
+  untrack_live_probe_process "$pid"
+  remove_live_probe_launch_dir "$LAST_LIVE_PROBE_LAUNCH_DIR" \
+    || { LAST_RUN_FAILURE="could not remove the exact empty launch marker for $stem"; return 1; }
+  if completion_report_is_successful "$completion"; then
+    code=0
+  fi
   stopped=$(date -u +%Y-%m-%dT%H:%M:%SZ) \
     || { LAST_RUN_FAILURE="could not timestamp the end of $stem"; return 1; }
   log_process "$pid" "$stem" "$started" "$stopped" "$code" \
@@ -594,46 +1127,74 @@ run_owned_record() {
 }
 
 run_disconnect_record() {
-  local candidate="$1" stem="disconnect-$1" started stopped code pid
+  local candidate="$1" stem="disconnect-$1" started stopped code=1 pid waiter_pid
   local movie="$RUNS_DIR/$stem.mov"
   local metrics="$RUNS_DIR/$stem.metrics.json"
   local events="$RUNS_DIR/$stem.events.jsonl"
+  local completion="$RUNS_DIR/$stem.completion.json"
   local stdout="$RUNS_DIR/$stem.stdout.json"
   local stderr="$RUNS_DIR/$stem.stderr.txt"
-  [[ ! -e "$movie" && ! -e "$metrics" && ! -e "$events" && ! -e "$stdout" && ! -e "$stderr" ]] \
+  [[ ! -e "$movie" && ! -L "$movie" \
+      && ! -e "$metrics" && ! -L "$metrics" \
+      && ! -e "$events" && ! -L "$events" \
+      && ! -e "$completion" && ! -L "$completion" \
+      && ! -e "$stdout" && ! -L "$stdout" \
+      && ! -e "$stderr" && ! -L "$stderr" ]] \
     || fatal_gate "refusing to overwrite evidence for $stem"
   if ! required_confirm "Start the $candidate physical-disconnect run? You will unplug only the selected camera when prompted."; then
     fatal_gate "$candidate physical-disconnect run was not authorized"
   fi
   started=$(date -u +%Y-%m-%dT%H:%M:%SZ) || fatal_gate "could not timestamp $stem"
-  "$LIVE_PROBE" record \
+  launch_live_probe_record "$stdout" "$stderr" record \
     --camera-id "$CAMERA_ID" --window-id "$WINDOW_ID" \
     --candidate "$candidate" --canvas 16x9 --duration 60 --fps 30 \
     --pause-at 4 --pause-duration 1 --system-audio --microphone \
     --output "$movie" --metrics "$metrics" --events "$events" \
-    >"$stdout" 2>"$stderr" &
-  pid=$!
-  WIZARD_OWNED_PIDS+=("$pid")
+    --completion-json "$completion" \
+    || fatal_gate "could not launch and pin the signed probe process for $stem"
+  pid="$LAST_LIVE_PROBE_PID"
+  waiter_pid="$LAST_LIVE_PROBE_WAITER_PID"
   sleep 3
-  if ! owned_pid_is_running "$pid"; then
-    if wait "$pid"; then code=0; else code=$?; fi
-    untrack_owned_pid "$pid"
+  if live_probe_process_is_stopped "$pid"; then
+    wait "$waiter_pid" >/dev/null 2>&1 || true
+    untrack_owned_pid "$waiter_pid"
+    if ! live_probe_process_is_stopped "$pid"; then
+      fatal_gate "the LaunchServices waiter for $stem exited while its signed probe remained live"
+    fi
+    untrack_live_probe_process "$pid"
+    remove_live_probe_launch_dir "$LAST_LIVE_PROBE_LAUNCH_DIR" \
+      || fatal_gate "could not remove the exact empty launch marker for $stem"
     stopped=$(date -u +%Y-%m-%dT%H:%M:%SZ) || stopped="timestamp-unavailable"
     log_process "$pid" "$stem" "$started" "$stopped" "$code" || true
     fatal_gate "$stem stopped before the physical-disconnect prompt (exit $code)"
   fi
   say "The exact selected camera is recording. Do not disconnect Screen Sharing or any other device."
   if ! required_confirm "Physically disconnect only the selected camera now?"; then
-    if owned_pid_is_running "$pid"; then kill -INT "$pid" >/dev/null 2>&1 || true; fi
-    if wait "$pid"; then code=0; else code=$?; fi
-    untrack_owned_pid "$pid"
+    if live_probe_process_is_running "$pid"; then kill -INT "$pid" >/dev/null 2>&1 || true; fi
+    wait "$waiter_pid" >/dev/null 2>&1 || true
+    untrack_owned_pid "$waiter_pid"
+    if ! live_probe_process_is_stopped "$pid"; then
+      fatal_gate "the interrupted signed probe for $stem remained live"
+    fi
+    untrack_live_probe_process "$pid"
+    remove_live_probe_launch_dir "$LAST_LIVE_PROBE_LAUNCH_DIR" \
+      || fatal_gate "could not remove the exact empty launch marker for $stem"
     stopped=$(date -u +%Y-%m-%dT%H:%M:%SZ) || stopped="timestamp-unavailable"
     log_process "$pid" "$stem" "$started" "$stopped" "$code" || true
     fatal_gate "$candidate physical disconnect was not performed"
   fi
   pause "Disconnect it, wait for the probe to stop visibly, then press Enter."
-  if wait "$pid"; then code=0; else code=$?; fi
-  untrack_owned_pid "$pid"
+  wait "$waiter_pid" >/dev/null 2>&1 || true
+  untrack_owned_pid "$waiter_pid"
+  if ! live_probe_process_is_stopped "$pid"; then
+    fatal_gate "the LaunchServices waiter for $stem exited while its signed probe remained live"
+  fi
+  untrack_live_probe_process "$pid"
+  remove_live_probe_launch_dir "$LAST_LIVE_PROBE_LAUNCH_DIR" \
+    || fatal_gate "could not remove the exact empty launch marker for $stem"
+  if completion_report_is_successful "$completion"; then
+    code=0
+  fi
   stopped=$(date -u +%Y-%m-%dT%H:%M:%SZ) || fatal_gate "could not timestamp the end of $stem"
   log_process "$pid" "$stem" "$started" "$stopped" "$code" \
     || fatal_gate "could not update the process ledger for $stem"
@@ -665,6 +1226,10 @@ verify_all_outputs() {
 
 no_owned_process_is_live() {
   local pid
+  for pid in "${LIVE_PROBE_OWNED_PIDS[@]-}"; do
+    [[ -n "$pid" ]] || continue
+    if ! live_probe_process_is_stopped "$pid"; then return 1; fi
+  done
   for pid in "${WIZARD_OWNED_PIDS[@]-}"; do
     [[ -n "$pid" ]] || continue
     if owned_pid_is_running "$pid"; then return 1; fi
@@ -1211,18 +1776,24 @@ cp "$STAGING_MANIFEST" "$EVIDENCE_DIR/staged-app-manifest.json" \
 CREATED_STABLE_APP_DIR="$STABLE_APP_DIR"
 STABLE_APP_MAY_EXIST=true
 required_check "the stable probe runtime identity is exactly approved" signed_probe_identity_is_approved
-"$LIVE_PROBE" list-sources --skip-window-query \
-  | jq '{authorization,signing}' >"$TCC_BEFORE_FILE" \
+run_live_probe list-sources --skip-window-query \
+  || fatal_gate "could not read the signed probe's before-run TCC state"
+jq '{authorization,signing}' <<<"$LIVE_PROBE_JSON" >"$TCC_BEFORE_FILE" \
   || fatal_gate "could not snapshot the signed probe's before-run TCC state"
 if ! required_confirm "Invoke the approved-signed probe's Camera, Microphone, and Screen Recording permission requests now? macOS owns every prompt."; then
   fatal_gate "visible TCC authorization was not authorized"
 fi
 TCC_STATE_MAY_DIFFER=true
-if "$LIVE_PROBE" authorize --json "$EVIDENCE_DIR/authorization-attempt.json" \
-    >"$EVIDENCE_DIR/authorization.stdout.json" 2>"$EVIDENCE_DIR/authorization.stderr.txt"; then
+if run_live_probe authorize --json "$EVIDENCE_DIR/authorization-attempt.json" \
+    && jq -e '
+      .schema == "grab-rabbit-live-cadence-authorization-v1"
+      and .cameraGranted == true
+      and .microphoneGranted == true
+      and .screenCaptureGranted == true' \
+      "$EVIDENCE_DIR/authorization-attempt.json" >/dev/null; then
   AUTHORIZATION_EXIT=0
 else
-  AUTHORIZATION_EXIT=$?
+  AUTHORIZATION_EXIT=1
 fi
 note "The authorization command exited $AUTHORIZATION_EXIT; macOS may require you to finish toggles in System Settings."
 note "Opening the Privacy & Security pane and informational Apple help pages; this is not an authorization gate."
@@ -1237,8 +1808,9 @@ step "Apple-verified path: Privacy & Security → Screen & System Audio Recordin
 pause "Finish the visible macOS prompts/toggles, close any restart notice, then press Enter."
 required_check "Camera, Microphone, and Screen & System Audio authorization are all granted" tcc_is_granted
 required_check "the same exact selected camera remains present after TCC authorization" signed_camera_id_is_present
-"$LIVE_PROBE" list-sources --skip-window-query \
-  | jq '{authorization,signing}' >"$EVIDENCE_DIR/tcc-granted.json" \
+run_live_probe list-sources --skip-window-query \
+  || fatal_gate "could not read the granted TCC state"
+jq '{authorization,signing}' <<<"$LIVE_PROBE_JSON" >"$EVIDENCE_DIR/tcc-granted.json" \
   || fatal_gate "could not snapshot the granted TCC state"
 
 stage "Select one real browser window and prepare three cases" 10
@@ -1254,8 +1826,9 @@ BROWSER_CASE_MAY_BE_OPEN=true
 step "Keep this one browser window open. The Static button makes it fully still; Low change updates once per second; Active animates continuously."
 step "Do not select the desktop, a display, Screen Sharing, Finder, or a different browser window."
 pause "Arrange the real browser window at the size you want to capture, then press Enter."
-WINDOW_SOURCE_JSON=$("$LIVE_PROBE" list-sources) \
+run_live_probe list-sources \
   || fatal_gate "the signed probe could not read the real-window inventory"
+WINDOW_SOURCE_JSON="$LIVE_PROBE_JSON"
 jq -r '.windows[] | "  Window \(.windowID): \(.applicationName) — \(.title) [\(.width)x\(.height)]"' \
   <<<"$WINDOW_SOURCE_JSON" || fatal_gate "the real-window inventory was not valid JSON"
 ask WINDOW_ID "Paste the exact numeric Window ID for the browser-case window:"
@@ -1306,7 +1879,9 @@ required_check "the active performance case is ready" test "$POWER_CASE_READY" =
 POWER_FILE="$EVIDENCE_DIR/powermetrics.txt"
 POWER_DONE_FILE="$EVIDENCE_DIR/powermetrics.done"
 PERF_ERROR_FILE="$EVIDENCE_DIR/performance-helper.error.txt"
-[[ ! -e "$POWER_FILE" && ! -e "$POWER_DONE_FILE" && ! -e "$PERF_ERROR_FILE" ]] \
+[[ ! -e "$POWER_FILE" && ! -L "$POWER_FILE" \
+    && ! -e "$POWER_DONE_FILE" && ! -L "$POWER_DONE_FILE" \
+    && ! -e "$PERF_ERROR_FILE" && ! -L "$PERF_ERROR_FILE" ]] \
   || fatal_gate "refusing to overwrite powermetrics/performance-helper evidence"
 if ! required_confirm "Start the two wizard-owned probe runs and invoke sudo powermetrics directly now?"; then
   fatal_gate "external powermetrics sampling was not authorized"
@@ -1384,8 +1959,9 @@ if [[ "$BEFORE_CAMERA" == "not-determined" || "$BEFORE_MICROPHONE" == "not-deter
     tccutil reset ScreenCapture "$BUNDLE_ID" || fatal_gate "Screen Capture TCC reset failed for the prototype bundle"
   fi
 fi
-"$LIVE_PROBE" list-sources --skip-window-query \
-  | jq '{authorization,signing}' >"$TCC_AFTER_FILE" \
+run_live_probe list-sources --skip-window-query \
+  || fatal_gate "could not read the restored TCC state"
+jq '{authorization,signing}' <<<"$LIVE_PROBE_JSON" >"$TCC_AFTER_FILE" \
   || fatal_gate "could not snapshot the restored TCC state"
 required_check "Camera, Microphone, and Screen TCC state matches the before snapshot" tcc_matches_snapshot
 TCC_STATE_MAY_DIFFER=false

@@ -197,6 +197,7 @@ struct LiveCadenceProbeMain {
         let outputURL = URL(fileURLWithPath: try options.required("--output"))
         let metricsURL = URL(fileURLWithPath: try options.required("--metrics"))
         let eventsURL = URL(fileURLWithPath: try options.required("--events"))
+        let completionURL = URL(fileURLWithPath: try options.required("--completion-json"))
         let candidateRaw = try options.required("--candidate")
         let canvasRaw = try options.required("--canvas")
         guard let candidate = LiveCandidate(rawValue: candidateRaw) else {
@@ -218,6 +219,7 @@ struct LiveCadenceProbeMain {
         try validateNewOutput(outputURL)
         try validateNewOutput(metricsURL)
         try validateNewOutput(eventsURL)
+        try validateNewOutput(completionURL)
 
         let authorizationBefore = AuthorizationSnapshot.current()
         guard authorizationBefore.camera == "authorized" else {
@@ -317,6 +319,16 @@ struct LiveCadenceProbeMain {
                 eventsURL: eventsURL
             )
             try prettyEncoder().encode(metrics).write(to: metricsURL, options: .atomic)
+            let completion: [String: Any] = [
+                "schema": "grab-rabbit-live-cadence-completion-v1",
+                "exit_code": 0,
+                "finished_at": iso8601Now(),
+            ]
+            let completionData = try JSONSerialization.data(
+                withJSONObject: completion,
+                options: [.prettyPrinted, .sortedKeys]
+            )
+            try completionData.write(to: completionURL, options: .atomic)
             FileHandle.standardOutput.write(try prettyEncoder().encode(metrics))
             FileHandle.standardOutput.write(Data("\n".utf8))
         } catch {
@@ -483,7 +495,7 @@ struct LiveCadenceProbeMain {
           live-cadence-probe list-sources [--json PATH] [--skip-window-query]
           live-cadence-probe preflight --camera-id ID [--window-id ID] [--output PATH] [--json PATH]
           live-cadence-probe authorize --json /absolute/authorization.json
-          live-cadence-probe record --camera-id ID [--window-id ID] --candidate camera-driven|fixed-clock --canvas 16x9|9x16|square --output PATH --metrics PATH --events PATH [--duration S] [--fps N] [--pause-at S --pause-duration S] [--system-audio] [--microphone] [--powermetrics-path PATH]
+          live-cadence-probe record --camera-id ID [--window-id ID] --candidate camera-driven|fixed-clock --canvas 16x9|9x16|square --output PATH --metrics PATH --events PATH --completion-json PATH [--duration S] [--fps N] [--pause-at S --pause-duration S] [--system-audio] [--microphone] [--powermetrics-path PATH]
         """)
     }
 }

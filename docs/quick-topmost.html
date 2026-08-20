@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Quick Topmost &mdash; Grab Rabbit</title>
+<style>
+:root{
+  --ink:#14171F;
+  --ink-soft:#5C6373;
+  --ink-faint:#8A91A1;
+  --paper:#FFFFFF;
+  --ground:#E7EAF0;
+  --rule:#C9CFDA;
+  --rule-soft:#DEE3EB;
+  --live:#DF2E27;
+  --display:"Avenir Next Condensed","Avenir Next",system-ui,sans-serif;
+  --body:"Avenir Next",system-ui,-apple-system,sans-serif;
+  --mono:ui-monospace,"SF Mono",Menlo,monospace;
+  --mac:-apple-system,BlinkMacSystemFont,"SF Pro Text","Helvetica Neue",sans-serif;
+}
+
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{
+  background:var(--ground);
+  background-image:linear-gradient(var(--rule-soft) 1px,transparent 1px),linear-gradient(90deg,var(--rule-soft) 1px,transparent 1px);
+  background-size:28px 28px;
+  color:var(--ink);
+  font-family:var(--body);
+  font-size:15px;
+  line-height:1.55;
+  -webkit-font-smoothing:antialiased;
+}
+.wrap{max-width:1180px;margin:0 auto;padding:34px 24px 80px}
+
+.eyebrow{
+  font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--ink-faint);margin:0 0 10px;
+}
+h1{
+  font-family:var(--display);font-weight:600;font-size:clamp(34px,5.4vw,58px);
+  line-height:.98;letter-spacing:-.01em;margin:0 0 14px;max-width:20ch;
+}
+.standfirst{max-width:62ch;color:var(--ink-soft);margin:0 0 30px;font-size:16px}
+
+.panel{border:1px solid var(--rule);background:var(--paper);padding:24px}
+.panel-grid{display:grid;grid-template-columns:1fr 288px;gap:24px;align-items:start}
+
+/* ---------- surface plates ---------- */
+.plate{padding:26px 0;border-bottom:1px solid var(--rule-soft)}
+.plate:first-child{padding-top:4px}
+.plate:last-child{border-bottom:0;padding-bottom:4px}
+.plate h2{
+  font-family:var(--display);font-weight:600;font-size:23px;margin:0 0 4px;letter-spacing:.005em;
+}
+.plate p{margin:0 0 16px;font-size:13.5px;color:var(--ink-soft);max-width:56ch}
+
+.mock{
+  border-radius:7px;padding:26px 22px;font-family:var(--mac);user-select:none;
+  background:linear-gradient(163deg,#4C4470 0%,#2E3556 46%,#1B2138 100%);
+  box-shadow:0 1px 2px rgba(20,23,31,.3),0 18px 40px -18px rgba(20,23,31,.5);
+}
+.mock.bar{padding:0;background:rgba(24,26,38,.94)}
+.rec-dot{width:8px;height:8px;border-radius:50%;background:var(--live);flex:none;display:block}
+.num{font-variant-numeric:tabular-nums}
+
+.pill{
+  display:inline-flex;align-items:center;gap:9px;
+  padding:7px 8px 7px 12px;border-radius:999px;
+  background:rgba(28,30,42,.92);color:#fff;font-size:12.5px;white-space:nowrap;
+  box-shadow:0 8px 22px -6px rgba(0,0,0,.5),0 0 0 .5px rgba(255,255,255,.14);
+}
+.pill-label{font-weight:600}
+.pill-sep{opacity:.34}
+.pill-meta{opacity:.78;font-size:12px}
+.btn-stop{
+  font-family:inherit;font-size:11.5px;font-weight:600;border-radius:999px;border:0;
+  padding:4px 9px;background:var(--live);color:#fff;
+}
+
+.menubar{
+  height:28px;display:flex;align-items:center;padding:0 11px;gap:15px;
+  color:#fff;font-size:12px;border-radius:7px;
+}
+.mb-app{font-weight:600}
+.mb-plain{opacity:.82}
+.mb-right{margin-left:auto;display:flex;align-items:center;gap:12px}
+.mb-clock{opacity:.92}
+.indicator{
+  display:flex;align-items:center;gap:5px;padding:2px 8px;border-radius:5px;
+  background:var(--live);color:#fff;font-size:11.5px;font-weight:600;
+}
+.indicator .rec-dot{background:#fff}
+.stop-glyph{font-size:9px}
+
+/* ---------- right rail ---------- */
+.rail h2{
+  font-family:var(--mono);font-size:10.5px;letter-spacing:.13em;text-transform:uppercase;
+  color:var(--ink-faint);font-weight:400;margin:0 0 12px;padding-bottom:9px;
+  border-bottom:1px solid var(--rule-soft);
+}
+.rail .rows + h2{margin-top:26px}
+.rows{display:grid;grid-template-columns:auto 1fr;gap:7px 12px}
+.k{color:var(--ink-faint);font-size:12.5px}
+.v{font-size:12.5px;font-weight:600;text-align:right}
+.v code{font-family:var(--mono);font-size:11.5px;font-weight:400}
+
+.footnote{
+  margin-top:34px;padding-top:16px;border-top:1px solid var(--rule);
+  font-size:12.5px;color:var(--ink-faint);max-width:76ch;
+}
+
+@media (max-width:900px){
+  .panel-grid{grid-template-columns:1fr}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <p class="eyebrow">Grab Rabbit &middot; Feature</p>
+  <h1>Quick Topmost</h1>
+  <p class="standfirst">
+    One hotkey records the window in front of you. While it records, two surfaces say so:
+    a pill on the window and an indicator in the menu bar.
+  </p>
+
+  <div class="panel">
+   <div class="panel-grid">
+
+    <div>
+      <div class="plate">
+        <h2>On the window</h2>
+        <p>The pill appears under the title bar of the window being recorded. It is never part of the recording.</p>
+        <div class="mock">
+          <span class="pill">
+            <span class="rec-dot"></span>
+            <span class="pill-label">Recording this window</span>
+            <span class="pill-sep">&middot;</span>
+            <span class="pill-meta num">0:07</span>
+            <button class="btn-stop" type="button">Stop</button>
+          </span>
+        </div>
+      </div>
+
+      <div class="plate">
+        <h2>In the menu bar</h2>
+        <p>The indicator stays for the whole recording, even when Grab Rabbit has no menu bar icon otherwise.</p>
+        <div class="mock bar">
+          <div class="menubar">
+            <span class="mb-app">Safari</span>
+            <span class="mb-plain">File</span>
+            <span class="mb-plain">Edit</span>
+            <span class="mb-right">
+              <span class="indicator">
+                <span class="rec-dot"></span>
+                <span>Quick Topmost</span>
+                <span class="num">0:07</span>
+                <span class="stop-glyph">&#9632;</span>
+              </span>
+              <span class="mb-clock">Thu 2:41 PM</span>
+            </span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="rail">
+      <h2>At a glance</h2>
+      <div class="rows">
+        <span class="k">Hotkey</span><span class="v">Settings &rsaquo; Hotkey &rsaquo; Quick Topmost</span>
+        <span class="k">Records</span><span class="v">The front window</span>
+        <span class="k">Exterior</span><span class="v">Transparent or Opaque</span>
+        <span class="k">Saves to</span><span class="v">Your save folder</span>
+      </div>
+
+      <h2>Stop</h2>
+      <div class="rows">
+        <span class="k">Pill</span><span class="v">Stop</span>
+        <span class="k">Menu bar</span><span class="v">Stop</span>
+        <span class="k">Hotkey</span><span class="v">Stop Recording</span>
+      </div>
+    </div>
+
+   </div>
+  </div>
+
+  <p class="footnote">
+    Both surfaces read the same recording, so they always agree, and either Stop ends the same recording.
+  </p>
+
+</div>
+</body>
+</html>

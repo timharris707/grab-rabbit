@@ -14,6 +14,10 @@
 		C40000010000000000000001 /* QuickTopmostWindowShortcutTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C40000020000000000000001 /* QuickTopmostWindowShortcutTests.swift */; };
 		C40000010000000000000002 /* QuickTopmostWindowShortcut.swift in Sources */ = {isa = PBXBuildFile; fileRef = C40000020000000000000002 /* QuickTopmostWindowShortcut.swift */; };
 		C40000010000000000000003 /* QuickTopmostWindowShortcut.swift in Sources */ = {isa = PBXBuildFile; fileRef = C40000020000000000000002 /* QuickTopmostWindowShortcut.swift */; };
+		C43000010000000000000001 /* QuickTopmostRecordingState.swift in Sources */ = {isa = PBXBuildFile; fileRef = C43000020000000000000001 /* QuickTopmostRecordingState.swift */; };
+		C43000010000000000000002 /* QuickTopmostRecordingState.swift in Sources */ = {isa = PBXBuildFile; fileRef = C43000020000000000000001 /* QuickTopmostRecordingState.swift */; };
+		C43000010000000000000003 /* QuickTopmostSurfaces.swift in Sources */ = {isa = PBXBuildFile; fileRef = C43000020000000000000002 /* QuickTopmostSurfaces.swift */; };
+		C43000010000000000000004 /* QuickTopmostSurfaceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C43000020000000000000003 /* QuickTopmostSurfaceTests.swift */; };
 		A40000010000000000000001 /* RecordingOutputJob.swift in Sources */ = {isa = PBXBuildFile; fileRef = A40000020000000000000001 /* RecordingOutputJob.swift */; };
 		A40000010000000000000002 /* RecordingOutputJob.swift in Sources */ = {isa = PBXBuildFile; fileRef = A40000020000000000000001 /* RecordingOutputJob.swift */; };
 		A40000010000000000000003 /* RecordingOutputIsolationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A40000020000000000000002 /* RecordingOutputIsolationTests.swift */; };
@@ -69,6 +73,9 @@
 		27000000000000000000000F /* ScreenRecordingPermissionCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenRecordingPermissionCoordinatorTests.swift; sourceTree = "<group>"; };
 		C40000020000000000000001 /* QuickTopmostWindowShortcutTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuickTopmostWindowShortcutTests.swift; sourceTree = "<group>"; };
 		C40000020000000000000002 /* QuickTopmostWindowShortcut.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuickTopmostWindowShortcut.swift; sourceTree = "<group>"; };
+		C43000020000000000000001 /* QuickTopmostRecordingState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuickTopmostRecordingState.swift; sourceTree = "<group>"; };
+		C43000020000000000000002 /* QuickTopmostSurfaces.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuickTopmostSurfaces.swift; sourceTree = "<group>"; };
+		C43000020000000000000003 /* QuickTopmostSurfaceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuickTopmostSurfaceTests.swift; sourceTree = "<group>"; };
 		A40000020000000000000001 /* RecordingOutputJob.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingOutputJob.swift; sourceTree = "<group>"; };
 		A40000020000000000000002 /* RecordingOutputIsolationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingOutputIsolationTests.swift; sourceTree = "<group>"; };
 		B23000020000000000000001 /* WindowCapturePrivacy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowCapturePrivacy.swift; sourceTree = "<group>"; };
@@ -181,6 +188,7 @@
 				189BD5F62BDFDF200056D06C /* Info.plist */,
 				18D3BDEA2BCE5DC1006CFFC0 /* QuickRecorderApp.swift */,
 				C40000020000000000000002 /* QuickTopmostWindowShortcut.swift */,
+				C43000020000000000000001 /* QuickTopmostRecordingState.swift */,
 				27000000000000000000000C /* ScreenRecordingPermissionCoordinator.swift */,
 				A40000020000000000000001 /* RecordingOutputJob.swift */,
 				B23000020000000000000001 /* WindowCapturePrivacy.swift */,
@@ -203,6 +211,7 @@
 			isa = PBXGroup;
 			children = (
 				C40000020000000000000001 /* QuickTopmostWindowShortcutTests.swift */,
+				C43000020000000000000003 /* QuickTopmostSurfaceTests.swift */,
 				270000000000000000000002 /* PermissionFlowSourceTripwireTests.swift */,
 				27000000000000000000000F /* ScreenRecordingPermissionCoordinatorTests.swift */,
 				A40000020000000000000002 /* RecordingOutputIsolationTests.swift */,
@@ -225,6 +234,7 @@
 			children = (
 				18944C632D0AD36C00B6C811 /* SurpriseView.swift */,
 				18D3BDFE2BCE5E4B006CFFC0 /* StatusBar.swift */,
+				C43000020000000000000002 /* QuickTopmostSurfaces.swift */,
 				18FEBDAF2BD2C0D1003F09BC /* SettingsView.swift */,
 				18D3BDEC2BCE5DC1006CFFC0 /* ContentView.swift */,
 				1821F2E72CF4B226004A2EC0 /* ContentViewNew.swift */,
@@ -389,6 +399,8 @@
 			files = (
 				C40000010000000000000001 /* QuickTopmostWindowShortcutTests.swift in Sources */,
 				C40000010000000000000003 /* QuickTopmostWindowShortcut.swift in Sources */,
+				C43000010000000000000002 /* QuickTopmostRecordingState.swift in Sources */,
+				C43000010000000000000004 /* QuickTopmostSurfaceTests.swift in Sources */,
 				270000000000000000000001 /* PermissionFlowSourceTripwireTests.swift in Sources */,
 				27000000000000000000000E /* ScreenRecordingPermissionCoordinator.swift in Sources */,
 				270000000000000000000010 /* ScreenRecordingPermissionCoordinatorTests.swift in Sources */,
@@ -406,6 +418,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				C40000010000000000000002 /* QuickTopmostWindowShortcut.swift in Sources */,
+				C43000010000000000000001 /* QuickTopmostRecordingState.swift in Sources */,
+				C43000010000000000000003 /* QuickTopmostSurfaces.swift in Sources */,
 				A40000010000000000000001 /* RecordingOutputJob.swift in Sources */,
 				B23000010000000000000001 /* WindowCapturePrivacy.swift in Sources */,
 				C42000010000000000000001 /* WindowSelectorRefreshAdapter.swift in Sources */,

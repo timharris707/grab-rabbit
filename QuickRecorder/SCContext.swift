@@ -478,6 +478,7 @@ class SCContext {
         isMagnifierEnabled = false
         mousePointer.orderOut(nil)
         screenMagnifier.orderOut(nil)
+        QuickTopmostPresence.shared.dismiss()
         AppDelegate.shared.stopGlobalMouseMonitor()
 
         if let w = NSApp.windows.first(where:  { $0.title == "Area Overlayer".local }) { w.close() }

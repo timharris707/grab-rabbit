@@ -27,7 +27,10 @@ struct StatusBarItem: View {
     
     var body: some View {
         HStack(spacing: 0) {
-            if SCContext.streamType != nil {
+            if QuickTopmostRecordingState.shared.isRecording {
+                QuickTopmostIndicatorView()
+                    .padding([.leading, .trailing], 4)
+            } else if SCContext.streamType != nil {
                 ZStack {
                     Rectangle()
                         .fill(Color.mypurple)
@@ -224,7 +227,10 @@ struct StatusBarItem: View {
 
 func updateStatusBar() {
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-        if SCContext.streamType == nil && !ud.bool(forKey: "showMenubar") {
+        // While Quick Topmost records, the indicator is present even when the app
+        // launched without a menu bar item.
+        if !QuickTopmostRecordingState.shared.isRecording
+            && SCContext.streamType == nil && !ud.bool(forKey: "showMenubar") {
             statusBarItem.isVisible = false
             return
         }

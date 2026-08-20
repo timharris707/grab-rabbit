@@ -69,14 +69,14 @@ struct QuickTopmostWindowFailurePresenter {
         let message: String
         switch failure {
         case .contentUnavailable:
-            message = "Grab Rabbit could not load the available windows. Make sure the display is awake, then try Quick Topmost Window again."
+            message = "Grab Rabbit could not load the available windows. Make sure the display is awake, then try Quick Topmost again."
         case .permissionDenied:
-            message = "Screen recording access is unavailable. Grant Grab Rabbit access in System Settings, then try Quick Topmost Window again."
+            message = "Screen recording access is unavailable. Grant Grab Rabbit access in System Settings, then try Quick Topmost again."
         case .topmostWindowUnavailable:
             message = "Grab Rabbit could not find an eligible window in the current frontmost app. Bring the window forward, then try again."
         }
         activateApplication()
-        showAlert("Quick Topmost Window Unavailable", message)
+        showAlert("Quick Topmost Unavailable", message)
     }
 }
 

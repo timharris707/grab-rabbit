@@ -97,12 +97,18 @@ final class QuickTopmostSurfaceTests: XCTestCase {
     func testQuickTopmostIsTheOnlyNameOnScreen() throws {
         let settingsSource = try projectSource("QuickRecorder/ViewModel/SettingsView.swift")
         let shortcutSource = try projectSource("QuickRecorder/QuickTopmostWindowShortcut.swift")
+        let contextSource = try projectSource("QuickRecorder/SCContext.swift")
+        let appSource = try projectSource("QuickRecorder/QuickRecorderApp.swift")
+        let engineSource = try projectSource("QuickRecorder/RecordEngine.swift")
+        let statusBarSource = try projectSource("QuickRecorder/ViewModel/StatusBar.swift")
+        let surfaces = try projectSource("QuickRecorder/ViewModel/QuickTopmostSurfaces.swift")
 
         XCTAssertFalse(settingsSource.contains("Record Topmost Window"))
-        XCTAssertFalse(settingsSource.contains("Quick Topmost Window"))
         XCTAssertTrue(settingsSource.contains("SItem(label: \"Quick Topmost\")"))
         XCTAssertTrue(settingsSource.contains("SGroupBox(label: \"Quick Topmost\")"))
-        XCTAssertFalse(shortcutSource.contains("Quick Topmost Window"))
+        for source in [settingsSource, shortcutSource, contextSource, appSource, engineSource, statusBarSource, surfaces] {
+            XCTAssertFalse(source.contains("Quick Topmost Window"))
+        }
     }
 }
 

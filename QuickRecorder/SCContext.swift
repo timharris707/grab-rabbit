@@ -127,7 +127,7 @@ class SCContext {
     }
 
     static func invalidateQuickTopmostContentAfterTimeout() {
-        contentState.apply(.failure(.unavailable("Quick Topmost Window content refresh timed out.")))
+        contentState.apply(.failure(.unavailable("Quick Topmost content refresh timed out.")))
     }
 
     static func fetchWindowSelectorContent(

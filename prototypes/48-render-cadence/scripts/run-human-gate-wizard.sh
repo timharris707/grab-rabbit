@@ -297,6 +297,19 @@ VOLUME_BEFORE_FILE="$EVIDENCE_DIR/volume-before.txt"
 POWER_BEFORE_FILE="$EVIDENCE_DIR/power-before.txt"
 CUA_DRIVER_PATH="/Applications/CuaDriver.app/Contents/MacOS/cua-driver"
 SCREENSHARINGD_PATH="/System/Library/CoreServices/RemoteManagement/screensharingd.bundle/Contents/MacOS/screensharingd"
+CUA_DRIVER_BUNDLE_ID="com.trycua.driver"
+CUA_DRIVER_LABEL_PREFIX="application.com.trycua.driver."
+SCREENSHARINGD_LAUNCHD_TARGET="system/com.apple.screensharing"
+RUN_USER_ID=$(id -u)
+CUA_DRIVER_PID=""
+SCREENSHARINGD_PID=""
+CUA_DRIVER_LAUNCHD_TARGET=""
+CUA_DRIVER_STARTED_AT=""
+SCREENSHARINGD_STARTED_AT=""
+CUA_DRIVER_PARENT_PID=""
+SCREENSHARINGD_PARENT_PID=""
+CUA_DRIVER_ARGUMENTS=""
+SCREENSHARINGD_ARGUMENTS=""
 
 owned_pid_is_running() {
   local target="$1" pid running
@@ -311,7 +324,7 @@ cleanup_owned_processes() {
   local pid
   for pid in "${WIZARD_OWNED_PIDS[@]-}"; do
     [[ -n "$pid" ]] || continue
-    if [[ "$pid" == "12083" || "$pid" == "9243" ]]; then
+    if protected_pid_is_still_protected "$pid"; then
       continue
     fi
     if owned_pid_is_running "$pid" && kill -0 "$pid" >/dev/null 2>&1; then
@@ -659,17 +672,280 @@ no_owned_process_is_live() {
   return 0
 }
 
-protected_processes_are_live() {
-  protected_process_has_exact_path 12083 "$CUA_DRIVER_PATH" \
-    && protected_process_has_exact_path 9243 "$SCREENSHARINGD_PATH"
+launchd_field() {
+  local output="$1" field="$2"
+  awk -F' = ' -v field="$field" '$1 == "\t" field { print $2; exit }' <<<"$output"
 }
 
-protected_process_has_exact_path() {
-  local pid="$1" expected_path="$2" actual_path
-  actual_path=$(ps -ww -p "$pid" -o comm=) || return 1
+launchd_job_matches() {
+  local target="$1" expected_path="$2" expected_pid="$3" expected_bundle="$4"
+  local output state program pid bundle
+  output=$(launchctl print "$target") || return 1
+  state=$(launchd_field "$output" state)
+  program=$(launchd_field "$output" program)
+  pid=$(launchd_field "$output" pid)
+  [[ "$state" == running && "$program" == "$expected_path" && "$pid" == "$expected_pid" ]] \
+    || return 1
+  if [[ -n "$expected_bundle" ]]; then
+    bundle=$(launchd_field "$output" "bundle id")
+    [[ "$bundle" == "$expected_bundle" ]] || return 1
+  fi
+}
+
+discover_cua_driver_launchd_record() {
+  local list_output pid last_exit_status label target
+  local matched_pid="" matched_target="" match_count=0
+  list_output=$(launchctl list) || return 1
+  while read -r pid last_exit_status label; do
+    case "$label" in "$CUA_DRIVER_LABEL_PREFIX"*) ;; *) continue ;; esac
+    [[ "$pid" =~ ^[1-9][0-9]*$ ]] || continue
+    target="gui/$RUN_USER_ID/$label"
+    launchd_job_matches "$target" "$CUA_DRIVER_PATH" "$pid" "$CUA_DRIVER_BUNDLE_ID" \
+      || continue
+    matched_pid="$pid"
+    matched_target="$target"
+    match_count=$((match_count + 1))
+  done <<<"$list_output"
+  [[ "$match_count" -eq 1 ]] || return 1
+  printf '%s %s' "$matched_pid" "$matched_target"
+}
+
+discover_screensharingd_pid() {
+  local output pid
+  output=$(launchctl print "$SCREENSHARINGD_LAUNCHD_TARGET") || return 1
+  pid=$(launchd_field "$output" pid)
+  [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
+  launchd_job_matches "$SCREENSHARINGD_LAUNCHD_TARGET" "$SCREENSHARINGD_PATH" "$pid" "" \
+    || return 1
+  printf '%s' "$pid"
+}
+
+protected_process_arguments_match() {
+  local role="$1" expected_path="$2" actual_arguments="$3"
+  case "$role" in
+    cua-driver)
+      [[ "$actual_arguments" == "$expected_path serve" \
+          || "$actual_arguments" == "$expected_path serve "* ]]
+      ;;
+    screensharingd)
+      [[ "$actual_arguments" == "$expected_path" ]]
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+protected_process_started_at() {
+  local pid="$1" started_at
+  started_at=$(LC_ALL=C ps -ww -p "$pid" -o lstart=) || return 1
+  started_at=${started_at#"${started_at%%[![:space:]]*}"}
+  started_at=${started_at%"${started_at##*[![:space:]]}"}
+  [[ -n "$started_at" ]] || return 1
+  printf '%s' "$started_at"
+}
+
+protected_process_parent_pid() {
+  local pid="$1" parent_pid
+  parent_pid=$(LC_ALL=C ps -ww -p "$pid" -o ppid=) || return 1
+  parent_pid=${parent_pid#"${parent_pid%%[![:space:]]*}"}
+  parent_pid=${parent_pid%"${parent_pid##*[![:space:]]}"}
+  [[ "$parent_pid" =~ ^[1-9][0-9]*$ ]] || return 1
+  printf '%s' "$parent_pid"
+}
+
+protected_process_arguments() {
+  local pid="$1" arguments
+  arguments=$(LC_ALL=C ps -ww -p "$pid" -o args=) || return 1
+  arguments=${arguments#"${arguments%%[![:space:]]*}"}
+  arguments=${arguments%"${arguments##*[![:space:]]}"}
+  [[ -n "$arguments" ]] || return 1
+  printf '%s' "$arguments"
+}
+
+protected_process_observation_matches() {
+  local pid="$1" expected_path="$2" role="$3" expected_parent_pid="$4"
+  local expected_started_at="$5" expected_arguments="$6"
+  local actual_ppid actual_path actual_arguments actual_started_at
+  [[ "$pid" =~ ^[1-9][0-9]*$ \
+      && "$expected_parent_pid" =~ ^[1-9][0-9]*$ \
+      && -n "$expected_started_at" \
+      && -n "$expected_arguments" ]] || return 1
+  actual_ppid=$(protected_process_parent_pid "$pid") || return 1
+  actual_path=$(LC_ALL=C ps -ww -p "$pid" -o comm=) || return 1
+  actual_arguments=$(protected_process_arguments "$pid") || return 1
+  actual_started_at=$(protected_process_started_at "$pid") || return 1
   actual_path=${actual_path#"${actual_path%%[![:space:]]*}"}
   actual_path=${actual_path%"${actual_path##*[![:space:]]}"}
-  [[ "$actual_path" == "$expected_path" ]]
+  [[ "$actual_ppid" == "$expected_parent_pid" \
+      && "$actual_path" == "$expected_path" \
+      && "$actual_started_at" == "$expected_started_at" \
+      && "$actual_arguments" == "$expected_arguments" ]] \
+    || return 1
+  protected_process_arguments_match "$role" "$expected_path" "$actual_arguments" \
+    || return 1
+}
+
+protected_process_identity_matches() {
+  local pid="$1" expected_path="$2" role="$3" expected_parent_pid="$4"
+  local expected_started_at="$5" expected_arguments="$6" launchd_target="$7"
+  local expected_bundle="$8"
+  protected_process_observation_matches \
+    "$pid" "$expected_path" "$role" "$expected_parent_pid" \
+    "$expected_started_at" "$expected_arguments" \
+    || return 1
+  launchd_job_matches "$launchd_target" "$expected_path" "$pid" "$expected_bundle" \
+    || return 1
+  protected_process_observation_matches \
+    "$pid" "$expected_path" "$role" "$expected_parent_pid" \
+    "$expected_started_at" "$expected_arguments"
+}
+
+pin_protected_processes() {
+  local cua_driver_record cua_driver_pid cua_driver_target screensharingd_pid
+  local cua_driver_started_at screensharingd_started_at
+  local cua_driver_parent_pid screensharingd_parent_pid
+  local cua_driver_arguments screensharingd_arguments
+  cua_driver_record=$(discover_cua_driver_launchd_record) || return 1
+  read -r cua_driver_pid cua_driver_target <<<"$cua_driver_record"
+  screensharingd_pid=$(discover_screensharingd_pid) || return 1
+  cua_driver_parent_pid=$(protected_process_parent_pid "$cua_driver_pid") || return 1
+  screensharingd_parent_pid=$(protected_process_parent_pid "$screensharingd_pid") || return 1
+  [[ "$cua_driver_parent_pid" == 1 && "$screensharingd_parent_pid" == 1 ]] || return 1
+  cua_driver_started_at=$(protected_process_started_at "$cua_driver_pid") || return 1
+  screensharingd_started_at=$(protected_process_started_at "$screensharingd_pid") || return 1
+  cua_driver_arguments=$(protected_process_arguments "$cua_driver_pid") || return 1
+  screensharingd_arguments=$(protected_process_arguments "$screensharingd_pid") || return 1
+  protected_process_arguments_match cua-driver "$CUA_DRIVER_PATH" "$cua_driver_arguments" \
+    || return 1
+  protected_process_arguments_match screensharingd "$SCREENSHARINGD_PATH" "$screensharingd_arguments" \
+    || return 1
+  protected_process_identity_matches \
+    "$cua_driver_pid" "$CUA_DRIVER_PATH" cua-driver "$cua_driver_parent_pid" \
+    "$cua_driver_started_at" "$cua_driver_arguments" \
+    "$cua_driver_target" "$CUA_DRIVER_BUNDLE_ID" \
+    || return 1
+  protected_process_identity_matches \
+    "$screensharingd_pid" "$SCREENSHARINGD_PATH" screensharingd "$screensharingd_parent_pid" \
+    "$screensharingd_started_at" "$screensharingd_arguments" \
+    "$SCREENSHARINGD_LAUNCHD_TARGET" "" \
+    || return 1
+  CUA_DRIVER_PID="$cua_driver_pid"
+  CUA_DRIVER_LAUNCHD_TARGET="$cua_driver_target"
+  CUA_DRIVER_STARTED_AT="$cua_driver_started_at"
+  CUA_DRIVER_PARENT_PID="$cua_driver_parent_pid"
+  CUA_DRIVER_ARGUMENTS="$cua_driver_arguments"
+  SCREENSHARINGD_PID="$screensharingd_pid"
+  SCREENSHARINGD_STARTED_AT="$screensharingd_started_at"
+  SCREENSHARINGD_PARENT_PID="$screensharingd_parent_pid"
+  SCREENSHARINGD_ARGUMENTS="$screensharingd_arguments"
+}
+
+protected_processes_are_live() {
+  local current_cua_driver_record current_cua_driver_pid current_cua_driver_target
+  current_cua_driver_record=$(discover_cua_driver_launchd_record) || return 1
+  read -r current_cua_driver_pid current_cua_driver_target <<<"$current_cua_driver_record"
+  [[ "$current_cua_driver_pid" == "$CUA_DRIVER_PID" \
+      && "$current_cua_driver_target" == "$CUA_DRIVER_LAUNCHD_TARGET" ]] \
+    || return 1
+  protected_process_identity_matches \
+    "$CUA_DRIVER_PID" "$CUA_DRIVER_PATH" cua-driver "$CUA_DRIVER_PARENT_PID" \
+    "$CUA_DRIVER_STARTED_AT" "$CUA_DRIVER_ARGUMENTS" \
+    "$CUA_DRIVER_LAUNCHD_TARGET" "$CUA_DRIVER_BUNDLE_ID" \
+    && protected_process_identity_matches \
+      "$SCREENSHARINGD_PID" "$SCREENSHARINGD_PATH" screensharingd "$SCREENSHARINGD_PARENT_PID" \
+      "$SCREENSHARINGD_STARTED_AT" "$SCREENSHARINGD_ARGUMENTS" \
+      "$SCREENSHARINGD_LAUNCHD_TARGET" ""
+}
+
+protected_pid_is_still_protected() {
+  local pid="$1"
+  if [[ -n "$CUA_DRIVER_PID" && "$pid" == "$CUA_DRIVER_PID" ]]; then
+    protected_process_identity_matches \
+      "$pid" "$CUA_DRIVER_PATH" cua-driver "$CUA_DRIVER_PARENT_PID" \
+      "$CUA_DRIVER_STARTED_AT" "$CUA_DRIVER_ARGUMENTS" \
+      "$CUA_DRIVER_LAUNCHD_TARGET" "$CUA_DRIVER_BUNDLE_ID"
+    return
+  fi
+  if [[ -n "$SCREENSHARINGD_PID" && "$pid" == "$SCREENSHARINGD_PID" ]]; then
+    protected_process_identity_matches \
+      "$pid" "$SCREENSHARINGD_PATH" screensharingd "$SCREENSHARINGD_PARENT_PID" \
+      "$SCREENSHARINGD_STARTED_AT" "$SCREENSHARINGD_ARGUMENTS" \
+      "$SCREENSHARINGD_LAUNCHD_TARGET" ""
+    return
+  fi
+  return 1
+}
+
+write_protected_process_snapshot() {
+  local destination="$1" destination_parent destination_parent_physical destination_name snapshot
+  [[ "$destination" == /* ]] || return 1
+  destination_parent=${destination%/*}
+  destination_name=${destination##*/}
+  [[ -n "$destination_parent" \
+      && -n "$destination_name" \
+      && "$destination_name" != . \
+      && "$destination_name" != .. \
+      && "$destination" == "$destination_parent/$destination_name" ]] \
+    || return 1
+  destination_parent_physical=$(cd "$destination_parent" && pwd -P) || return 1
+  [[ ! -e "$destination" && ! -L "$destination" ]] || return 1
+  protected_processes_are_live || return 1
+  snapshot=$(jq -n \
+    --arg schema "grab-rabbit-protected-process-snapshot-v1" \
+    --arg cua_driver_job "$CUA_DRIVER_LAUNCHD_TARGET" \
+    --argjson cua_driver_pid "$CUA_DRIVER_PID" \
+    --argjson cua_driver_parent_pid "$CUA_DRIVER_PARENT_PID" \
+    --arg cua_driver_started_at "$CUA_DRIVER_STARTED_AT" \
+    --arg cua_driver_path "$CUA_DRIVER_PATH" \
+    --arg cua_driver_arguments "$CUA_DRIVER_ARGUMENTS" \
+    --arg screensharingd_job "$SCREENSHARINGD_LAUNCHD_TARGET" \
+    --argjson screensharingd_pid "$SCREENSHARINGD_PID" \
+    --argjson screensharingd_parent_pid "$SCREENSHARINGD_PARENT_PID" \
+    --arg screensharingd_started_at "$SCREENSHARINGD_STARTED_AT" \
+    --arg screensharingd_path "$SCREENSHARINGD_PATH" \
+    --arg screensharingd_arguments "$SCREENSHARINGD_ARGUMENTS" \
+    '{schema:$schema,processes:[{role:"cua-driver",launchd_job:$cua_driver_job,pid:$cua_driver_pid,parent_pid:$cua_driver_parent_pid,started_at:$cua_driver_started_at,executable_path:$cua_driver_path,arguments:$cua_driver_arguments},{role:"screensharingd",launchd_job:$screensharingd_job,pid:$screensharingd_pid,parent_pid:$screensharingd_parent_pid,started_at:$screensharingd_started_at,executable_path:$screensharingd_path,arguments:$screensharingd_arguments}]}') \
+    || return 1
+  protected_processes_are_live || return 1
+  (
+    cd "$destination_parent" || exit 1
+    [[ "$(pwd -P)" == "$destination_parent_physical" ]] || exit 1
+    [[ ! -e "$destination_name" && ! -L "$destination_name" ]] || exit 1
+    set -o noclobber
+    printf '%s\n' "$snapshot" >"$destination_name" || exit 1
+    [[ "$(pwd -P)" == "$destination_parent_physical" ]]
+  ) 2>/dev/null || return 1
+  [[ -f "$destination" && ! -L "$destination" \
+      && "$(cd "$destination_parent" && pwd -P)" == "$destination_parent_physical" ]]
+}
+
+create_evidence_directory() {
+  local evidence_root="${EVIDENCE_DIR%/*}" evidence_root_physical evidence_name="${EVIDENCE_DIR##*/}"
+  local evidence_directory_physical
+  [[ -n "$evidence_root" \
+      && "$evidence_root" != "$EVIDENCE_DIR" \
+      && -n "$evidence_name" \
+      && "$evidence_name" != . \
+      && "$evidence_name" != .. \
+      && "$EVIDENCE_DIR" == "$evidence_root/$evidence_name" \
+      && "$RUNS_DIR" == "$EVIDENCE_DIR/runs" \
+      && ! -L "$evidence_root" ]] \
+    || return 1
+  mkdir -p "$evidence_root" || return 1
+  [[ -d "$evidence_root" && ! -L "$evidence_root" ]] || return 1
+  evidence_root_physical=$(cd "$evidence_root" && pwd -P) || return 1
+  evidence_directory_physical="$evidence_root_physical/$evidence_name"
+  (
+    cd "$evidence_root" || exit 1
+    [[ "$(pwd -P)" == "$evidence_root_physical" ]] || exit 1
+    mkdir "$evidence_name" || exit 1
+    cd "$evidence_name" || exit 1
+    [[ "$(pwd -P)" == "$evidence_directory_physical" ]] || exit 1
+    mkdir runs || exit 1
+    [[ "$(pwd -P)" == "$evidence_directory_physical" ]]
+  ) 2>/dev/null || return 1
+  [[ -d "$EVIDENCE_DIR" && ! -L "$EVIDENCE_DIR" \
+      && -d "$RUNS_DIR" && ! -L "$RUNS_DIR" \
+      && "$(cd "$EVIDENCE_DIR" && pwd -P)" == "$evidence_directory_physical" ]]
 }
 
 tcc_matches_snapshot() {
@@ -858,11 +1134,13 @@ required_tool powermetrics "CPU/GPU/ANE/thermal sampling"
 required_tool sudo "direct administrator-owned powermetrics prompt"
 required_tool tccutil "exact prototype-bundle TCC restoration"
 required_tool osascript "volume snapshot and Finder trash restoration"
+required_tool launchctl "launchd-bound protected-process discovery"
 required_check "this is the assigned prototype branch" branch_is_expected
 required_check "the checkout is clean before evidence begins" checkout_is_clean
 required_check "HEAD is bound to the pushed prototype branch" head_is_pushed
 required_check "this host is a Mac mini" host_is_mac_mini
-required_check "protected CuaDriver PID 12083 and Screen Sharing PID 9243 are live" protected_processes_are_live
+required_check "one exact CuaDriver and Screen Sharing process can be discovered and pinned" pin_protected_processes
+ok "Pinned CuaDriver PID $CUA_DRIVER_PID and Screen Sharing PID $SCREENSHARINGD_PID for this run."
 say "Camera route requirement before any evidence or camera scan: Continuity Camera works only when the iPhone and this Mini use the same primary two-factor-authenticated Apple Account."
 step "If that exact Apple Account requirement is not already satisfied, do not use the iPhone route; connect a standard UVC external webcam instead."
 step "The wizard does not ask for, read, or save any Apple Account identifier. Apple's informational setup reference is https://support.apple.com/en-us/102546."
@@ -871,14 +1149,14 @@ if ! required_confirm "Create the dedicated ignored evidence directory, snapshot
 fi
 [[ ! -e "$EVIDENCE_DIR" ]] || fatal_gate "refusing to overwrite evidence directory $EVIDENCE_DIR"
 umask 077
-mkdir -p "$RUNS_DIR" || fatal_gate "could not create the ignored evidence directory"
+create_evidence_directory || fatal_gate "could not exclusively create the ignored evidence directory"
 printf 'pid\trun\tstarted_utc\tstopped_utc\texit_code\n' >"$PROCESS_LEDGER" \
   || fatal_gate "could not initialize the process ledger"
 osascript -e 'get volume settings' >"$VOLUME_BEFORE_FILE" \
   || fatal_gate "could not snapshot audio volume/mute state"
 pmset -g custom >"$POWER_BEFORE_FILE" \
   || fatal_gate "could not snapshot power preferences"
-ps -p 12083,9243 -o pid=,comm=,etime= >"$EVIDENCE_DIR/protected-before.txt" \
+write_protected_process_snapshot "$EVIDENCE_DIR/protected-before.json" \
   || fatal_gate "could not snapshot the protected processes"
 sw_vers >"$EVIDENCE_DIR/os.txt" || fatal_gate "could not snapshot macOS version"
 system_profiler SPHardwareDataType -json >"$EVIDENCE_DIR/hardware.json" \
@@ -1079,7 +1357,7 @@ stage "Verify evidence, restore state, and record Tim's verdict" 15
 say "What and why: the gate is not complete until every artifact is playable and hash-bound, privacy stayed closed, only owned processes stopped, temporary TCC/app/camera/browser state is restored, and Tim records the visual clock verdict."
 required_check "all 28 expected outputs are playable, monotonic, approved-signed, and privacy-clean" verify_all_outputs
 required_check "every wizard-owned process has stopped" no_owned_process_is_live
-required_check "protected CuaDriver PID 12083 and Screen Sharing PID 9243 are still live" protected_processes_are_live
+required_check "the pinned CuaDriver and Screen Sharing process identities are still live" protected_processes_are_live
 note "Opening Privacy & Security for required restoration; opening the pane itself is informational."
 open "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension" >/dev/null 2>&1 \
   || warn "The convenience deep link did not open; use Apple menu → System Settings → Privacy & Security."
@@ -1157,8 +1435,10 @@ pmset -g custom >"$EVIDENCE_DIR/power-after.txt" \
   || fatal_gate "could not snapshot final power preferences"
 required_check "audio volume/mute state matches the before snapshot" cmp -s "$VOLUME_BEFORE_FILE" "$EVIDENCE_DIR/volume-after.txt"
 required_check "power preferences match the before snapshot" cmp -s "$POWER_BEFORE_FILE" "$EVIDENCE_DIR/power-after.txt"
-ps -p 12083,9243 -o pid=,comm=,etime= >"$EVIDENCE_DIR/protected-after.txt" \
+write_protected_process_snapshot "$EVIDENCE_DIR/protected-after.json" \
   || fatal_gate "could not snapshot the protected processes after the run"
+cmp -s "$EVIDENCE_DIR/protected-before.json" "$EVIDENCE_DIR/protected-after.json" \
+  || fatal_gate "the protected process identity snapshots did not match"
 note "Opening the evidence folder for required visual adjudication; opening it is informational."
 open "$RUNS_DIR" >/dev/null 2>&1 || warn "Could not open Finder; inspect $RUNS_DIR manually."
 step "In QuickTime Player, compare matched camera-driven/fixed-clock files for camera fluidity over Static, Low change, and Active pages; watch pause/resume and all three shapes."
@@ -1187,7 +1467,19 @@ jq -n \
   --arg camera_type "$SELECTED_CAMERA_TYPE" \
   --arg window_app "$SELECTED_WINDOW_APP" \
   --arg verdict "$VERDICT" \
-  '{schema:$schema,branch:$branch,commit:$commit,generated_at:$generated_at,host:$host,selected_sources:{camera_name:$camera_name,camera_type:$camera_type,window_application:$window_app,exact_ids_persisted:false},coverage:{stages:6,expected_movies:28,candidates:["camera-driven","fixed-clock"],canvases:["16x9","9x16","square"],browser_cases:["static","low-change","active"],pause_resume:true,physical_disconnect:true,powermetrics:true},privacy:{sentinel_required_zero:true,display_fallback_allowed:false},state_restored:true,protected_pids:[12083,9243],verdict:$verdict}' \
+  --argjson cua_driver_pid "$CUA_DRIVER_PID" \
+  --argjson screensharingd_pid "$SCREENSHARINGD_PID" \
+  --argjson cua_driver_parent_pid "$CUA_DRIVER_PARENT_PID" \
+  --argjson screensharingd_parent_pid "$SCREENSHARINGD_PARENT_PID" \
+  --arg cua_driver_job "$CUA_DRIVER_LAUNCHD_TARGET" \
+  --arg cua_driver_started_at "$CUA_DRIVER_STARTED_AT" \
+  --arg cua_driver_path "$CUA_DRIVER_PATH" \
+  --arg cua_driver_arguments "$CUA_DRIVER_ARGUMENTS" \
+  --arg screensharingd_job "$SCREENSHARINGD_LAUNCHD_TARGET" \
+  --arg screensharingd_started_at "$SCREENSHARINGD_STARTED_AT" \
+  --arg screensharingd_path "$SCREENSHARINGD_PATH" \
+  --arg screensharingd_arguments "$SCREENSHARINGD_ARGUMENTS" \
+  '{schema:$schema,branch:$branch,commit:$commit,generated_at:$generated_at,host:$host,selected_sources:{camera_name:$camera_name,camera_type:$camera_type,window_application:$window_app,exact_ids_persisted:false},coverage:{stages:6,expected_movies:28,candidates:["camera-driven","fixed-clock"],canvases:["16x9","9x16","square"],browser_cases:["static","low-change","active"],pause_resume:true,physical_disconnect:true,powermetrics:true},privacy:{sentinel_required_zero:true,display_fallback_allowed:false},state_restored:true,protected_pids:[$cua_driver_pid,$screensharingd_pid],protected_processes:[{role:"cua-driver",launchd_job:$cua_driver_job,pid:$cua_driver_pid,parent_pid:$cua_driver_parent_pid,started_at:$cua_driver_started_at,executable_path:$cua_driver_path,arguments:$cua_driver_arguments},{role:"screensharingd",launchd_job:$screensharingd_job,pid:$screensharingd_pid,parent_pid:$screensharingd_parent_pid,started_at:$screensharingd_started_at,executable_path:$screensharingd_path,arguments:$screensharingd_arguments}],verdict:$verdict}' \
   >"$EVIDENCE_DIR/manifest.json" || fatal_gate "could not write the final evidence manifest"
 required_check "the exact camera identifier does not appear anywhere in final evidence" camera_identifier_is_not_persisted
 required_check "no camera/window identifier field or command argument appears in final evidence" identifier_fields_are_not_persisted

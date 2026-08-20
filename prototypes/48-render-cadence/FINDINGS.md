@@ -66,10 +66,10 @@ The final evidence directory is generated after each pushed SHA and is intention
 by Git because playable camera artifacts must not be published. Its `manifest.json` binds every
 artifact hash to the exact branch SHA, Mini host, macOS, hardware, toolchain, and configuration.
 
-The Mac Mini currently enumerates no camera. `powermetrics` also requires an interactive
-administrator password; noninteractive sudo is unavailable. No TCC, preference, audio, output,
-or diagnostics state was changed. To close the gate, Tim must make an iPhone Continuity Camera
-or another camera visible to the Mini and run the confirmed 100-minute
+The last recorded Mini preflight enumerated no camera; the current gate must refresh that
+inventory before capture. `powermetrics` also requires an interactive administrator password;
+noninteractive sudo is unavailable. No TCC, preference, audio, output, or diagnostics state was
+changed. To close the gate, Tim must run the confirmed 100-minute
 [`run-human-gate-wizard.sh`](scripts/run-human-gate-wizard.sh), which:
 
 1. verifies the exact selected camera without persisting its stable ID;
@@ -86,8 +86,10 @@ or another camera visible to the Mini and run the confirmed 100-minute
    CPU/GPU/ANE/power and thermal samples to the two comparison runs; and
 6. verifies 28 movies, restores TCC/app/camera/browser/volume/power state, removes only the exact
    recorded wizard-created directory after the app is in Trash and the directory is empty,
-   preserves PIDs 12083 and 9243, hashes the evidence, and records Tim's `camera-driven`,
-   `fixed-clock`, or `unresolved` verdict.
+   preserves the launchd job, PID, executable path, exact role arguments, parent, and start time pinned for
+   CuaDriver and Screen Sharing at launch; rejects later CuaDriver ambiguity; requires matching
+   two-process snapshots at the end;
+   hashes the evidence; and records Tim's `camera-driven`, `fixed-clock`, or `unresolved` verdict.
 
 The Mini's CuaDriver PID 12083 and Screen Sharing PID 9243 were present before and after the
 native run. The 15 prototype-owned render PIDs are recorded in `processes.tsv`; all exited 0,
@@ -113,8 +115,8 @@ state, and a predeclared external-powermetrics path. The recording path does not
 request TCC, silently omit requested audio, substitute a display, or switch cameras. Only the
 explicit `authorize` command requests TCC, after verifying the approved runtime fingerprint.
 
-This preparation does not close the physical gate. Until a camera is present and Tim performs
-the signed run, all live metric fields remain unmeasured.
+This preparation does not close the physical gate. Until Tim performs the signed run, all live
+metric fields remain unmeasured.
 
 The unsigned-safe Mini gate at source checkpoint `75d3a354fb924700f00ca2f562c0deab0203ce5c`
 passed its warnings-as-errors Release build, 3/3 selection/fail-closed tests, static

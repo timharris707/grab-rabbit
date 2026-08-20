@@ -132,8 +132,12 @@ The Mini wizard requires that exact staged pair at
 `prototypes/48-render-cadence/.build/human-gate-stable`, verifies it again without signing, and
 then owns cleanup of only those two manifest-verified artifacts and their exact empty parent.
 The Mini may retain unrelated signing identities because none is used there. Have the exact
-camera, a browser, the administrator password, and time to inspect the movies in QuickTime;
-protected PIDs 12083 and 9243 must remain at their exact command paths. The wizard fixes its tool
+camera, a browser, the administrator password, and time to inspect the movies in QuickTime. The
+wizard resolves the CuaDriver app service and Screen Sharing daemon from their launchd jobs,
+then pins each PID, executable path, exact role arguments, parent, and start time for the run. It fails if any
+field changes or the CuaDriver identity becomes ambiguous, and requires matching two-process snapshots
+before and after the gate. The run claims its evidence directory exclusively and creates those snapshots
+without following or overwriting an existing path. It fixes its tool
 path to include `/opt/homebrew/bin`, estimates 100 minutes, asks before every stateful or
 interactive phase, lets `sudo` own its foreground password prompt, and never writes a password
 or exact camera/window ID. Do not run it as an automated or unattended gate.

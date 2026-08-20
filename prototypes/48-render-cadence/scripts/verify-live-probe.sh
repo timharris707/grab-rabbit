@@ -39,7 +39,7 @@ regex_match_count() {
     exit 7
 }
 "$wizard_tests" >"$evidence/human-gate-wizard-tests.log"
-grep -Fxq 'human-gate wizard tests passed (2/2)' "$evidence/human-gate-wizard-tests.log"
+grep -Fxq 'human-gate wizard tests passed (3/3)' "$evidence/human-gate-wizard-tests.log"
 "$stage_tests" >"$evidence/stage-signed-app-tests.log"
 grep -Fxq 'stage-signed-app tests passed (10/10)' "$evidence/stage-signed-app-tests.log"
 rg -n '^test_prepare_response_loss_and_rollback_outage\(\)|^test_promotion_response_loss_is_idempotent\(\)|^test_invalid_existing_targets_are_refused\(\)|^test_same_sha_different_code_identity_is_refused\(\)|^test_concurrent_invocation_lock\(\)' \
@@ -90,10 +90,110 @@ rg -n -F 'codesign --verify --deep --strict --verbose=2 "$STABLE_APP"' "$wizard"
     >>"$evidence/wizard-staging-manifest-proof.txt"
 rg -n -F '.signing.code_directory_cdhash == $cdhash' "$wizard" \
     >>"$evidence/wizard-staging-manifest-proof.txt"
-rg -n -F 'protected_process_has_exact_path 9243 "$SCREENSHARINGD_PATH"' "$wizard" \
+rg -n -F 'cua_driver_record=$(discover_cua_driver_launchd_record)' "$wizard" \
     >"$evidence/protected-process-proof.txt"
-rg -n -F 'protected_process_has_exact_path 12083 "$CUA_DRIVER_PATH"' "$wizard" \
+rg -n -F 'list_output=$(launchctl list) || return 1' "$wizard" \
     >>"$evidence/protected-process-proof.txt"
+rg -n -F 'screensharingd_pid=$(discover_screensharingd_pid)' "$wizard" \
+    >>"$evidence/protected-process-proof.txt"
+rg -n -F 'current_cua_driver_record=$(discover_cua_driver_launchd_record) || return 1' "$wizard" \
+    >>"$evidence/protected-process-proof.txt"
+rg -n -F '"$CUA_DRIVER_LAUNCHD_TARGET" "$CUA_DRIVER_BUNDLE_ID"' "$wizard" \
+    >>"$evidence/protected-process-proof.txt"
+rg -n -F '"$SCREENSHARINGD_LAUNCHD_TARGET" ""' "$wizard" \
+    >>"$evidence/protected-process-proof.txt"
+rg -n -F 'actual_started_at" == "$expected_started_at"' "$wizard" \
+    >>"$evidence/protected-process-proof.txt"
+rg -n -F 'actual_ppid" == "$expected_parent_pid"' "$wizard" \
+    >>"$evidence/protected-process-proof.txt"
+rg -n -F 'actual_arguments" == "$expected_arguments"' "$wizard" \
+    >>"$evidence/protected-process-proof.txt"
+[[ "$(rg -n -F 'protected_process_observation_matches \' "$wizard" | wc -l | tr -d ' ')" -eq 2 ]] || {
+    echo "protected-process observation is not bracketed around launchd verification" >&2
+    exit 7
+}
+rg -n -F 'write_protected_process_snapshot "$EVIDENCE_DIR/protected-before.json"' "$wizard" \
+    >>"$evidence/protected-process-proof.txt"
+rg -n -F 'cmp -s "$EVIDENCE_DIR/protected-before.json" "$EVIDENCE_DIR/protected-after.json"' "$wizard" \
+    >>"$evidence/protected-process-proof.txt"
+rg -n -F 'parent_pid:$cua_driver_parent_pid' "$wizard" \
+    >>"$evidence/protected-process-proof.txt"
+rg -n -F 'arguments:$cua_driver_arguments' "$wizard" \
+    >>"$evidence/protected-process-proof.txt"
+rg -n -F 'set -o noclobber' "$wizard" \
+    >>"$evidence/protected-process-proof.txt"
+rg -n -F 'destination_parent_physical=$(cd "$destination_parent" && pwd -P)' "$wizard" \
+    >>"$evidence/protected-process-proof.txt"
+rg -n -F 'evidence_root_physical=$(cd "$evidence_root" && pwd -P)' "$wizard" \
+    >>"$evidence/protected-process-proof.txt"
+rg -n -F 'mkdir "$evidence_name" || exit 1' "$wizard" \
+    >>"$evidence/protected-process-proof.txt"
+rg -n -F 'protected_pids:[$cua_driver_pid,$screensharingd_pid]' "$wizard" \
+    >>"$evidence/protected-process-proof.txt"
+manifest_identity_line=$(rg -F 'state_restored:true,protected_pids:[$cua_driver_pid,$screensharingd_pid],protected_processes:' "$wizard")
+[[ "$(wc -l <<<"$manifest_identity_line" | tr -d ' ')" -eq 1 ]] || {
+    echo "final manifest identity template is missing or ambiguous" >&2
+    exit 7
+}
+manifest_identity_line_is_complete() {
+    local line=$1 token
+    local required_tokens=(
+        'role:"cua-driver"'
+        'launchd_job:$cua_driver_job'
+        'pid:$cua_driver_pid'
+        'parent_pid:$cua_driver_parent_pid'
+        'started_at:$cua_driver_started_at'
+        'executable_path:$cua_driver_path'
+        'arguments:$cua_driver_arguments'
+        'role:"screensharingd"'
+        'launchd_job:$screensharingd_job'
+        'pid:$screensharingd_pid'
+        'parent_pid:$screensharingd_parent_pid'
+        'started_at:$screensharingd_started_at'
+        'executable_path:$screensharingd_path'
+        'arguments:$screensharingd_arguments'
+    )
+    for token in "${required_tokens[@]}"; do
+        [[ "$line" == *"$token"* ]] || return 1
+    done
+}
+manifest_identity_line_is_complete "$manifest_identity_line" || {
+    echo "final manifest does not retain both complete protected-process identities" >&2
+    exit 7
+}
+manifest_parent_mutant=$(sed \
+    -e 's/,parent_pid:$cua_driver_parent_pid//' \
+    -e 's/,parent_pid:$screensharingd_parent_pid//' <<<"$manifest_identity_line")
+if manifest_identity_line_is_complete "$manifest_parent_mutant"; then
+    echo "final manifest identity tripwire missed its deliberate parent-PID mutant" >&2
+    exit 7
+fi
+printf '%s\n' "$manifest_identity_line" >>"$evidence/protected-process-proof.txt"
+frozen_pid_pattern='(CUA_DRIVER_PID|SCREENSHARINGD_PID).*[1-9][0-9]{2,}|"\$pid".*==.*"[1-9][0-9]{2,}"|protected_process_(has_exact_path|identity_matches)[[:space:]]+[1-9][0-9]{2,}|protected_pids:\[[[:space:]]*[0-9]'
+frozen_pid_mutants=(
+    'if [[ "$pid" == "12083" || "$pid" == "9243" ]]; then'
+    'CUA_DRIVER_PID=12083'
+    'SCREENSHARINGD_PID=${SCREENSHARINGD_PID:-9243}'
+    'protected_process_has_exact_path 12083 "$CUA_DRIVER_PATH"'
+    'protected_pids:[12083,9243]'
+)
+for frozen_pid_mutant in "${frozen_pid_mutants[@]}"; do
+    rg -q "$frozen_pid_pattern" <<<"$frozen_pid_mutant" || {
+        echo "frozen protected-process PID tripwire missed its deliberate mutant" >&2
+        exit 7
+    }
+done
+if rg -n "$frozen_pid_pattern" \
+    "$wizard" >"$evidence/forbidden-frozen-protected-pids.txt"; then
+    echo "Mini wizard contains a frozen protected-process PID" >&2
+    exit 7
+else
+    frozen_pid_exit=$?
+    [[ "$frozen_pid_exit" -eq 1 ]] || {
+        echo "could not scan the Mini wizard for frozen protected-process PIDs" >&2
+        exit 7
+    }
+fi
 
 if rg -n 'codesign[[:space:]].*--sign|security[[:space:]]+(find-identity|export|import)|\.p12|private[[:space:]_-]*key' "$wizard" \
     >"$evidence/forbidden-mini-signing.txt"; then

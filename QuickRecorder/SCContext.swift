@@ -78,6 +78,7 @@ class SCContext {
             dismiss()
         }
     }
+    private static let quickTopmostContentPreflightPolicy = QuickTopmostContentPreflightPolicy()
     
     static func updateAvailableContentSync() -> SCShareableContent? {
         let semaphore = DispatchSemaphore(value: 0)
@@ -104,20 +105,29 @@ class SCContext {
 
     static func refreshAvailableContent(completion: @escaping (Result<SCShareableContent, ScreenRecordingContentError>) -> Void) {
         screenRecordingPermissionCoordinator.refresh(using: fetchAvailableContent) { result in
-            contentState.apply(result)
-            switch result {
-            case .success:
-                scPerm = true
-            case .failure(.permissionDenied):
-                scPerm = false
-                DispatchQueue.main.async {
-                    captureReadiness.updateRecoveryActionAvailability(true)
-                }
-            case .failure(.unavailable(let message)):
-                print("Error: failed to fetch available content: ".local, message)
-            }
+            applyAvailableContentResult(result)
             completion(result)
         }
+    }
+
+    static func refreshAvailableContentForQuickTopmost(
+        completion: @escaping (Result<SCShareableContent, ScreenRecordingContentError>) -> Void
+    ) {
+        quickTopmostContentPreflightPolicy.refresh(
+            preflightAuthorized: CGPreflightScreenCaptureAccess(),
+            fetch: fetchAvailableContent,
+            completion: completion
+        )
+    }
+
+    static func applyAcceptedQuickTopmostContentResult(
+        _ result: Result<SCShareableContent, ScreenRecordingContentError>
+    ) {
+        applyAvailableContentResult(result)
+    }
+
+    static func invalidateQuickTopmostContentAfterTimeout() {
+        contentState.apply(.failure(.unavailable("Quick Topmost Window content refresh timed out.")))
     }
 
     static func fetchWindowSelectorContent(
@@ -168,13 +178,30 @@ class SCContext {
             completion(.success(content))
         }
     }
-    
-    static func getSelf() -> SCRunningApplication? {
-        return SCContext.availableContent!.applications.first(where: { Bundle.main.bundleIdentifier == $0.bundleIdentifier })
+
+    private static func applyAvailableContentResult(
+        _ result: Result<SCShareableContent, ScreenRecordingContentError>
+    ) {
+        contentState.apply(result)
+        switch result {
+        case .success:
+            scPerm = true
+        case .failure(.permissionDenied):
+            scPerm = false
+            DispatchQueue.main.async {
+                captureReadiness.updateRecoveryActionAvailability(true)
+            }
+        case .failure(.unavailable(let message)):
+            print("Error: failed to fetch available content: ".local, message)
+        }
     }
     
-    static func getSelfWindows() -> [SCWindow]? {
-        return SCContext.availableContent!.windows.filter( {
+    static func getSelf(from content: SCShareableContent? = SCContext.availableContent) -> SCRunningApplication? {
+        content?.applications.first(where: { Bundle.main.bundleIdentifier == $0.bundleIdentifier })
+    }
+    
+    static func getSelfWindows(from content: SCShareableContent? = SCContext.availableContent) -> [SCWindow]? {
+        content?.windows.filter( {
             guard let title = $0.title else { return false }
             return $0.owningApplication?.bundleIdentifier == Bundle.main.bundleIdentifier
             && title != "Mouse Pointer".local
@@ -193,9 +220,13 @@ class SCContext {
         return apps
     }
     
-    static func getWindows(isOnScreen: Bool = true, hideSelf: Bool = true) -> [SCWindow] {
-        var windows = [SCWindow]()
-        windows = availableContent!.windows.filter {
+    static func getWindows(
+        isOnScreen: Bool = true,
+        hideSelf: Bool = true,
+        from content: SCShareableContent? = SCContext.availableContent
+    ) -> [SCWindow] {
+        guard let content else { return [] }
+        var windows = content.windows.filter {
             guard let app =  $0.owningApplication,
                   let title = $0.title else {//, !title.isEmpty else {
                 return false
@@ -228,8 +259,8 @@ class SCContext {
         return screenWithMouse
     }
     
-    static func getSCDisplayWithMouse() -> SCDisplay? {
-        if let displays = availableContent?.displays {
+    static func getSCDisplayWithMouse(from content: SCShareableContent? = SCContext.availableContent) -> SCDisplay? {
+        if let displays = content?.displays {
             for display in displays {
                 if let currentDisplayID = getScreenWithMouse()?.displayID {
                     if display.displayID == currentDisplayID {

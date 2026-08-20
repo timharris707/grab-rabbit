@@ -60,6 +60,11 @@ let countdownPanel = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 120, height
 let previewWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 266, height: 156), styleMask: [.fullSizeContentView], backing: .buffered, defer: false)
 var updaterController: SPUStandardUpdaterController!
 
+private struct QuickTopmostCaptureTarget {
+    let screen: SCDisplay
+    let window: SCWindow
+}
+
 @main
 struct QuickRecorderApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
@@ -171,6 +176,90 @@ class AppDelegate: NSObject, NSApplicationDelegate, SCStreamDelegate, SCStreamOu
     }
     var captureOutputCore: CaptureOutputCore { captureOutputInfrastructure.core }
     var captureStreamCallbackAdapter: CaptureStreamCallbackAdapter { captureOutputInfrastructure.adapter }
+    private lazy var quickTopmostWindowFailureHandler = QuickTopmostWindowFailureHandler(
+        captureStateIsIdle: { [weak self] in
+            self?.captureOutputSessions.isIdle == true && SCContext.stream == nil
+        },
+        clearStaleTargets: {
+            SCContext.screen = nil
+            SCContext.window = nil
+            SCContext.application = nil
+            SCContext.filter = nil
+            SCContext.screenArea = nil
+            SCContext.streamType = nil
+        },
+        presenter: QuickTopmostWindowFailurePresenter(
+            activateApplication: {
+                NSApp.activate(ignoringOtherApps: true)
+            },
+            showAlert: { title, message in
+                _ = createAlert(
+                    title: title,
+                    message: message,
+                    button1: "OK"
+                ).runModal()
+            }
+        )
+    )
+    private lazy var quickTopmostWindowShortcut = QuickTopmostWindowShortcutAdapter<SCShareableContent, QuickTopmostCaptureTarget>(
+        maximumAttempts: 3,
+        refreshContent: { completion in
+            SCContext.refreshAvailableContentForQuickTopmost { result in
+                DispatchQueue.main.async {
+                    completion(result)
+                }
+            }
+        },
+        acceptAttemptOutcome: { outcome in
+            switch outcome {
+            case .completed(let result):
+                SCContext.applyAcceptedQuickTopmostContentResult(result)
+            case .timedOut:
+                SCContext.invalidateQuickTopmostContentAfterTimeout()
+            }
+        },
+        selectCurrentTarget: { content in
+            guard let processID = NSWorkspace.shared.frontmostApplication?.processIdentifier else {
+                return nil
+            }
+            let candidates = SCContext.getWindows(from: content).filter {
+                $0.title != "" && $0.isOnScreen
+            }
+            guard let window = QuickTopmostWindowResolver.resolve(
+                frontmostProcessID: processID,
+                frontToBackWindowIDs: QuickTopmostWindowZOrder.frontToBackWindowIDs(),
+                candidates: candidates,
+                processID: { $0.owningApplication?.processID },
+                windowID: \.windowID
+            ),
+                  let screen = SCContext.getSCDisplayWithMouse(from: content) else {
+                return nil
+            }
+            return QuickTopmostCaptureTarget(screen: screen, window: window)
+        },
+        scheduleRetry: { retry in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: retry)
+        },
+        scheduleAttemptTimeout: { timeout in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: timeout)
+        },
+        startCapture: { [weak self] content, target in
+            guard let self else { return }
+            closeAllWindow()
+            prepRecord(
+                type: "window",
+                screens: target.screen,
+                windows: [target.window],
+                applications: nil,
+                fastStart: true,
+                windowCaptureMode: windowCaptureMode,
+                shareableContent: content
+            )
+        },
+        showFailure: { [weak self] failure in
+            self?.quickTopmostWindowFailureHandler.handle(failure)
+        }
+    )
     
     @AppStorage("showOnDock")       var showOnDock: Bool = true
     @AppStorage("showMenubar")      var showMenubar: Bool = false
@@ -407,24 +496,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, SCStreamDelegate, SCStreamOu
         }
         KeyboardShortcuts.onKeyDown(for: .startWithWindow) { [self] in
             if SCContext.stream != nil { return }
-            closeAllWindow()
-            let frontmostApp = NSWorkspace.shared.frontmostApplication
-            if let pid = frontmostApp?.processIdentifier {
-                guard let scWindow = SCContext.getWindows().first(where: { $0.owningApplication?.processID == pid && $0.title != "" && $0.isOnScreen }) else { return }
-                prepRecord(
-                    type: "window",
-                    screens: SCContext.getSCDisplayWithMouse(),
-                    windows: [scWindow],
-                    applications: nil,
-                    fastStart: true,
-                    windowCaptureMode: windowCaptureMode
-                )
-                return
-            }
+            quickTopmostWindowShortcut.trigger()
         }
         updateStatusBar()
     }
-    
+
     func applicationDidFinishLaunching(_ aNotification: Notification) {
         closeAllWindow()
         if showOnDock { _ = applicationShouldHandleReopen(NSApp, hasVisibleWindows: true) }

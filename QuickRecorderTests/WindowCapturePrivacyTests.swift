@@ -2049,6 +2049,147 @@ final class WindowCapturePrivacyTests: XCTestCase {
         store.cancelReservation(sessionB)
     }
 
+    func testDelayedWriterStopRefusesNewStartWithoutFreezingOrMutatingEitherJob() throws {
+        XCTAssertTrue(Thread.isMainThread)
+        let engineSource = try projectSource("QuickRecorder/RecordEngine.swift")
+        XCTAssertTrue(engineSource.contains(
+            "let sessionID = UUID()\n        guard captureOutputSessions.reserve(sessionID) else {"
+        ))
+        let refusalRange = try XCTUnwrap(
+            engineSource.range(of: "body: \"Another capture session is still finishing.\".local")
+        )
+        let outputReservationRange = try XCTUnwrap(engineSource.range(of: "SCContext.reserveOutputJob("))
+        XCTAssertLessThan(
+            refusalRange.upperBound,
+            outputReservationRange.lowerBound,
+            "A refused start must be reported before any recording output job is reserved."
+        )
+
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("refused-start-during-writer-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let job = try RecordingOutputJob.reserve(
+            in: directory,
+            preferredStem: "recording-a",
+            layout: .single(fileExtension: "mov")
+        )
+        XCTAssertTrue(FileManager.default.createFile(
+            atPath: job.inputURL.path,
+            contents: Data("recording-a".utf8)
+        ))
+        let stream = NSObject()
+        let store = CaptureOutputSessionStore()
+        let writer = DelayedCaptureWriterFinalizer()
+        let session = makeCaptureSession(
+            stream: stream,
+            mode: .transparent,
+            sink: TestVideoDestination(),
+            outputJob: job,
+            writerFinalizer: writer
+        )
+        let entry = CaptureProductionStopEntry(store: store)
+        let resources = CaptureProductionStopResources(
+            outputJob: job,
+            writerFinalizer: writer,
+            isAudioOnly: false,
+            markVideoInputFinished: {}
+        )
+        var refusals = [String]()
+        var startedJobs = [RecordingOutputJob]()
+        var pendingStatusDismissal: (() -> Void)?
+        let actions = CaptureProductionStopActions(
+            stopActiveStream: { _ in false },
+            cleanupTerminal: { pendingStatusDismissal = $0 }
+        )
+
+        // Mirrors prepRecord: the store reservation decides the start before any output job exists.
+        func requestStart(stem: String) throws -> Bool {
+            let sessionID = UUID()
+            guard store.reserve(sessionID) else {
+                refusals.append("Another capture session is still finishing.")
+                return false
+            }
+            startedJobs.append(try RecordingOutputJob.reserve(
+                in: directory,
+                preferredStem: stem,
+                layout: .single(fileExtension: "mov")
+            ))
+            store.cancelReservation(sessionID)
+            return true
+        }
+
+        func directoryContents() throws -> [String] {
+            try FileManager.default.contentsOfDirectory(atPath: directory.path).sorted()
+        }
+
+        XCTAssertTrue(store.reserve(session.id))
+        XCTAssertTrue(store.install(session))
+        XCTAssertTrue(store.deactivate(session))
+        let heartbeat = expectation(description: "main run-loop heartbeat before writer completion")
+        DispatchQueue.main.async { heartbeat.fulfill() }
+
+        let stopRequestedAt = ProcessInfo.processInfo.systemUptime
+        XCTAssertEqual(
+            entry.stop(
+                expectedSession: session,
+                activeStream: nil,
+                resolveResources: { _ in resources },
+                actions: actions
+            ),
+            .handled
+        )
+        let stopDuration = ProcessInfo.processInfo.systemUptime - stopRequestedAt
+
+        wait(for: [heartbeat], timeout: 2)
+        XCTAssertLessThan(
+            stopDuration,
+            1,
+            "Stop must return to the main run loop instead of waiting for the writer."
+        )
+        XCTAssertEqual(writer.finishCallCount, 1)
+        XCTAssertEqual(job.lifecycle, .postprocessing)
+        let contentsBeforeRefusal = try directoryContents()
+        let refusedDuringWriter = try requestStart(stem: "recording-b")
+        let refusalHeartbeat = expectation(description: "main run-loop heartbeat after a refused start")
+        DispatchQueue.main.async { refusalHeartbeat.fulfill() }
+        wait(for: [refusalHeartbeat], timeout: 2)
+
+        XCTAssertFalse(refusedDuringWriter, "A new start must be refused while A's writer is still pending.")
+        XCTAssertEqual(refusals, ["Another capture session is still finishing."])
+        XCTAssertTrue(startedJobs.isEmpty, "A refused start must not reserve a replacement job.")
+        XCTAssertEqual(job.lifecycle, .postprocessing)
+        XCTAssertEqual(try Data(contentsOf: job.inputURL), Data("recording-a".utf8))
+        XCTAssertEqual(
+            try directoryContents(),
+            contentsBeforeRefusal,
+            "A refused start must leave every job file untouched."
+        )
+
+        writer.complete(.success(()))
+        XCTAssertEqual(job.lifecycle, .terminal)
+        XCTAssertEqual(try Data(contentsOf: job.finalURL), Data("recording-a".utf8))
+        XCTAssertFalse(
+            try requestStart(stem: "recording-b"),
+            "A new start remains refused until the finishing control is dismissed."
+        )
+        XCTAssertEqual(refusals.count, 2)
+        XCTAssertTrue(startedJobs.isEmpty)
+
+        pendingStatusDismissal?()
+        XCTAssertTrue(
+            try requestStart(stem: "recording-b"),
+            "A new start may succeed after the finishing control is dismissed."
+        )
+        let replacementJob = try XCTUnwrap(startedJobs.first)
+        XCTAssertEqual(refusals.count, 2)
+        XCTAssertEqual(replacementJob.lifecycle, .recording)
+        XCTAssertNotEqual(replacementJob.finalURL, job.finalURL)
+        XCTAssertEqual(try Data(contentsOf: job.finalURL), Data("recording-a".utf8))
+        _ = replacementJob.discardOutputs(reason: .cancelled(stage: .first))
+    }
+
     func testAutomaticPackageExportRetainsSessionUntilRequiredExportIsTerminal() throws {
         let outcomes: [Result<Void, RecordingExportError>] = [
             .success(()),

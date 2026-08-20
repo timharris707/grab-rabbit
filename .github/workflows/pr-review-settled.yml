@@ -1,0 +1,26 @@
+name: pr-review-settled
+
+# Merge gate: waits until CodeRabbit has reviewed the current head commit and
+# every review thread is resolved, so merges can't race the bot's incremental
+# pass and the silent-review fallback can't skip review entirely. Reusable
+# gate lives in timharris707/skills.
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review, labeled, unlabeled]
+  pull_request_review:
+    types: [submitted, dismissed]
+  pull_request_review_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: review-settled-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review-settled:
+    uses: timharris707/skills/.github/workflows/review-settled.yml@main

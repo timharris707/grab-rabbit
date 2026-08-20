@@ -216,8 +216,8 @@ post_build_sha=$(assert_local_checkpoint)
 codesign --verify --deep --strict --verbose=2 "$staged_app"
 
 details=$(codesign -dvvv "$staged_app" 2>&1)
-actual_name=$(sed -n 's/^Authority=//p' <<<"$details" | head -1)
-actual_team=$(sed -n 's/^TeamIdentifier=//p' <<<"$details" | head -1)
+actual_name=$(sed -n '/^Authority=/{s///;p;q;}' <<<"$details")
+actual_team=$(sed -n '/^TeamIdentifier=/{s///;p;q;}' <<<"$details")
 actual_cdhash=$(sed -n 's/^CDHash=//p' <<<"$details" | tr '[:upper:]' '[:lower:]')
 grep -Eq '^CodeDirectory .* flags=.*\(runtime\)' <<<"$details"
 [[ "$actual_cdhash" =~ ^[0-9a-f]{40}$ ]]
@@ -348,9 +348,9 @@ validate_published_target() {
         and .signing.code_directory_cdhash == $cdhash and $cdhash == $fresh_cdhash
         and .signing.hardened_runtime == true and .cleanup_owner == "human-gate-wizard"' "$manifest" >/dev/null \
         || return 1
-    [[ "$(sed -n 's/^Authority=//p' <<<"$details" | head -1)" == "Developer ID Application: TIMOTHY G HARRIS (F66FM4V88Q)" ]] \
+    [[ "$(sed -n '/^Authority=/{s///;p;q;}' <<<"$details")" == "Developer ID Application: TIMOTHY G HARRIS (F66FM4V88Q)" ]] \
         || return 1
-    [[ "$(sed -n 's/^TeamIdentifier=//p' <<<"$details" | head -1)" == "F66FM4V88Q" ]] || return 1
+    [[ "$(sed -n '/^TeamIdentifier=/{s///;p;q;}' <<<"$details")" == "F66FM4V88Q" ]] || return 1
     grep -Eq '^CodeDirectory .* flags=.*\(runtime\)' <<<"$details" || return 1
     [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Contents/Info.plist")" \
         == "dev.clickai.grabrabbit.prototype.render-cadence" ]] || return 1
@@ -515,8 +515,8 @@ jq -e --arg branch "$EXPECTED_BRANCH" --arg sha "$expected_sha" --arg directory 
     and .signing.team_id == $team and .signing.certificate_sha1 == $fingerprint
     and .signing.code_directory_cdhash == $cdhash
     and .signing.hardened_runtime == true and .cleanup_owner == "human-gate-wizard"' "$manifest" >/dev/null
-[[ "$(sed -n 's/^Authority=//p' <<<"$details" | head -1)" == "$APPROVED_NAME" ]]
-[[ "$(sed -n 's/^TeamIdentifier=//p' <<<"$details" | head -1)" == "$APPROVED_TEAM" ]]
+[[ "$(sed -n '/^Authority=/{s///;p;q;}' <<<"$details")" == "$APPROVED_NAME" ]]
+[[ "$(sed -n '/^TeamIdentifier=/{s///;p;q;}' <<<"$details")" == "$APPROVED_TEAM" ]]
 grep -Eq '^CodeDirectory .* flags=.*\(runtime\)' <<<"$details"
 [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Contents/Info.plist")" == "$BUNDLE_ID" ]]
 certificate_dir="$REMOTE_TEMP_DIR/.certificate-verification"

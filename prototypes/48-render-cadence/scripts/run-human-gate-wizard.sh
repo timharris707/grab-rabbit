@@ -957,8 +957,8 @@ staged_app_manifest_is_exact() {
       and .signing.code_directory_cdhash == $cdhash
       and .signing.hardened_runtime == true and .cleanup_owner == "human-gate-wizard"' \
       "$STAGING_MANIFEST" >/dev/null || return 1
-  actual_name=$(sed -n 's/^Authority=//p' <<<"$details" | head -1)
-  actual_team=$(sed -n 's/^TeamIdentifier=//p' <<<"$details" | head -1)
+  actual_name=$(sed -n '/^Authority=/{s///;p;q;}' <<<"$details")
+  actual_team=$(sed -n '/^TeamIdentifier=/{s///;p;q;}' <<<"$details")
   grep -Eq '^CodeDirectory .* flags=.*\(runtime\)' <<<"$details" || return 1
   actual_bundle=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$STABLE_APP/Contents/Info.plist") || return 1
   [[ "$actual_name" == "$APPROVED_NAME" && "$actual_team" == "$APPROVED_TEAM" \

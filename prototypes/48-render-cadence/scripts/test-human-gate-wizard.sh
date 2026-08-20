@@ -18,6 +18,12 @@ awk '/^banner "Grab Rabbit render-cadence human gate"/ { exit } { print }' "$wiz
 source "$harness"
 trap 'rm -rf "$test_root"' EXIT
 
+if rg -n 'sed -n .*\^Authority=.*\| head -1|sed -n .*\^TeamIdentifier=.*\| head -1' \
+    "$wizard" "$script_dir/stage-signed-app-to-mini.sh" "$script_dir/build-live-app.sh" \
+    >"$test_root/pipefail-signing-detail-races.txt"; then
+  fail "a signing-detail check can fail under pipefail after head closes its input"
+fi
+
 declare -F run_live_probe >/dev/null \
   || fail "the wizard has no LaunchServices seam for the signed probe"
 

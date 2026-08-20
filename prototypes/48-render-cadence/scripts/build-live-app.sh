@@ -62,8 +62,8 @@ codesign --verify --strict --verbose=2 "$app"
 identity_dir=$(mktemp -d /tmp/grab-rabbit-live-identity.XXXXXX)
 trap 'rm -rf "$identity_dir"' EXIT
 details=$(codesign -dvvv "$app" 2>&1)
-actual_team=$(sed -n 's/^TeamIdentifier=//p' <<<"$details" | head -1)
-actual_name=$(sed -n 's/^Authority=//p' <<<"$details" | head -1)
+actual_team=$(sed -n '/^TeamIdentifier=/{s///;p;q;}' <<<"$details")
+actual_name=$(sed -n '/^Authority=/{s///;p;q;}' <<<"$details")
 codesign -d --extract-certificates="$identity_dir/cert-" "$app"
 actual_sha1=$(openssl x509 -inform DER -in "$identity_dir/cert-0" -noout -fingerprint -sha1 \
     | cut -d= -f2 | tr -d ':')

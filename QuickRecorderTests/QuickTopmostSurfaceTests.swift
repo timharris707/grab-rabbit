@@ -4,23 +4,25 @@ import XCTest
 final class QuickTopmostSurfaceTests: XCTestCase {
     func testBothSurfacesReadOneStateAndCannotDisagree() {
         let state = QuickTopmostRecordingState()
-        let start = Date(timeIntervalSinceReferenceDate: 0)
+        var elapsed: TimeInterval = 0
+        state.clock = { QuickTopmostClockReading(elapsed: elapsed, isPaused: false) }
 
-        let idlePill = state.snapshot(at: start)
-        let idleIndicator = state.snapshot(at: start)
+        let idlePill = state.snapshot()
+        let idleIndicator = state.snapshot()
         XCTAssertEqual(idlePill, idleIndicator)
         XCTAssertFalse(idlePill.isRecording)
 
-        state.begin(windowTitle: "Quarterly Dashboard", at: start)
-        let livePill = state.snapshot(at: start.addingTimeInterval(7))
-        let liveIndicator = state.snapshot(at: start.addingTimeInterval(7))
+        state.begin(windowTitle: "Quarterly Dashboard")
+        elapsed = 7
+        let livePill = state.snapshot()
+        let liveIndicator = state.snapshot()
         XCTAssertEqual(livePill, liveIndicator)
         XCTAssertTrue(livePill.isRecording)
         XCTAssertEqual(livePill.windowTitle, "Quarterly Dashboard")
         XCTAssertEqual(livePill.elapsed, "0:07")
 
         state.end()
-        XCTAssertEqual(state.snapshot(at: start.addingTimeInterval(9)), idleIndicator)
+        XCTAssertEqual(state.snapshot(), idleIndicator)
     }
 
     func testStoppingFromEitherSurfaceFiresTheSameStopFunction() {
@@ -31,7 +33,7 @@ final class QuickTopmostSurfaceTests: XCTestCase {
         state.requestStop()
         XCTAssertEqual(stopCount, 0)
 
-        state.begin(windowTitle: "Quarterly Dashboard", at: Date())
+        state.begin(windowTitle: "Quarterly Dashboard")
         state.requestStop() // pill
         state.requestStop() // indicator
         XCTAssertEqual(stopCount, 2)
@@ -39,6 +41,75 @@ final class QuickTopmostSurfaceTests: XCTestCase {
         state.end()
         state.requestStop()
         XCTAssertEqual(stopCount, 2)
+    }
+
+    func testPausingFromTheIndicatorPausesTheRecording() {
+        let state = QuickTopmostRecordingState()
+        var isPaused = false
+        var pauseCount = 0
+        state.pauseHandler = {
+            pauseCount += 1
+            isPaused.toggle()
+        }
+        state.clock = { QuickTopmostClockReading(elapsed: 12, isPaused: isPaused) }
+
+        state.requestPause()
+        XCTAssertEqual(pauseCount, 0)
+
+        state.begin(windowTitle: "Quarterly Dashboard")
+        state.requestPause()
+        XCTAssertEqual(pauseCount, 1)
+        XCTAssertTrue(state.snapshot().isPaused)
+
+        state.requestPause()
+        XCTAssertEqual(pauseCount, 2)
+        XCTAssertFalse(state.snapshot().isPaused)
+
+        state.end()
+        state.requestPause()
+        XCTAssertEqual(pauseCount, 2)
+    }
+
+    func testSurfacesStillCannotDisagreeWhilePaused() {
+        let state = QuickTopmostRecordingState()
+        var isPaused = false
+        var elapsed: TimeInterval = 12
+        state.pauseHandler = { isPaused.toggle() }
+        state.clock = { QuickTopmostClockReading(elapsed: elapsed, isPaused: isPaused) }
+        state.begin(windowTitle: "Quarterly Dashboard")
+
+        state.requestPause()
+        let pausedPill = state.snapshot()
+        let pausedIndicator = state.snapshot()
+        XCTAssertEqual(pausedPill, pausedIndicator)
+        XCTAssertTrue(pausedPill.isPaused)
+        XCTAssertEqual(pausedPill.elapsed, "0:12")
+
+        // The app's clock stops while paused, so both readouts freeze together.
+        let stillPill = state.snapshot()
+        XCTAssertEqual(stillPill, pausedIndicator)
+
+        state.requestPause()
+        elapsed = 20
+        XCTAssertEqual(state.snapshot(), state.snapshot())
+        XCTAssertFalse(state.snapshot().isPaused)
+        XCTAssertEqual(state.snapshot().elapsed, "0:20")
+    }
+
+    func testAutoStopEnforcesTheConfiguredLimitOnBothStatusBarBranches() throws {
+        XCTAssertFalse(CaptureAutoStop.shouldStop(autoStopMinutes: 0, elapsed: 6000))
+        XCTAssertFalse(CaptureAutoStop.shouldStop(autoStopMinutes: 5, elapsed: 299))
+        XCTAssertTrue(CaptureAutoStop.shouldStop(autoStopMinutes: 5, elapsed: 300))
+        XCTAssertTrue(CaptureAutoStop.shouldStop(autoStopMinutes: 5, elapsed: 900))
+
+        // Both recording branches tick through the same handler, so a Quick Topmost
+        // recording cannot outlive the configured limit.
+        let statusBarSource = try projectSource("QuickRecorder/ViewModel/StatusBar.swift")
+        XCTAssertEqual(occurrences(of: ".onReceive(updateTimer) { _ in recordingTick() }", in: statusBarSource), 1)
+        XCTAssertEqual(occurrences(of: "recordingTick()", in: statusBarSource), 3)
+        XCTAssertEqual(occurrences(of: "CaptureAutoStop.shouldStop(", in: statusBarSource), 1)
+        XCTAssertFalse(statusBarSource.contains("SCContext.autoStop != 0"))
+        XCTAssertTrue(statusBarSource.contains("Recording Controller"))
     }
 
     func testPillWindowIsExcludedFromTheCapturedOutput() {
@@ -71,9 +142,12 @@ final class QuickTopmostSurfaceTests: XCTestCase {
         let surfaces = try projectSource("QuickRecorder/ViewModel/QuickTopmostSurfaces.swift")
 
         XCTAssertEqual(occurrences(of: "state.requestStop()", in: surfaces), 2)
+        // Pause belongs to the menu-bar capsule only; the pill stays Stop-only.
+        XCTAssertEqual(occurrences(of: "state.requestPause()", in: surfaces), 1)
         XCTAssertFalse(surfaces.contains("SCContext.stopRecording"))
+        XCTAssertFalse(surfaces.contains("SCContext.pauseRecording"))
         XCTAssertFalse(surfaces.contains("DateComponentsFormatter"))
-        XCTAssertEqual(occurrences(of: "state.snapshot(at: Date()).elapsed", in: surfaces), 2)
+        XCTAssertEqual(occurrences(of: "snapshot = state.snapshot()", in: surfaces), 2)
         XCTAssertTrue(surfaces.contains("QuickTopmostPillWindowSettings.excludedFromCapture.apply(to: panel)"))
     }
 
@@ -87,6 +161,11 @@ final class QuickTopmostSurfaceTests: XCTestCase {
             occurrences(of: "QuickTopmostRecordingState.shared.stopHandler = { SCContext.stopRecording() }", in: appSource),
             1
         )
+        XCTAssertEqual(
+            occurrences(of: "QuickTopmostRecordingState.shared.pauseHandler = { SCContext.pauseRecording() }", in: appSource),
+            1
+        )
+        XCTAssertTrue(appSource.contains("QuickTopmostClockReading(elapsed: SCContext.getRecordingElapsed(), isPaused: SCContext.isPaused)"))
         XCTAssertTrue(appSource.contains("quickTopmost: QuickTopmostPillTarget("))
         XCTAssertTrue(engineSource.contains("QuickTopmostPresence.shared.activate(quickTopmost)"))
         XCTAssertTrue(contextSource.contains("QuickTopmostPresence.shared.dismiss()"))

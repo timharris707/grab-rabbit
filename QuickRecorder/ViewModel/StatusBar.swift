@@ -24,12 +24,14 @@ struct StatusBarItem: View {
     @AppStorage("miniStatusBar") private var miniStatusBar: Bool = false
     //@AppStorage("highlightMouse") private var highlightMouse: Bool = false
     private var appDelegate = AppDelegate.shared
-    
+    @ObservedObject private var quickTopmost = QuickTopmostRecordingState.shared
+
     var body: some View {
         HStack(spacing: 0) {
-            if QuickTopmostRecordingState.shared.isRecording {
+            if quickTopmost.isRecording {
                 QuickTopmostIndicatorView()
                     .padding([.leading, .trailing], 4)
+                    .onReceive(updateTimer) { _ in recordingTick() }
             } else if SCContext.streamType != nil {
                 ZStack {
                     Rectangle()
@@ -140,21 +142,7 @@ struct StatusBarItem: View {
                 }
                 .onReceive(updateTimer) { _ in
                     recordingLength = SCContext.getRecordingLength()
-                    let timePassed = SCContext.getRecordingElapsed()
-                    if SCContext.autoStop != 0 && timePassed / 60 >= CGFloat(SCContext.autoStop) { SCContext.stopRecording() }
-                    if let visible = statusBarItem.button?.window?.occlusionState.contains(.visible) {
-                        if visible { NSApp.windows.first(where: { $0.title == "Recording Controller".local })?.close(); return }
-                        if SCContext.streamType != nil  && !visible && !(NSApp.windows.first(where: { $0.title == "Recording Controller".local })?.isVisible ?? false) {
-                            guard let screen = SCContext.getScreenWithMouse() else { return }
-                            let width = getStatusBarWidth()
-                            let wX = (screen.frame.width - width) / 2
-                            let contentView = NSHostingView(rootView: StatusBarItem())
-                            contentView.frame = NSRect(x: wX, y: screen.visibleFrame.maxY, width: width, height: 24)
-                            controlPanel.setFrame(contentView.frame, display: true)
-                            controlPanel.contentView = contentView
-                            controlPanel.makeKeyAndOrderFront(nil)
-                        }
-                    }
+                    recordingTick()
                 }
                 if !miniStatusBar {
                     if SCContext.streamType != .systemaudio {
@@ -221,6 +209,27 @@ struct StatusBarItem: View {
             isHovering = hovering
             hideMousePointer = hovering
             hideScreenMagnifier = hovering
+        }
+    }
+}
+
+// Every recording branch of the status bar runs this on each tick, so the configured time
+// limit and the fallback controller behave the same whichever surface is showing.
+func recordingTick() {
+    if CaptureAutoStop.shouldStop(autoStopMinutes: SCContext.autoStop, elapsed: SCContext.getRecordingElapsed()) {
+        SCContext.stopRecording()
+    }
+    if let visible = statusBarItem.button?.window?.occlusionState.contains(.visible) {
+        if visible { NSApp.windows.first(where: { $0.title == "Recording Controller".local })?.close(); return }
+        if SCContext.streamType != nil  && !visible && !(NSApp.windows.first(where: { $0.title == "Recording Controller".local })?.isVisible ?? false) {
+            guard let screen = SCContext.getScreenWithMouse() else { return }
+            let width = getStatusBarWidth()
+            let wX = (screen.frame.width - width) / 2
+            let contentView = NSHostingView(rootView: StatusBarItem())
+            contentView.frame = NSRect(x: wX, y: screen.visibleFrame.maxY, width: width, height: 24)
+            controlPanel.setFrame(contentView.frame, display: true)
+            controlPanel.contentView = contentView
+            controlPanel.makeKeyAndOrderFront(nil)
         }
     }
 }

@@ -75,8 +75,8 @@ h1{
 .pill-sep{opacity:.34}
 .pill-meta{opacity:.78;font-size:12px}
 .btn-stop{
-  font-family:inherit;font-size:11.5px;font-weight:600;border-radius:999px;border:0;
-  padding:4px 9px;background:var(--live);color:#fff;
+  display:inline-block;font-family:inherit;font-size:11.5px;font-weight:600;
+  border-radius:999px;padding:4px 9px;background:var(--live);color:#fff;
 }
 
 .menubar{
@@ -139,7 +139,7 @@ h1{
             <span class="pill-label">Recording this window</span>
             <span class="pill-sep">&middot;</span>
             <span class="pill-meta num">0:07</span>
-            <button class="btn-stop" type="button">Stop</button>
+            <span class="btn-stop">Stop</span>
           </span>
         </div>
       </div>
@@ -157,7 +157,8 @@ h1{
                 <span class="rec-dot"></span>
                 <span>Quick Topmost</span>
                 <span class="num">0:07</span>
-                <span class="stop-glyph">&#9632;</span>
+                <span class="stop-glyph" role="img" aria-label="Pause">&#10074;&#10074;</span>
+                <span class="stop-glyph" role="img" aria-label="Stop">&#9632;</span>
               </span>
               <span class="mb-clock">Thu 2:41 PM</span>
             </span>
@@ -173,6 +174,7 @@ h1{
         <span class="k">Records</span><span class="v">The front window</span>
         <span class="k">Exterior</span><span class="v">Transparent or Opaque</span>
         <span class="k">Saves to</span><span class="v">Your save folder</span>
+        <span class="k">Pause</span><span class="v">Menu bar</span>
       </div>
 
       <h2>Stop</h2>

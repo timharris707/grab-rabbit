@@ -622,6 +622,7 @@ h1{
       document.getElementById("pillA").classList.remove("saved");
       document.getElementById("pillBtn").textContent = "Stop";
       document.getElementById("pillDot").className = "rec-dot";
+      document.getElementById("pillDot").textContent = "";
     } else if(phase === "stopped"){
       document.getElementById("pillLabel").textContent = "Saved to " + FOLDER;
       document.getElementById("pillMeta").textContent = FILE + "  ·  " + s;

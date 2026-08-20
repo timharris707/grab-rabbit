@@ -48,33 +48,42 @@ enum QuickTopmostElapsed {
     }
 }
 
+/// The recording clock the surfaces read: the app's own elapsed time and pause flag, never
+/// a second clock of their own.
+struct QuickTopmostClockReading: Equatable {
+    let elapsed: TimeInterval
+    let isPaused: Bool
+}
+
 /// The one recording state both Quick Topmost surfaces read: the on-window pill and the
-/// menu-bar indicator. Both render from `snapshot(at:)` and both stop through
-/// `requestStop()`, so they cannot disagree and cannot stop differently.
+/// menu-bar indicator. Both render from `snapshot()` and both act through `requestStop()`
+/// and `requestPause()`, so they cannot disagree and cannot stop or pause differently.
 final class QuickTopmostRecordingState: ObservableObject {
     struct Snapshot: Equatable {
         let isRecording: Bool
+        let isPaused: Bool
         let windowTitle: String
         let elapsed: String
     }
 
     static let shared = QuickTopmostRecordingState()
 
-    @Published private(set) var startedAt: Date?
+    @Published private(set) var isRecording = false
     @Published private(set) var windowTitle = ""
 
-    /// Installed once at launch with the app's single stop function.
+    /// Installed once at launch with the app's single stop and pause functions and its
+    /// recording clock.
     var stopHandler: (() -> Void)?
+    var pauseHandler: (() -> Void)?
+    var clock: () -> QuickTopmostClockReading = { QuickTopmostClockReading(elapsed: 0, isPaused: false) }
 
-    var isRecording: Bool { startedAt != nil }
-
-    func begin(windowTitle: String, at date: Date) {
+    func begin(windowTitle: String) {
         self.windowTitle = windowTitle
-        startedAt = date
+        isRecording = true
     }
 
     func end() {
-        startedAt = nil
+        isRecording = false
         windowTitle = ""
     }
 
@@ -83,14 +92,27 @@ final class QuickTopmostRecordingState: ObservableObject {
         stopHandler?()
     }
 
-    func snapshot(at date: Date) -> Snapshot {
-        guard let startedAt else {
-            return Snapshot(isRecording: false, windowTitle: "", elapsed: QuickTopmostElapsed.text(0))
+    func requestPause() {
+        guard isRecording else { return }
+        pauseHandler?()
+        objectWillChange.send()
+    }
+
+    func snapshot() -> Snapshot {
+        guard isRecording else {
+            return Snapshot(
+                isRecording: false,
+                isPaused: false,
+                windowTitle: "",
+                elapsed: QuickTopmostElapsed.text(0)
+            )
         }
+        let reading = clock()
         return Snapshot(
             isRecording: true,
+            isPaused: reading.isPaused,
             windowTitle: windowTitle,
-            elapsed: QuickTopmostElapsed.text(date.timeIntervalSince(startedAt))
+            elapsed: QuickTopmostElapsed.text(reading.elapsed)
         )
     }
 }

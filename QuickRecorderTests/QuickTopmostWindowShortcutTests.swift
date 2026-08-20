@@ -46,8 +46,8 @@ final class QuickTopmostWindowShortcutTests: XCTestCase {
         var filter: String? = "stale filter"
         var screenArea: String? = "stale area"
         var streamType: String? = "stale type"
-        var recordMicrophone = true
-        var recordSystemAudio = false
+        let recordMicrophone = true
+        let recordSystemAudio = false
         var presentationCount = 0
         let handler = QuickTopmostWindowFailureHandler(
             captureStateIsIdle: { sessions.isIdle },
@@ -454,7 +454,7 @@ private final class ShortcutHarness {
         startCapture: { [unowned self] _, target in
             startedTargets.append(target)
             globalTarget = target
-            outputReservations.append("reserved")
+            recordCaptureSideEffects(for: target)
             mediaChoicesAtStart.append(
                 TestMediaChoices(microphone: recordMicrophone, systemAudio: recordSystemAudio)
             )
@@ -476,6 +476,19 @@ private final class ShortcutHarness {
 
     var captureStartCount: Int { startedTargets.count }
     var visibleErrorCount: Int { failures.count }
+
+    // Mirrors the artifacts a real capture start reserves via
+    // RecordingOutputJob.reserve: a session reservation, a staging directory,
+    // sideband intermediates, and the final output URL. Recording them here is
+    // what lets the fail-closed tests assert that none of them exist.
+    private func recordCaptureSideEffects(for target: TestTarget) {
+        let base = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("quick-topmost-\(target.windowID)", isDirectory: true)
+        outputReservations.append("reserved-\(target.windowID)")
+        stagingDirectories.append(base)
+        sidebands.append(base.appendingPathComponent("sideband.caf"))
+        outputs.append(base.appendingPathComponent("output.mp4"))
+    }
 
     func runScheduledRetries() {
         while !scheduledRetries.isEmpty {

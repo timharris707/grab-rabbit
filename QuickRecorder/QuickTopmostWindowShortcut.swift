@@ -118,6 +118,10 @@ final class QuickTopmostWindowShortcutAdapter<Content, Target> {
     private let startCapture: (Content, Target) -> Void
     private let showFailure: (QuickTopmostWindowShortcutFailure) -> Void
 
+    // Not thread-safe by design: every entry point (trigger, refresh completion,
+    // retry, attempt timeout) must arrive on the main thread as a serial,
+    // non-reentrant callback. Production wiring satisfies this by hopping each
+    // callback onto the main queue before it reaches the adapter.
     private var isResolving = false
     private var attemptsMade = 0
     private var attemptGeneration: UInt64 = 0
@@ -205,7 +209,10 @@ final class QuickTopmostWindowShortcutAdapter<Content, Target> {
 
     private func finish(with failure: QuickTopmostWindowShortcutFailure) {
         activeAttemptGeneration = nil
-        showFailure(failure)
+        // Release the resolving latch before presenting, because production's
+        // showFailure ends in NSAlert.runModal() and would otherwise hold the
+        // adapter busy for as long as the alert is on screen.
         isResolving = false
+        showFailure(failure)
     }
 }

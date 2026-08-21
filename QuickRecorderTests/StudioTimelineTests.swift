@@ -164,4 +164,30 @@ final class StudioTimelineTests: XCTestCase {
         XCTAssertEqual(try StudioTestBuffers.timingEntries(of: retimed).count, 1)
         XCTAssertEqual(retimed.presentationTimeStamp.seconds, 0.5, accuracy: 1e-6)
     }
+
+    // The shape a real audio capture callback delivers: a long run of samples
+    // described by one timing entry. Reading the entry count as the sample count
+    // hands Core Media a mostly zeroed timing array, and the buffer that comes back
+    // has no usable duration. This test is the guard on that.
+    func testRetimeKeepsTheDurationOfACaptureShapedBuffer() throws {
+        let sampleCount = 1024
+        let sampleRate = 48_000.0
+        let sample = try StudioTestBuffers.makeAudioSample(
+            sampleCount: sampleCount,
+            startSeconds: 300,
+            sampleRate: sampleRate,
+            timingEntryCount: 1
+        )
+        XCTAssertEqual(try StudioTestBuffers.timingEntries(of: sample).count, 1)
+
+        let retimed = try XCTUnwrap(StudioAudioRetimer.retime(sample, toSeconds: 2))
+
+        let duration = CMSampleBufferGetDuration(retimed)
+        XCTAssertTrue(duration.isValid, "the retimed buffer lost a valid duration")
+        XCTAssertTrue(duration.isNumeric, "the retimed buffer duration is not a number")
+        XCTAssertFalse(duration.seconds.isNaN, "the retimed buffer duration is NaN")
+        XCTAssertEqual(duration.seconds, Double(sampleCount) / sampleRate, accuracy: 1e-9)
+        XCTAssertEqual(CMSampleBufferGetNumSamples(retimed), sampleCount)
+        XCTAssertEqual(retimed.presentationTimeStamp.seconds, 2, accuracy: 1e-6)
+    }
 }

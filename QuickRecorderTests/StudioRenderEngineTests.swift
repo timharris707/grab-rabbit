@@ -17,10 +17,13 @@ final class StudioRenderEngineTests: XCTestCase {
         let frameInterval: TimeInterval
     }
 
-    private func makeHarness(requiresWindow: Bool = false) -> Harness {
+    private func makeHarness(
+        requiresWindow: Bool = false,
+        framesPerSecond: Int? = nil
+    ) -> Harness {
         let configuration = StudioRenderConfiguration(
             canvas: canvas,
-            framesPerSecond: framesPerSecond,
+            framesPerSecond: framesPerSecond ?? self.framesPerSecond,
             requiresWindow: requiresWindow
         )
         let clock = StudioTestClock()
@@ -121,6 +124,28 @@ final class StudioRenderEngineTests: XCTestCase {
         XCTAssertEqual(harness.writer.appendedVideoTimes.count, 2)
     }
 
+    // The same threshold at a second frame rate, so a regression to a hardcoded
+    // sixtieth of a second would be caught here.
+    func testRateGuardTracksTheConfiguredFrameRateAtThirtyFramesPerSecond() throws {
+        let harness = makeHarness(framesPerSecond: 30)
+        try feedCamera(harness)
+        XCTAssertEqual(harness.frameInterval, 1.0 / 30, accuracy: 1e-12)
+
+        harness.clock.advance(seconds: harness.frameInterval)
+        harness.engine.renderOnce()
+
+        // A gap that clears the guard at 60 fps is still too early at 30 fps.
+        harness.clock.advance(seconds: 1.0 / 60)
+        XCTAssertEqual(harness.engine.renderOnce(), .skippedRateGuard)
+        XCTAssertEqual(harness.writer.appendedVideoTimes.count, 1)
+
+        harness.clock.advance(seconds: harness.frameInterval * 0.75)
+        guard case .appended = harness.engine.renderOnce() else {
+            return XCTFail("a trigger past the 30 fps threshold must be admitted")
+        }
+        XCTAssertEqual(harness.writer.appendedVideoTimes.count, 2)
+    }
+
     func testTheFirstFrameIsNotHeldBackByTheRateGuard() throws {
         let harness = makeHarness()
         try feedCamera(harness)
@@ -143,6 +168,47 @@ final class StudioRenderEngineTests: XCTestCase {
         XCTAssertEqual(harness.engine.renderOnce(), .rejectedTimestamp)
         XCTAssertEqual(harness.writer.appendedVideoTimes.count, 1)
         XCTAssertNil(harness.engine.stopReason)
+    }
+
+    // Admission is reserved before the composite, so a frame that never reaches the
+    // writer has to put the guard state back or the next trigger would be rejected
+    // against a timestamp that was never written.
+    func testASkippedFrameReleasesItsAdmissionReservation() throws {
+        let harness = makeHarness()
+        try feedCamera(harness)
+
+        harness.clock.advance(seconds: 1)
+        harness.writer.isReadyForVideo = false
+        XCTAssertEqual(harness.engine.renderOnce(), .skippedWriterNotReady)
+
+        harness.writer.isReadyForVideo = true
+        XCTAssertEqual(harness.engine.renderOnce(), .appended(
+            StudioTimeline.presentationTime(seconds: 1)
+        ))
+        XCTAssertEqual(harness.writer.appendedVideoTimes.count, 1)
+    }
+
+    func testASkippedAudioBufferReleasesItsAdmissionReservation() throws {
+        let harness = makeHarness()
+        harness.clock.advance(seconds: 1)
+        harness.writer.readyTracks = []
+
+        XCTAssertEqual(
+            harness.engine.receiveAudio(
+                try StudioTestBuffers.makeAudioSample(sampleCount: 4, startSeconds: 0),
+                track: .systemAudio
+            ),
+            .skippedWriterNotReady
+        )
+
+        harness.writer.readyTracks = [.systemAudio]
+        XCTAssertEqual(
+            harness.engine.receiveAudio(
+                try StudioTestBuffers.makeAudioSample(sampleCount: 4, startSeconds: 0),
+                track: .systemAudio
+            ),
+            .appended(StudioTimeline.presentationTime(seconds: 1))
+        )
     }
 
     func testWriterNotReadySkipsTheFrameWithoutStoppingTheEngine() throws {

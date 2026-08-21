@@ -144,6 +144,14 @@ final class StudioRenderEngine {
 
     // MARK: - Render
 
+    /// Composites and writes one frame.
+    ///
+    /// Admission, meaning the rate guard and the monotonic timestamp guard, is
+    /// checked and reserved in one locked step before the composite, and rolled back
+    /// under the same lock on any path that does not append. Two overlapping calls
+    /// therefore cannot both pass admission and reach the writer out of order.
+    /// Driving this from one serial queue is still the intended shape, because the
+    /// compositor is not required to be reentrant.
     @discardableResult
     func renderOnce() -> StudioRenderOutcome {
         guard stopReason == nil else { return .skippedStopped }
@@ -157,24 +165,24 @@ final class StudioRenderEngine {
         }
 
         let seconds = timeline.activeElapsedSeconds(at: now)
-        let admission = stateLock.withLock { () -> StudioRenderOutcome? in
-            if let lastVideoNanoseconds,
-               now >= lastVideoNanoseconds,
-               Double(now - lastVideoNanoseconds) / 1_000_000_000
-                   < configuration.frameInterval * Self.rateGuardFraction {
-                return .skippedRateGuard
-            }
-            return seconds > lastVideoSeconds ? nil : .rejectedTimestamp
+        let reservation: StudioVideoReservation
+        switch reserveVideoAdmission(seconds: seconds, at: now) {
+        case .refused(let outcome): return outcome
+        case .reserved(let reserved): reservation = reserved
         }
-        if let admission { return admission }
 
-        guard writerSurface.isReadyForVideo else { return .skippedWriterNotReady }
+        guard writerSurface.isReadyForVideo else {
+            return release(reservation, returning: .skippedWriterNotReady)
+        }
 
         let outputBuffer: CVPixelBuffer
         do {
             outputBuffer = try writerSurface.makeOutputPixelBuffer()
         } catch {
-            return stopAndReport(.writerBufferUnavailable(String(describing: error)))
+            return release(
+                reservation,
+                returning: stopAndReport(.writerBufferUnavailable(String(describing: error)))
+            )
         }
 
         compositor.compose(
@@ -187,18 +195,63 @@ final class StudioRenderEngine {
         // that is actually about to be written is scanned again before it leaves.
         let renderedMarkers = StudioPrivacySentinel.countMarkerPixels(in: outputBuffer)
         guard renderedMarkers == 0 else {
-            return stopAndReport(.privacySentinelRendered(pixels: renderedMarkers))
+            return release(
+                reservation,
+                returning: stopAndReport(.privacySentinelRendered(pixels: renderedMarkers))
+            )
         }
 
         let presentationTime = StudioTimeline.presentationTime(seconds: seconds)
         guard writerSurface.appendVideo(outputBuffer, at: presentationTime) else {
-            return stopAndReport(.videoAppendFailed)
-        }
-        stateLock.withLock {
-            lastVideoSeconds = seconds
-            lastVideoNanoseconds = now
+            return release(reservation, returning: stopAndReport(.videoAppendFailed))
         }
         return .appended(presentationTime)
+    }
+
+    // The admission guards and the state they advance are one step, so a second
+    // caller cannot slip past the guards while the first is still compositing. The
+    // reservation carries the state to put back if this frame never gets appended.
+    private struct StudioVideoReservation {
+        let previousSeconds: Double
+        let previousNanoseconds: UInt64?
+    }
+
+    private enum StudioVideoAdmission {
+        case reserved(StudioVideoReservation)
+        case refused(StudioRenderOutcome)
+    }
+
+    private func reserveVideoAdmission(
+        seconds: Double,
+        at now: UInt64
+    ) -> StudioVideoAdmission {
+        stateLock.withLock {
+            if let lastVideoNanoseconds,
+               now >= lastVideoNanoseconds,
+               Double(now - lastVideoNanoseconds) / 1_000_000_000
+                   < configuration.frameInterval * Self.rateGuardFraction {
+                return .refused(.skippedRateGuard)
+            }
+            guard seconds > lastVideoSeconds else { return .refused(.rejectedTimestamp) }
+            let reservation = StudioVideoReservation(
+                previousSeconds: lastVideoSeconds,
+                previousNanoseconds: lastVideoNanoseconds
+            )
+            lastVideoSeconds = seconds
+            lastVideoNanoseconds = now
+            return .reserved(reservation)
+        }
+    }
+
+    private func release(
+        _ reservation: StudioVideoReservation,
+        returning outcome: StudioRenderOutcome
+    ) -> StudioRenderOutcome {
+        stateLock.withLock {
+            lastVideoSeconds = reservation.previousSeconds
+            lastVideoNanoseconds = reservation.previousNanoseconds
+        }
+        return outcome
     }
 
     // MARK: - Audio
@@ -209,17 +262,29 @@ final class StudioRenderEngine {
         guard !timeline.isPaused else { return .skippedPaused }
         guard sample.isValid else { return .invalidSample }
 
+        // The per-track guard is reserved the same way the video guard is, so two
+        // callbacks on one track cannot both be admitted at the same instant.
         let seconds = timeline.activeElapsedSeconds(at: timeline.nowNanoseconds)
-        let accepted = stateLock.withLock {
-            seconds > (lastAudioSeconds[track] ?? -.infinity)
+        let previousSeconds = stateLock.withLock { () -> Double? in
+            let previous = lastAudioSeconds[track] ?? -.infinity
+            guard seconds > previous else { return nil }
+            lastAudioSeconds[track] = seconds
+            return previous
         }
-        guard accepted else { return .rejectedTimestamp }
-        guard writerSurface.isReady(for: track) else { return .skippedWriterNotReady }
+        guard let previousSeconds else { return .rejectedTimestamp }
+        func release(_ outcome: StudioAudioOutcome) -> StudioAudioOutcome {
+            stateLock.withLock { lastAudioSeconds[track] = previousSeconds }
+            return outcome
+        }
+        guard writerSurface.isReady(for: track) else {
+            return release(.skippedWriterNotReady)
+        }
         guard let retimed = StudioAudioRetimer.retime(sample, toSeconds: seconds) else {
-            return .retimeFailed
+            return release(.retimeFailed)
         }
-        guard writerSurface.appendAudio(retimed, to: track) else { return .appendFailed }
-        stateLock.withLock { lastAudioSeconds[track] = seconds }
+        guard writerSurface.appendAudio(retimed, to: track) else {
+            return release(.appendFailed)
+        }
         return .appended(retimed.presentationTimeStamp)
     }
 

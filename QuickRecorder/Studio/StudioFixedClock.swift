@@ -24,6 +24,10 @@ final class StudioFixedClockTriggerSource: StudioRenderTriggerSource {
     private let lock = NSLock()
     private var timer: DispatchSourceTimer?
 
+    /// - Parameter queue: must be a private serial queue. The timer handler renders
+    ///   a frame and the compositor is not required to be reentrant, so a concurrent
+    ///   queue would let two composites overlap. A queue shared with the capture
+    ///   sample callbacks would also let a slow render stall ingress.
     init(queue: DispatchQueue) {
         self.queue = queue
     }

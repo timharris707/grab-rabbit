@@ -219,12 +219,15 @@ enum StudioTestBuffers {
         return try makeVideoSample(from: buffer, presentationSeconds: presentationSeconds)
     }
 
-    // A 16-bit mono PCM buffer carrying one timing entry per sample, so a retime can
-    // be checked for preserving the offsets between samples inside the buffer.
+    // A 16-bit mono PCM buffer. By default it carries one timing entry per sample so
+    // a retime can be checked for preserving the offsets between samples inside the
+    // buffer. Pass a timing entry count of 1 for the shape a real capture callback
+    // delivers: many samples described by a single entry.
     static func makeAudioSample(
         sampleCount: Int,
         startSeconds: Double,
-        sampleRate: Double = 48_000
+        sampleRate: Double = 48_000,
+        timingEntryCount: Int? = nil
     ) throws -> CMSampleBuffer {
         var streamDescription = AudioStreamBasicDescription(
             mSampleRate: sampleRate,
@@ -277,14 +280,15 @@ enum StudioTestBuffers {
 
         let sampleDuration = CMTime(value: 1, timescale: CMTimeScale(sampleRate))
         let start = CMTime(seconds: startSeconds, preferredTimescale: CMTimeScale(sampleRate))
-        var timing = (0..<sampleCount).map { index in
+        let entryCount = timingEntryCount ?? sampleCount
+        var timing = (0..<entryCount).map { index in
             CMSampleTimingInfo(
                 duration: sampleDuration,
                 presentationTimeStamp: start + CMTimeMultiply(sampleDuration, multiplier: Int32(index)),
                 decodeTimeStamp: .invalid
             )
         }
-        var sampleSizes = [Int](repeating: 2, count: sampleCount)
+        var sampleSizes = [Int](repeating: 2, count: 1)
 
         var sample: CMSampleBuffer?
         let status = CMSampleBufferCreate(
@@ -295,9 +299,9 @@ enum StudioTestBuffers {
             refcon: nil,
             formatDescription: formatDescription,
             sampleCount: sampleCount,
-            sampleTimingEntryCount: sampleCount,
+            sampleTimingEntryCount: entryCount,
             sampleTimingArray: &timing,
-            sampleSizeEntryCount: sampleCount,
+            sampleSizeEntryCount: 1,
             sampleSizeArray: &sampleSizes,
             sampleBufferOut: &sample
         )

@@ -265,11 +265,11 @@ struct HotkeyView: View {
                 SDivider()
                 SItem(label: "Record Current Screen") { KeyboardShortcuts.Recorder("", name: .startWithScreen) }
                 SDivider()
-                SItem(label: "Record Topmost Window") { KeyboardShortcuts.Recorder("", name: .startWithWindow) }
+                SItem(label: "Quick Topmost") { KeyboardShortcuts.Recorder("", name: .startWithWindow) }
                 SDivider()
                 SItem(label: "Select Area to Record") { KeyboardShortcuts.Recorder("", name: .startWithArea) }
             }
-            SGroupBox(label: "Quick Topmost Window") {
+            SGroupBox(label: "Quick Topmost") {
                 SPicker("Exterior", selection: $windowCaptureMode) {
                     ForEach(WindowCaptureMode.allCases, id: \.self) { mode in
                         Text(mode.title).tag(mode)

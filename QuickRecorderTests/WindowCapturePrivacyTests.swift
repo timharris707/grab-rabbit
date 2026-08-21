@@ -2590,7 +2590,8 @@ final class WindowCapturePrivacyTests: XCTestCase {
         XCTAssertTrue(selectorSource.contains("windowCaptureMode: windowCaptureMode"))
         XCTAssertTrue(appSource.contains("windowCaptureMode: windowCaptureMode"))
         XCTAssertTrue(appSource.contains("fastStart: true"))
-        XCTAssertTrue(settingsSource.contains("Quick Topmost Window"))
+        XCTAssertTrue(settingsSource.contains("SItem(label: \"Quick Topmost\")"))
+        XCTAssertFalse(settingsSource.contains("Quick Topmost Window"))
         XCTAssertTrue(selectorSource.contains("Single-window exterior"))
 
         XCTAssertFalse(selectorSource.contains("recordWinSound ="))

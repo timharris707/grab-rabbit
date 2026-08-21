@@ -127,7 +127,7 @@ class SCContext {
     }
 
     static func invalidateQuickTopmostContentAfterTimeout() {
-        contentState.apply(.failure(.unavailable("Quick Topmost Window content refresh timed out.")))
+        contentState.apply(.failure(.unavailable("Quick Topmost content refresh timed out.")))
     }
 
     static func fetchWindowSelectorContent(
@@ -478,6 +478,7 @@ class SCContext {
         isMagnifierEnabled = false
         mousePointer.orderOut(nil)
         screenMagnifier.orderOut(nil)
+        QuickTopmostPresence.shared.dismiss()
         AppDelegate.shared.stopGlobalMouseMonitor()
 
         if let w = NSApp.windows.first(where:  { $0.title == "Area Overlayer".local }) { w.close() }

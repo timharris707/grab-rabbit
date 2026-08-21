@@ -24,10 +24,15 @@ struct StatusBarItem: View {
     @AppStorage("miniStatusBar") private var miniStatusBar: Bool = false
     //@AppStorage("highlightMouse") private var highlightMouse: Bool = false
     private var appDelegate = AppDelegate.shared
-    
+    @ObservedObject private var quickTopmost = QuickTopmostRecordingState.shared
+
     var body: some View {
         HStack(spacing: 0) {
-            if SCContext.streamType != nil {
+            if quickTopmost.isRecording {
+                QuickTopmostIndicatorView()
+                    .padding([.leading, .trailing], 4)
+                    .onReceive(updateTimer) { _ in recordingTick() }
+            } else if SCContext.streamType != nil {
                 ZStack {
                     Rectangle()
                         .fill(Color.mypurple)
@@ -137,21 +142,7 @@ struct StatusBarItem: View {
                 }
                 .onReceive(updateTimer) { _ in
                     recordingLength = SCContext.getRecordingLength()
-                    let timePassed = SCContext.getRecordingElapsed()
-                    if SCContext.autoStop != 0 && timePassed / 60 >= CGFloat(SCContext.autoStop) { SCContext.stopRecording() }
-                    if let visible = statusBarItem.button?.window?.occlusionState.contains(.visible) {
-                        if visible { NSApp.windows.first(where: { $0.title == "Recording Controller".local })?.close(); return }
-                        if SCContext.streamType != nil  && !visible && !(NSApp.windows.first(where: { $0.title == "Recording Controller".local })?.isVisible ?? false) {
-                            guard let screen = SCContext.getScreenWithMouse() else { return }
-                            let width = getStatusBarWidth()
-                            let wX = (screen.frame.width - width) / 2
-                            let contentView = NSHostingView(rootView: StatusBarItem())
-                            contentView.frame = NSRect(x: wX, y: screen.visibleFrame.maxY, width: width, height: 24)
-                            controlPanel.setFrame(contentView.frame, display: true)
-                            controlPanel.contentView = contentView
-                            controlPanel.makeKeyAndOrderFront(nil)
-                        }
-                    }
+                    recordingTick()
                 }
                 if !miniStatusBar {
                     if SCContext.streamType != .systemaudio {
@@ -222,9 +213,33 @@ struct StatusBarItem: View {
     }
 }
 
+// Every recording branch of the status bar runs this on each tick, so the configured time
+// limit and the fallback controller behave the same whichever surface is showing.
+func recordingTick() {
+    if CaptureAutoStop.shouldStop(autoStopMinutes: SCContext.autoStop, elapsed: SCContext.getRecordingElapsed()) {
+        SCContext.stopRecording()
+    }
+    if let visible = statusBarItem.button?.window?.occlusionState.contains(.visible) {
+        if visible { NSApp.windows.first(where: { $0.title == "Recording Controller".local })?.close(); return }
+        if SCContext.streamType != nil  && !visible && !(NSApp.windows.first(where: { $0.title == "Recording Controller".local })?.isVisible ?? false) {
+            guard let screen = SCContext.getScreenWithMouse() else { return }
+            let width = getStatusBarWidth()
+            let wX = (screen.frame.width - width) / 2
+            let contentView = NSHostingView(rootView: StatusBarItem())
+            contentView.frame = NSRect(x: wX, y: screen.visibleFrame.maxY, width: width, height: 24)
+            controlPanel.setFrame(contentView.frame, display: true)
+            controlPanel.contentView = contentView
+            controlPanel.makeKeyAndOrderFront(nil)
+        }
+    }
+}
+
 func updateStatusBar() {
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-        if SCContext.streamType == nil && !ud.bool(forKey: "showMenubar") {
+        // While Quick Topmost records, the indicator is present even when the app
+        // launched without a menu bar item.
+        if !QuickTopmostRecordingState.shared.isRecording
+            && SCContext.streamType == nil && !ud.bool(forKey: "showMenubar") {
             statusBarItem.isVisible = false
             return
         }

@@ -3,7 +3,7 @@
 <!-- Seeded by the ClickAI team-workflow pack's setup skill. Re-run setup to refresh
      these bindings idempotently when the repository changes. -->
 
-_Pack version: team-workflow v1.5.2 · Last confirmed: 2026-08-17_
+_Pack version: team-workflow v1.5.2 · Last confirmed: 2026-08-20_
 
 ## Tracker binding
 

@@ -34,7 +34,7 @@ final class QuickTopmostWindowShortcutTests: XCTestCase {
 
         XCTAssertEqual(events, ["activate", "alert"])
         XCTAssertEqual(presentations.count, 1)
-        XCTAssertEqual(presentations[0].title, "Quick Topmost Window Unavailable")
+        XCTAssertEqual(presentations[0].title, "Quick Topmost Unavailable")
         XCTAssertTrue(presentations[0].message.contains("Grab Rabbit"))
     }
 

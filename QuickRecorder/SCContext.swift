@@ -128,7 +128,7 @@ class SCContext {
     }
 
     static func invalidateQuickTopmostContentAfterTimeout() {
-        contentState.apply(.failure(.unavailable("Quick Topmost Window content refresh timed out.")))
+        contentState.apply(.failure(.unavailable("Quick Topmost content refresh timed out.")))
     }
 
     static func fetchWindowSelectorContent(
@@ -522,6 +522,7 @@ class SCContext {
                 streamType = nil
                 mousePointer.orderOut(nil)
                 screenMagnifier.orderOut(nil)
+                QuickTopmostPresence.shared.dismiss()
                 AppDelegate.shared.stopGlobalMouseMonitor()
                 showNotification(
                     title: "Still Processing".local,

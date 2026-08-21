@@ -253,7 +253,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, SCStreamDelegate, SCStreamOu
                 applications: nil,
                 fastStart: true,
                 windowCaptureMode: windowCaptureMode,
-                shareableContent: content
+                shareableContent: content,
+                quickTopmost: QuickTopmostPillTarget(
+                    windowTitle: target.window.title ?? "",
+                    windowFrame: target.window.frame
+                )
             )
         },
         showFailure: { [weak self] failure in
@@ -361,6 +365,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, SCStreamDelegate, SCStreamOu
     }
     
     func applicationWillFinishLaunching(_ notification: Notification) {
+        QuickTopmostRecordingState.shared.stopHandler = { SCContext.stopRecording() }
+        QuickTopmostRecordingState.shared.pauseHandler = { SCContext.pauseRecording() }
+        QuickTopmostRecordingState.shared.clock = {
+            QuickTopmostClockReading(elapsed: SCContext.getRecordingElapsed(), isPaused: SCContext.isPaused)
+        }
         scPerm = CGPreflightScreenCaptureAccess()
         captureReadiness.update(false)
         ScreenRecordingStartupPolicy().start(
@@ -604,6 +613,7 @@ func findNSSplitVIew(view: NSView?) -> NSSplitView? {
 func getStatusBarWidth() -> CGFloat {
     @AppStorage("miniStatusBar") var miniStatusBar: Bool = false
     if SCContext.isFinalizing { return 112 }
+    if QuickTopmostRecordingState.shared.isRecording { return 190.0 }
     var width = 158.0
     switch SCContext.streamType {
     case nil: width = miniStatusBar ? 36.0 : 36.0

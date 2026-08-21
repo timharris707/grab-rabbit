@@ -79,7 +79,8 @@ extension AppDelegate {
         applications: [SCRunningApplication]?,
         fastStart: Bool = false,
         windowCaptureMode requestedWindowCaptureMode: WindowCaptureMode?,
-        shareableContent: SCShareableContent? = nil
+        shareableContent: SCShareableContent? = nil,
+        quickTopmost: QuickTopmostPillTarget? = nil
     ) {
         guard let content = shareableContent ?? SCContext.availableContent else { return }
         let sessionID = UUID()
@@ -230,7 +231,8 @@ extension AppDelegate {
                 filter: filter,
                 fastStart: fastStart,
                 windowCaptureMode: sessionWindowCaptureMode,
-                sessionID: sessionID
+                sessionID: sessionID,
+                quickTopmost: quickTopmost
             )
         }
     }
@@ -239,7 +241,8 @@ extension AppDelegate {
         filter: SCContentFilter,
         fastStart: Bool = true,
         windowCaptureMode: WindowCaptureMode? = nil,
-        sessionID: UUID
+        sessionID: UUID,
+        quickTopmost: QuickTopmostPillTarget? = nil
     ) async {
         var sessionInstalled = false
         defer {
@@ -571,7 +574,10 @@ extension AppDelegate {
             }
             return
         }
-        DispatchQueue.main.async { updateStatusBar() }
+        DispatchQueue.main.async {
+            if let quickTopmost { QuickTopmostPresence.shared.activate(quickTopmost) }
+            updateStatusBar()
+        }
     }
 
     private func discardCaptureAfterFailedStart(

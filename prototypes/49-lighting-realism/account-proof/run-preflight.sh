@@ -134,6 +134,10 @@ if [[ -e "$evidence_dir" && "$force" == false ]]; then
             if [[ "$manifest_ids" != "$state_ids" ]]; then
                 echo 'the existing state describes different steps than the current manifest'; exit 0
             fi
+            for subdir in records screenshots; do
+                ap_subdir_is_contained "$evidence_dir" "$subdir" \
+                    || { echo "the existing $subdir directory is not a real directory inside the evidence directory"; exit 0; }
+            done
             ap_records_are_coherent "$evidence_dir" 2>/dev/null \
                 || { echo 'the existing state and its record files do not agree'; exit 0; }
         )"
@@ -146,10 +150,16 @@ if [[ -e "$evidence_dir" && "$force" == false ]]; then
     elif [[ -d "$evidence_dir" && -z "$(find "$evidence_dir" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]]; then
         # An empty directory the caller made themselves is nothing to preserve.
         staged=fresh
-    elif [[ -f "$evidence_dir/$AP_PREFLIGHT_FILE" ]]; then
-        # A red run leaves its result file and nothing else. Adopting that
-        # leftover is what lets a retry simply work instead of demanding --force.
+    elif [[ -f "$evidence_dir/$AP_PREFLIGHT_FILE" ]] && ap_holds_only_the_result_file "$evidence_dir"; then
+        # A red run leaves exactly its result file and nothing else. Adopting
+        # that one shape is what lets a retry simply work instead of demanding
+        # --force. Anything else in the directory means somebody's recorded work
+        # is in there, and deleting it silently is the worst thing this script
+        # could do — so it refuses and names --force.
         staged=restaged-after-red
+    elif [[ -f "$evidence_dir/$AP_PREFLIGHT_FILE" ]]; then
+        record_check 'the evidence directory can be adopted' fail \
+            "$evidence_dir holds a phase 1 result plus other files, so it is not a clean red leftover and will not be deleted; pass --force to restage it"
     else
         record_check 'the evidence directory can be adopted' fail \
             "$evidence_dir already exists and holds neither a walkthrough state nor a phase 1 result; pass --force to restage it"

@@ -104,7 +104,7 @@ next)
               screenshots_dir: ($dir + "/screenshots"),
               screenshot_save_to: (if .evidence.screenshot == null then null
                                    else $dir + "/screenshots/" + .evidence.screenshot end),
-              record_command: ($script + " record " + .id + " --value \"...\" "
+              record_command: ($script + " record " + .id + " --value \"<VALUE-REQUIRED>\" "
                                + (if .evidence.screenshot == null then ""
                                   else "--screenshot " + .evidence.screenshot + " " end)
                                + "--evidence-dir " + $dir),
@@ -158,8 +158,12 @@ record)
             *) ap_die "unknown option $1" 64 ;;
         esac
     done
+    ap_assert_evidence_layout "$evidence_dir"
     step="$(step_json "$step_id")" || ap_die "no step with id $step_id" 64
     [[ -n "$value" ]] || ap_die 'record needs --value; a blank proof is not a proof' 64
+    # The placeholder the next payload ships must never survive into a record.
+    [[ "$value" != "<VALUE-REQUIRED>" ]] \
+        || ap_die 'replace <VALUE-REQUIRED> with the value you actually read on screen' 64
     expected_next="$(next_step_id)"
     if [[ -n "$expected_next" && "$expected_next" != "$step_id" && "$(step_status "$step_id")" != "done" ]]; then
         ap_die "steps run in order: $expected_next is next. Use redo to reopen a recorded step." 65
@@ -171,9 +175,23 @@ record)
         printf '%s' "$step" | jq -e --arg v "$value" '.evidence.allowed_values | index($v)' >/dev/null \
             || ap_die "step $step_id accepts only: $(printf '%s' "$step" | jq -r '.evidence.allowed_values | join(", ")'). Never pass a password, a code, or free text here." 64
     fi
+    # --value on a sign-in step is already fixed to two words, so the digit guard
+    # belongs on the free-text fields instead: a note or a corrected label is
+    # where a careless driver would otherwise paste a password and a code, and
+    # both land in the compiled proof. Sign-in page labels are button text like
+    # "Sign in", so nothing legitimate there needs a run of digits.
     if [[ "$(printf '%s' "$step" | jq -r '.requires_human')" == true ]]; then
-        [[ ! "$value" =~ [0-9]{4,} ]] \
-            || ap_die "step $step_id refuses a value containing a run of digits; that shape is a one-time code" 64
+        for field in note actual_label; do
+            case "$field" in
+                note) field_name="note" ;;
+                *) field_name="corrected label" ;;
+            esac
+            [[ ! "${!field}" =~ [0-9]{4,} ]] \
+                || ap_die "step $step_id refuses a $field_name containing a run of four or more digits; that shape is a one-time code. Nothing on a sign-in step needs one." 64
+            # The auditor's exploit string also carried a digit-free password.
+            [[ ! "$(printf '%s' "${!field}" | tr '[:upper:]' '[:lower:]')" =~ (password|passcode|passphrase|one-time|otp|2fa|verification\ code) ]] \
+                || ap_die "step $step_id refuses a $field_name naming a credential; record what was on screen, never what was typed" 64
+        done
     fi
     if [[ -n "$screenshot" ]]; then
         # The filename is a bare name under the staged screenshots directory,
@@ -229,6 +247,15 @@ redo)
     ;;
 
 compile)
+    proof="$evidence_dir/account-controls-proof.json"
+    # Any refusal below must not leave an older proof sitting there looking
+    # current, so a previous one is voided up front and only restored to its
+    # real name by a compile that succeeds.
+    if [[ -f "$proof" ]]; then
+        mv "$proof" "$evidence_dir/account-controls-proof.void.json"
+        ap_warn "an earlier proof was set aside as account-controls-proof.void.json until this compile succeeds"
+    fi
+    ap_assert_evidence_layout "$evidence_dir"
     missing="$(jq -r '[.steps[] | select(.status != "done") | .id] | join(", ")' "$state_file")"
     [[ -z "$missing" ]] || ap_die "these steps are not recorded yet: $missing" 65
     # The state file says a step is done; only a readable record file proves
@@ -249,7 +276,6 @@ compile)
 
     preflight_json="$(ap_read_preflight "$evidence_dir")"
     records_json="$(jq -s '.' "${record_files[@]}")"
-    proof="$evidence_dir/account-controls-proof.json"
     # Records are read in manifest order, so the proof reads in the order the
     # controls were proven rather than in whatever order the shell globbed.
     jq -n \
@@ -278,6 +304,7 @@ compile)
         > "$proof"
     [[ "$(jq -r '.controls | length' "$proof")" == "$total_steps" ]] \
         || ap_die "the written proof does not hold one control per step; treat $proof as void" 65
+    rm -f "$evidence_dir/account-controls-proof.void.json"
     ap_ok "wrote $proof"
     unconfirmed="$(jq -r '.labels_still_unverified | join(", ")' "$proof")"
     [[ -z "$unconfirmed" ]] || ap_warn "these steps recorded no on-screen label, so their labels stay unconfirmed: $unconfirmed"

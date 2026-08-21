@@ -82,6 +82,46 @@ ap_resolve_evidence_dir() {
 # otherwise leave a recorded run describing steps that no longer exist.
 ap_steps_sha() { ap_sha256 "$AP_STEPS_FILE"; }
 
+# ap_holds_only_the_result_file DIR — true when DIR contains exactly one entry
+# and that entry is the phase 1 result file. That is the shape a red run leaves
+# behind, and the only shape a re-run may delete without --force. A directory
+# holding anything else may hold recorded human-gate work.
+ap_holds_only_the_result_file() {
+    local dir="$1" entry count=0
+    for entry in "$dir"/* "$dir"/.[!.]* "$dir"/..?*; do
+        [[ -e "$entry" || -L "$entry" ]] || continue
+        count=$((count + 1))
+        [[ "${entry##*/}" == "$AP_PREFLIGHT_FILE" && -f "$entry" && ! -L "$entry" ]] || return 1
+    done
+    [[ "$count" -eq 1 ]]
+}
+
+# ap_subdir_is_contained DIR NAME — true when DIR/NAME is a real directory that
+# actually lives inside DIR: not a symlink, and resolving to the path it claims.
+# A records/ or screenshots/ swapped for a symlink to a sibling would otherwise
+# let fabricated records compile into a clean-looking proof.
+ap_subdir_is_contained() {
+    local dir="$1" name="$2"
+    local path="$dir/$name" parent_physical physical expected
+    [[ -d "$path" && ! -L "$path" ]] || return 1
+    parent_physical=$(cd "$dir" 2>/dev/null && pwd -P) || return 1
+    physical=$(cd "$path" 2>/dev/null && pwd -P) || return 1
+    expected="$parent_physical/$name"
+    [[ "$physical" == "$expected" ]] || return 1
+    [[ "$(ap_dir_identity "$path")" == "$(ap_dir_identity "$expected")" ]] || return 1
+}
+
+# ap_assert_evidence_layout DIR — both evidence subdirectories are really inside
+# DIR. Checked at adoption, at record time, and at compile: a swap between any
+# two of those moments is exactly the window an exploit would use.
+ap_assert_evidence_layout() {
+    local dir="$1" name
+    for name in records screenshots; do
+        ap_subdir_is_contained "$dir" "$name" \
+            || ap_die "$dir/$name is not a real directory inside $dir; refusing to trust anything in it" 74
+    done
+}
+
 # ap_read_preflight DIR — echo the preflight result JSON, failing when the file
 # is missing, unreadable, or a symlink. Phase 2 never proceeds without it.
 ap_read_preflight() {

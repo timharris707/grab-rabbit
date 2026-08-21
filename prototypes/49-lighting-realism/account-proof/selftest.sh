@@ -82,6 +82,14 @@ refute 'a sign-in step refuses free text' \
     walk record openai-signin --value 'a-password-typed-by-mistake'
 refute 'a sign-in step refuses a one-time-code shape' \
     walk record openai-signin --value '481920'
+refute 'the placeholder the next payload ships is refused if recorded verbatim' \
+    walk record openai-signin --value '<VALUE-REQUIRED>'
+refute 'a sign-in step refuses a note carrying a one-time code' \
+    walk record openai-signin --value signed-in --note 'password hunter2, otp 483920'
+refute 'a sign-in step refuses a note naming a credential with no digits' \
+    walk record openai-signin --value signed-in --note 'password hunter'
+refute 'a sign-in step refuses a corrected label carrying a one-time code' \
+    walk record openai-signin --value signed-in --actual-label 'enter code 483920'
 refute 'a step cannot claim a screenshot that is not there' \
     walk record openai-signin --value signed-in --screenshot missing.png
 refute 'a screenshot name cannot climb out of the screenshots directory' \
@@ -193,12 +201,45 @@ printf 'not json' > "$adopted/state.json"
 refute 'phase 1 refuses to adopt a state that is not valid JSON' \
     "$here/run-preflight.sh" --evidence-dir "$adopted" --no-browser
 
-# ── A retry after red just works ────────────────────────────────────────────
+# ── The evidence subdirectories must really be inside the evidence dir ──────
+swapped="$work/swapped"
+mkdir -p "$swapped/screenshots" "$work/fabricated"
+cp "$evidence/preflight-result.json" "$evidence/state.json" "$swapped/"
+cp "$evidence"/records/*.json "$work/fabricated/"
+ln -s "$work/fabricated" "$swapped/records"
+refute 'phase 1 refuses to adopt a records directory that is a symlink' \
+    "$here/run-preflight.sh" --evidence-dir "$swapped" --no-browser
+refute 'compile refuses a records directory that is a symlink' \
+    "$here/run-proof-walkthrough.sh" compile --evidence-dir "$swapped"
+refute 'no proof was compiled out of the symlinked records' \
+    bash -c "[[ -f '$swapped/account-controls-proof.json' ]]"
+rm -f "$swapped/records"
+mkdir -p "$swapped/records"
+cp "$work/fabricated"/*.json "$swapped/records/"
+rm -rf "$swapped/screenshots"
+ln -s "$work/fabricated" "$swapped/screenshots"
+refute 'record refuses a screenshots directory that is a symlink' \
+    "$here/run-proof-walkthrough.sh" record openai-region --value 'x' --evidence-dir "$swapped"
+
+# ── A retry after red just works, but only over a clean red leftover ────────
 after_red="$work/after-red"
 mkdir -p "$after_red"
 printf '{"status":"red"}' > "$after_red/preflight-result.json"
 check 'phase 1 re-runs cleanly over its own red leftover without --force' \
     "$here/run-preflight.sh" --evidence-dir "$after_red" --no-browser
+
+# Recorded work sitting beside a result file is not a red leftover, and must
+# never be deleted just because a result file happens to be there too.
+not_red="$work/not-really-red"
+mkdir -p "$not_red/records" "$not_red/screenshots"
+printf '{"status":"red"}' > "$not_red/preflight-result.json"
+cp "$evidence/records/openai-signin.json" "$not_red/records/"
+: > "$not_red/screenshots/openai-org-identity.png"
+refute 'phase 1 refuses a directory holding a result file plus recorded work' \
+    "$here/run-preflight.sh" --evidence-dir "$not_red" --no-browser
+check 'the recorded work beside the result file survived' \
+    bash -c "[[ -f '$not_red/records/openai-signin.json' \
+                && -f '$not_red/screenshots/openai-org-identity.png' ]]"
 
 # ── --force will not delete a directory this wizard does not own ────────────
 stranger="$work/stranger"
@@ -214,9 +255,26 @@ check 'a recorded value reading like an option does not redirect the run' \
              && ./run-proof-walkthrough.sh record openai-region --value --evidence-dir --evidence-dir '$evidence' \
              && [[ -f '$evidence/records/openai-region.json' ]]"
 
+# ── A refused compile never leaves a stale proof looking current ────────────
+check 'a good proof exists before the next refusal' walk compile
+mv "$evidence/records/google-region.json" "$work/held2.json"
+refute 'compile refuses with a record missing' walk compile
+refute 'the earlier proof is no longer sitting there under its real name' \
+    bash -c "[[ -f '$evidence/account-controls-proof.json' ]]"
+check 'the earlier proof was voided rather than silently kept' \
+    bash -c "[[ -f '$evidence/account-controls-proof.void.json' ]]"
+mv "$work/held2.json" "$evidence/records/google-region.json"
+check 'a successful compile clears the voided proof' \
+    bash -c "cd '$here' && ./run-proof-walkthrough.sh compile --evidence-dir '$evidence' \
+             && [[ -f '$evidence/account-controls-proof.json' \
+                   && ! -f '$evidence/account-controls-proof.void.json' ]]"
+
 # ── Nothing anywhere produced an image or a call ────────────────────────────
+# Screenshots are legitimate evidence the driver saves; anything image-shaped
+# outside that directory would mean this wizard generated an image.
 refute 'the run generated no image of its own' \
-    bash -c "find '$evidence' -type f \\( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.webp' \\) -print -quit | grep -q ."
+    bash -c "find '$evidence' -type f \\( -iname '*.png' -o -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.webp' \\) \
+             -not -path '$evidence/screenshots/*' -print -quit | grep -q ."
 
 printf '\n  %s assertions\n' "$assertions"
 if (( failures )); then

@@ -30,8 +30,12 @@ Re-running phase 1 over a directory that already holds recorded work adopts that
 checking it: the state must be valid JSON with a run token, its step ids must match the current
 manifest, and every step it calls done must have a readable record. Anything else is red, with
 `--force` named as the way out. `--force` deletes a directory, so it refuses any directory that is
-neither empty nor holding a phase 1 result — it will not delete somebody else's `/tmp` path. A
-re-run after a red result adopts its own leftover, so a retry never needs `--force`.
+neither empty nor holding a phase 1 result — it will not delete somebody else's `/tmp` path.
+
+A re-run after a red result adopts its own leftover, so a retry never needs `--force` — but only
+when the directory holds *exactly* the one result file, which is all a red run leaves behind. A
+directory holding a result file plus anything else may hold recorded human-gate work, so it is
+refused with `--force` named, never deleted silently.
 
 **Phase 2 — the proof walkthrough.** A driving agent with desktop or remote-computer control runs
 `run-proof-walkthrough.sh` one command at a time. Tim is pulled in only where a password or
@@ -61,11 +65,30 @@ A driver working from `next` alone never has to guess a path.
 is missing or unreadable is fatal, so a proof can never come out complete-looking with a hole in it,
 and it lists controls in walkthrough order.
 
+The `record_command` in that payload ships `<VALUE-REQUIRED>` where the value goes, and `record`
+rejects that placeholder, so a driver that runs the line verbatim is told to go read the screen
+rather than recording a placeholder as the proven value.
+
 **What may be passed to `--value`.** Anything the step's `value_description` asks for, except on the
-two sign-in steps: those accept only the literal words `signed-in` or `not-signed-in`, and reject a
-run of four or more digits. There is no field on a credential step that a password or a one-time
-code could be typed into. The account address is recorded on the identity steps instead. A
-`--screenshot` must be a plain filename already saved in `DIR/screenshots`.
+two sign-in steps: those accept only the literal words `signed-in` or `not-signed-in`. The account
+address is recorded on the identity steps instead. A `--screenshot` must be a plain filename already
+saved in `DIR/screenshots`.
+
+**What may be passed to `--note` and `--actual-label` on a sign-in step.** Both reach the compiled
+proof, so on the two credential steps both reject a run of four or more digits and any text naming a
+credential (`password`, `passcode`, `passphrase`, `one-time`, `otp`, `2fa`, `verification code`).
+Sign-in page labels are button text like `Sign in`, and a useful note reads `dashboard loaded,
+two-factor prompt appeared on phone` — nothing legitimate on those steps needs a digit run or a
+credential word. Between the fixed `--value` words and these two guards, there is no field on a
+credential step that can carry a password or a code into the proof.
+
+`compile` sets any earlier proof aside as `account-controls-proof.void.json` before it checks
+anything, and only a compile that succeeds restores a file under the real name. A refused compile
+therefore never leaves a stale proof sitting there looking current.
+
+`records/` and `screenshots/` are checked at adoption, at record time, and at compile: each must be
+a real directory inside the evidence directory, not a symlink pointing somewhere else. Otherwise a
+swapped `records/` could compile fabricated records into a clean-looking proof.
 
 ## The step manifest
 
@@ -111,11 +134,13 @@ half-recorded run describing steps that no longer exist.
 ./selftest.sh
 ```
 
-A dry run in a temporary directory with no browser and no account: 58 assertions. It proves the
+A dry run in a temporary directory with no browser and no account: 73 assertions. It proves the
 phase-1 gate, step ordering, resume after an interruption, single-step redo, refusal to compile a
 proof with a missing record, refusal of a red, foreign, or manifest-stale phase-1 result, refusal to
-adopt an incoherent evidence directory, the credential and path guards, that `--force` will not
-delete an unrelated directory, and that the run generates no image of its own.
+adopt an incoherent evidence directory or a symlinked `records/`, refusal to delete a directory
+holding recorded work, the credential and path guards, that a refused compile voids an earlier
+proof, that `--force` will not delete an unrelated directory, and that the run generates no image of
+its own outside `screenshots/`.
 
 ## What was adopted from the #48 lane
 

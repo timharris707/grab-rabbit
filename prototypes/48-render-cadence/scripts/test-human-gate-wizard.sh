@@ -383,6 +383,18 @@ case "$gate_output" in
   *) fail "the required gate warning was not printed before the input prompt" ;;
 esac
 
+visible_yes_is_confirmed yes \
+  || fail "a lowercase visible YES confirmation was rejected"
+visible_yes_is_confirmed YeS \
+  || fail "a mixed-case visible YES confirmation was rejected"
+if visible_yes_is_confirmed y; then
+  fail "a partial visible YES confirmation unexpectedly passed"
+fi
+if rg -n 'test "\$[A-Z_]+" = "YES"' "$wizard" \
+    >"$test_root/case-sensitive-visible-confirmations.txt"; then
+  fail "a visible YES confirmation can lock Screen Sharing into an uncorrectable retry"
+fi
+
 if awk '/^# STAGES — author below\./ { in_stages=1 } in_stages' "$wizard" \
     | rg -n 'if ! confirm ' >"$test_root/direct-confirmations.txt"; then
   fail "a required stage gate bypasses the explicit required_confirm wording"

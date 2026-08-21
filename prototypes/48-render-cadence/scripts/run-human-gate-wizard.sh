@@ -1602,6 +1602,10 @@ window_id_is_valid_number() {
     '($id | test("^[1-9][0-9]*$")) and (($id | tonumber) <= 4294967295)' >/dev/null
 }
 
+visible_yes_is_confirmed() {
+  [[ "$1" =~ ^[Yy][Ee][Ss]$ ]]
+}
+
 movie_count_is() {
   local expected="$1" count
   local movies=("$RUNS_DIR"/*.mov)
@@ -1870,7 +1874,7 @@ select_capturable_window \
   || fatal_gate "the signed probe could not select a current real browser window"
 required_check "exact camera/window preflight passes and creates no output" exact_preflight_passes_without_output
 ask CASES_READY "Type YES after clicking Static, Low change, and Active once and seeing each behavior:"
-required_check "all three browser cases were visibly prepared" test "$CASES_READY" = "YES"
+required_check "all three browser cases were visibly prepared" visible_yes_is_confirmed "$CASES_READY"
 ok "Selected a real $SELECTED_WINDOW_APP window; its numeric ID remains only in this wizard process."
 
 stage "Run the shape, pause, and physical-disconnect matrix" 35
@@ -1885,7 +1889,7 @@ done
 for browser_case in static low-change active; do
   say "In the selected browser window, click the '$browser_case' case button now."
   ask CASE_CONFIRMATION "Type YES when the '$browser_case' behavior is visibly running:"
-  required_check "the human confirmed the $browser_case browser case" test "$CASE_CONFIRMATION" = "YES"
+  required_check "the human confirmed the $browser_case browser case" visible_yes_is_confirmed "$CASE_CONFIRMATION"
   for candidate in camera-driven fixed-clock; do
     for canvas in 16x9 9x16 square; do
       run_owned_record "browser-$browser_case-$candidate-$canvas" false \
@@ -1897,7 +1901,7 @@ for browser_case in static low-change active; do
 done
 say "Set the selected browser window to Active for the two fail-closed disconnect runs."
 ask DISCONNECT_CASE_READY "Type YES when Active is visibly running:"
-required_check "the active browser case is ready for disconnect testing" test "$DISCONNECT_CASE_READY" = "YES"
+required_check "the active browser case is ready for disconnect testing" visible_yes_is_confirmed "$DISCONNECT_CASE_READY"
 run_disconnect_record camera-driven
 run_disconnect_record fixed-clock
 required_check "all 26 matrix/disconnect outputs are present" movie_count_is 26
@@ -1906,7 +1910,7 @@ stage "Sample CPU, GPU, ANE, power, and thermal pressure" 15
 say "What and why: powermetrics needs administrator authorization that an agent must never see. You will type the password directly into sudo's own prompt. The wizard never reads, pipes, echoes, stores, or logs it."
 say "Set the selected browser window to Active. One sudo powermetrics process will span a camera-driven run followed by a fixed-clock run."
 ask POWER_CASE_READY "Type YES when Active is visibly running and you have the administrator password ready:"
-required_check "the active performance case is ready" test "$POWER_CASE_READY" = "YES"
+required_check "the active performance case is ready" visible_yes_is_confirmed "$POWER_CASE_READY"
 POWER_FILE="$EVIDENCE_DIR/powermetrics.txt"
 POWER_DONE_FILE="$EVIDENCE_DIR/powermetrics.done"
 PERF_ERROR_FILE="$EVIDENCE_DIR/performance-helper.error.txt"
@@ -2034,7 +2038,7 @@ required_check "the exact camera inventory matches the before-run snapshot" came
 CAMERA_STATE_MAY_DIFFER=false
 say "Close the generated browser-case tab/window. No browser automation or preference change was made."
 ask BROWSER_RESTORED "Type YES when the generated browser-case page is closed:"
-required_check "the generated browser page was closed by the human" test "$BROWSER_RESTORED" = "YES"
+required_check "the generated browser page was closed by the human" visible_yes_is_confirmed "$BROWSER_RESTORED"
 BROWSER_CASE_MAY_BE_OPEN=false
 osascript -e 'get volume settings' >"$EVIDENCE_DIR/volume-after.txt" \
   || fatal_gate "could not snapshot final audio volume/mute state"

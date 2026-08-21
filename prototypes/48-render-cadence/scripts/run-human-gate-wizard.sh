@@ -660,7 +660,7 @@ wait_for_live_probe_process_to_stop() {
     live_probe_process_state "$target" || state=$?
     case "$state" in
       1) return 0 ;;
-      0) ;;
+      0|2) ;;
       *) return 1 ;;
     esac
     sleep 0.02

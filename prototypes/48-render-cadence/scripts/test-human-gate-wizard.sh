@@ -118,9 +118,19 @@ wait_for_live_probe_process_to_stop 42424 \
   || fail "a synchronous signed probe's short exit lag was rejected"
 [[ "$WIZARD_TEST_STOP_POLL_COUNT" -eq 3 ]] \
   || fail "the synchronous signed probe was not polled until its exact identity stopped"
+WIZARD_TEST_UNOBSERVABLE_POLL_COUNT=0
+live_probe_process_state() {
+  WIZARD_TEST_UNOBSERVABLE_POLL_COUNT=$((WIZARD_TEST_UNOBSERVABLE_POLL_COUNT + 1))
+  (( WIZARD_TEST_UNOBSERVABLE_POLL_COUNT < 3 )) && return 2
+  return 1
+}
+wait_for_live_probe_process_to_stop 42424 \
+  || fail "a terminating signed probe's transiently unobservable identity was rejected"
+[[ "$WIZARD_TEST_UNOBSERVABLE_POLL_COUNT" -eq 3 ]] \
+  || fail "the transiently unobservable signed probe was not polled until its PID disappeared"
 live_probe_process_state() { return 2; }
 if wait_for_live_probe_process_to_stop 42424; then
-  fail "an unobservable synchronous signed probe was mistaken for a stopped process"
+  fail "a persistently unobservable synchronous signed probe was mistaken for stopped"
 fi
 unset -f sleep
 eval "$live_probe_process_state_definition"

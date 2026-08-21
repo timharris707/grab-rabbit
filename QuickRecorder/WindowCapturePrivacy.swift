@@ -1877,7 +1877,7 @@ final class CaptureOutputSessionStore {
         _ handler: @escaping () -> Void
     ) -> TerminationPreparation {
         lock.withLock {
-            guard !isIdle else { return .idle }
+            guard !isIdleAssumingLock else { return .idle }
             terminationApprovalPending = true
             idleHandlers.append(handler)
             if let pendingSessionID {
@@ -1912,7 +1912,7 @@ final class CaptureOutputSessionStore {
 
     var hasManagedCapture: Bool {
         lock.withLock {
-            !isIdle || terminationApprovalPending || pendingStopControlDismissalCount > 0
+            !isIdleAssumingLock || terminationApprovalPending || pendingStopControlDismissalCount > 0
         }
     }
 
@@ -1922,7 +1922,7 @@ final class CaptureOutputSessionStore {
 
     var shouldSuppressUnownedStop: Bool {
         lock.withLock {
-            !isIdle || terminationApprovalPending || pendingStopControlDismissalCount > 0
+            !isIdleAssumingLock || terminationApprovalPending || pendingStopControlDismissalCount > 0
         }
     }
 
@@ -1947,12 +1947,13 @@ final class CaptureOutputSessionStore {
         }
     }
 
-    private var isIdle: Bool {
+    // Callers must already hold `lock`; the public `isIdle` takes it and would deadlock here.
+    private var isIdleAssumingLock: Bool {
         currentSession == nil && retiredSessions.isEmpty && pendingSessionID == nil
     }
 
     private func takeIdleHandlersIfNeeded() -> [() -> Void] {
-        guard isIdle else { return [] }
+        guard isIdleAssumingLock else { return [] }
         terminationRequestedSessionID = nil
         scheduledTerminationApprovalCount += idleHandlers.count
         defer { idleHandlers.removeAll() }

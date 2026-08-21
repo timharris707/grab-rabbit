@@ -105,6 +105,26 @@ run_live_probe list-sources --skip-window-query \
   || fail "the LaunchServices probe seam did not propagate success"
 jq -e '.authorization.camera == "authorized"' <<<"$LIVE_PROBE_JSON" >/dev/null \
   || fail "the LaunchServices probe seam did not return the app's stdout"
+
+live_probe_process_state_definition=$(declare -f live_probe_process_state)
+WIZARD_TEST_STOP_POLL_COUNT=0
+live_probe_process_state() {
+  WIZARD_TEST_STOP_POLL_COUNT=$((WIZARD_TEST_STOP_POLL_COUNT + 1))
+  (( WIZARD_TEST_STOP_POLL_COUNT < 3 )) && return 0
+  return 1
+}
+sleep() { :; }
+wait_for_live_probe_process_to_stop 42424 \
+  || fail "a synchronous signed probe's short exit lag was rejected"
+[[ "$WIZARD_TEST_STOP_POLL_COUNT" -eq 3 ]] \
+  || fail "the synchronous signed probe was not polled until its exact identity stopped"
+live_probe_process_state() { return 2; }
+if wait_for_live_probe_process_to_stop 42424; then
+  fail "an unobservable synchronous signed probe was mistaken for a stopped process"
+fi
+unset -f sleep
+eval "$live_probe_process_state_definition"
+
 expected_launch_arguments=$(printf '%s\n' \
   -n -W -g -o /dev/null --stderr /dev/null \
   "$STABLE_APP" --args list-sources --skip-window-query \

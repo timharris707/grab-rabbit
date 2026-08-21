@@ -499,7 +499,7 @@ run_live_probe() {
   fi
   if [[ -n "$probe_pid" ]]; then
     untrack_pending_live_probe_launch "$waiter_pid"
-    live_probe_process_is_stopped "$probe_pid" || return 1
+    wait_for_live_probe_process_to_stop "$probe_pid" || return 1
     untrack_live_probe_process "$probe_pid"
   fi
   live_probe_launch_dir_matches "$launch_dir" "$launch_identity" \
@@ -651,6 +651,22 @@ live_probe_process_is_stopped() {
   local state=0
   live_probe_process_state "$1" || state=$?
   [[ "$state" -eq 1 ]]
+}
+
+wait_for_live_probe_process_to_stop() {
+  local target=$1 attempt=0 state=0
+  while (( attempt < 250 )); do
+    state=0
+    live_probe_process_state "$target" || state=$?
+    case "$state" in
+      1) return 0 ;;
+      0) ;;
+      *) return 1 ;;
+    esac
+    sleep 0.02
+    attempt=$((attempt + 1))
+  done
+  return 1
 }
 
 live_probe_process_state() {

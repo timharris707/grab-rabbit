@@ -1,0 +1,317 @@
+{
+  "schema_version": 1,
+  "gate": "issue-49-account-controls-proof",
+  "purpose": "Prove and record the exact OpenAI and Google account controls (data retention, processing region, age and content settings, billing state, commercial-use terms) that gate the eight text-only image-generation calls with the 0.38772 USD image-output subtotal. This manifest authorizes no generation call.",
+  "provider_calls_authorized": 0,
+  "image_calls_authorized": 0,
+  "driver": {
+    "model": "agent-driven",
+    "description": "A driving agent with desktop or remote-computer control performs every step. Tim is pulled in only on steps with requires_human true, which are credential entry and nothing else.",
+    "rules": [
+      "One action per step. Never merge two steps.",
+      "Never skip ahead: run the steps in listed order using the walkthrough script.",
+      "Record every step through the walkthrough script so an interruption resumes at the same step and never restarts the run.",
+      "If an on-screen label in this manifest does not match what is on screen, stop, record the label you actually see with the record command's --actual-label option, and do not guess a substitute path.",
+      "Never type, read back, store, or screenshot a password, a two-factor code, an API key, or a full payment number."
+    ]
+  },
+  "label_policy": "label_unverified true means the label was written from documented provider interfaces but could not be confirmed without a live login. The driving agent confirms it on screen and records the actual label. No label here may be quoted to Tim as verbatim while label_unverified is true.",
+  "steps": [
+    {
+      "id": "openai-signin",
+      "provider": "openai",
+      "title": "Sign in to the OpenAI platform dashboard",
+      "url": "https://platform.openai.com/login",
+      "control_label": "Continue",
+      "label_unverified": true,
+      "action": "sign_in",
+      "one_action": "Load the sign-in page and complete sign-in.",
+      "requires_human": true,
+      "estimated_seconds": 120,
+      "agent_instructions": "Open the URL, enter Tim's account email if it is not already filled, then STOP. Hand keyboard input to Tim for the password and any two-factor code. Do not read, echo, log, or screenshot either value. Resume only after the dashboard has loaded.",
+      "human_handoff": {
+        "what_tim_sees": "The OpenAI sign-in page, with a box for an email address and then a box for a password. After the password it may ask for a six-digit code from his authenticator app or a code sent by text.",
+        "what_tim_types": "His OpenAI account password, then the six-digit code if it is asked for. Nothing else. He does not need to click anything after the dashboard appears."
+      },
+      "evidence": {
+        "record_key": "openai_signed_in",
+        "value_description": "yes once the signed-in dashboard is on screen; no otherwise. Never any part of a credential.",
+        "screenshot": null
+      }
+    },
+    {
+      "id": "openai-org-identity",
+      "provider": "openai",
+      "title": "Record which OpenAI organization is being proven",
+      "url": "https://platform.openai.com/settings/organization/general",
+      "control_label": "Organization ID",
+      "label_unverified": true,
+      "action": "read_value",
+      "one_action": "Read the organization name and the organization identifier shown on the general organization settings page.",
+      "requires_human": false,
+      "estimated_seconds": 60,
+      "agent_instructions": "The proof is worthless unless it names the account it describes. Capture the organization name and the identifier beginning with org-. Take the screenshot with no API key or billing number visible.",
+      "evidence": {
+        "record_key": "openai_organization",
+        "value_description": "The organization name followed by the org- identifier, for example: Grab Rabbit (org-XXXXXXXX).",
+        "screenshot": "openai-org-identity.png"
+      }
+    },
+    {
+      "id": "openai-data-retention",
+      "provider": "openai",
+      "title": "Prove the OpenAI data-retention and training setting",
+      "url": "https://platform.openai.com/settings/organization/data-controls",
+      "control_label": "Data controls",
+      "label_unverified": true,
+      "action": "read_setting",
+      "one_action": "Read the retention and model-training settings on the data controls page and record their current on or off state.",
+      "requires_human": false,
+      "estimated_seconds": 120,
+      "agent_instructions": "Record the exact wording of each setting on this page together with its state, including any sharing-for-training toggle and any stated retention period for API inputs and outputs. Do not change any setting; this step reads only.",
+      "evidence": {
+        "record_key": "openai_data_retention",
+        "value_description": "Each retention or training control's on-screen wording plus its state, for example: sharing of API inputs and outputs for model improvement is off; API data retained for 30 days for abuse monitoring.",
+        "screenshot": "openai-data-retention.png"
+      }
+    },
+    {
+      "id": "openai-region",
+      "provider": "openai",
+      "title": "Prove where OpenAI processes this organization's requests",
+      "url": "https://platform.openai.com/settings/organization/general",
+      "control_label": "Data residency",
+      "label_unverified": true,
+      "action": "read_setting",
+      "one_action": "Read the processing region or data-residency value configured for the organization.",
+      "requires_human": false,
+      "estimated_seconds": 90,
+      "agent_instructions": "If no residency or region control exists for this organization, record exactly that: absent, with the page you checked. An absent control is a real answer and must not be recorded as a region.",
+      "evidence": {
+        "record_key": "openai_processing_region",
+        "value_description": "The configured region value, or the words no residency control offered on this organization plus the page checked.",
+        "screenshot": "openai-region.png"
+      }
+    },
+    {
+      "id": "openai-age-content",
+      "provider": "openai",
+      "title": "Prove the OpenAI age and content settings that apply to image output",
+      "url": "https://platform.openai.com/settings/organization/general",
+      "control_label": "Age verification",
+      "label_unverified": true,
+      "action": "read_setting",
+      "one_action": "Read any age-related or content and safety setting that applies to this organization's image generation.",
+      "requires_human": false,
+      "estimated_seconds": 90,
+      "agent_instructions": "The gate needs to know whether image output is restricted by an account-level age or content setting. Record what exists and its state; record absent where no such control is offered rather than inferring one from policy documents.",
+      "evidence": {
+        "record_key": "openai_age_content",
+        "value_description": "Each age or content control's on-screen wording and state, or the word absent with the page checked.",
+        "screenshot": "openai-age-content.png"
+      }
+    },
+    {
+      "id": "openai-billing-state",
+      "provider": "openai",
+      "title": "Prove the OpenAI billing state and remaining credit",
+      "url": "https://platform.openai.com/settings/organization/billing/overview",
+      "control_label": "Credit balance",
+      "label_unverified": true,
+      "action": "read_value",
+      "one_action": "Read whether billing is active and what credit or balance is available.",
+      "requires_human": false,
+      "estimated_seconds": 90,
+      "agent_instructions": "Record whether a payment method is attached and the available credit or balance. Mask everything except the last four digits of any card number, and never screenshot a full number.",
+      "evidence": {
+        "record_key": "openai_billing_state",
+        "value_description": "Payment method attached yes or no, plus the available credit or balance amount as shown.",
+        "screenshot": "openai-billing-state.png"
+      }
+    },
+    {
+      "id": "openai-spend-limit",
+      "provider": "openai",
+      "title": "Prove the OpenAI hard spend limit that bounds this run",
+      "url": "https://platform.openai.com/settings/organization/limits",
+      "control_label": "Usage limits",
+      "label_unverified": true,
+      "action": "read_setting",
+      "one_action": "Read the monthly budget or hard spend limit configured for the organization.",
+      "requires_human": false,
+      "estimated_seconds": 90,
+      "agent_instructions": "This is what stops an eight-call run from becoming an eight-hundred-call run. Record the hard limit and any soft or notification threshold exactly as shown. Do not change a limit; changing it is a separate decision for Tim.",
+      "evidence": {
+        "record_key": "openai_spend_limit",
+        "value_description": "The hard monthly limit amount and any notification threshold, or the word none where no limit is set.",
+        "screenshot": "openai-spend-limit.png"
+      }
+    },
+    {
+      "id": "openai-commercial-terms",
+      "provider": "openai",
+      "title": "Prove which OpenAI terms this organization's output falls under",
+      "url": "https://platform.openai.com/settings/organization/general",
+      "control_label": "Terms of use",
+      "label_unverified": true,
+      "action": "read_value",
+      "one_action": "Record which terms this organization is on and what they say about ownership and commercial use of generated images.",
+      "requires_human": false,
+      "estimated_seconds": 120,
+      "agent_instructions": "Record the terms the account is bound to as named in the account, together with the clause covering ownership of output and commercial use, quoted from the published terms with its retrieval date. Do not paraphrase the ownership clause.",
+      "evidence": {
+        "record_key": "openai_commercial_terms",
+        "value_description": "The named terms the account is on, plus the quoted ownership and commercial-use clause and the date it was read.",
+        "screenshot": "openai-commercial-terms.png"
+      }
+    },
+    {
+      "id": "google-signin",
+      "provider": "google",
+      "title": "Sign in to Google AI Studio",
+      "url": "https://aistudio.google.com/",
+      "control_label": "Sign in",
+      "label_unverified": true,
+      "action": "sign_in",
+      "one_action": "Load AI Studio and complete sign-in with the Google account being proven.",
+      "requires_human": true,
+      "estimated_seconds": 120,
+      "agent_instructions": "Open the URL and select or enter Tim's Google account, then STOP. Hand keyboard input to Tim for the password and any two-factor prompt. Do not read, echo, log, or screenshot either value. Resume only once AI Studio has loaded.",
+      "human_handoff": {
+        "what_tim_sees": "The Google sign-in screen asking to choose an account, then a password box. It may then ask him to tap a prompt on his phone or type a six-digit code.",
+        "what_tim_types": "His Google account password, then the six-digit code or the phone tap if it is asked for. Nothing else."
+      },
+      "evidence": {
+        "record_key": "google_signed_in",
+        "value_description": "yes once AI Studio has loaded signed in; no otherwise. Never any part of a credential.",
+        "screenshot": null
+      }
+    },
+    {
+      "id": "google-project-identity",
+      "provider": "google",
+      "title": "Record which Google account and project are being proven",
+      "url": "https://aistudio.google.com/apikey",
+      "control_label": "API keys",
+      "label_unverified": true,
+      "action": "read_value",
+      "one_action": "Read the signed-in account address and the Google Cloud project the key belongs to.",
+      "requires_human": false,
+      "estimated_seconds": 60,
+      "agent_instructions": "Record the account address and the project name and identifier. Never reveal, copy, or screenshot an API key value; if any key is shown unmasked, do not take the screenshot and record the values as text only.",
+      "evidence": {
+        "record_key": "google_project",
+        "value_description": "The signed-in account address plus the project name and project identifier. No key material.",
+        "screenshot": "google-project-identity.png"
+      }
+    },
+    {
+      "id": "google-data-retention",
+      "provider": "google",
+      "title": "Prove the Google data-retention and training setting for this project",
+      "url": "https://aistudio.google.com/apikey",
+      "control_label": "Plan",
+      "label_unverified": true,
+      "action": "read_setting",
+      "one_action": "Read whether the project is on the free or paid tier and what that tier says about using prompts to improve the products.",
+      "requires_human": false,
+      "estimated_seconds": 120,
+      "agent_instructions": "The retention and training answer follows the billing tier here: free-tier use is treated differently from paid use. Record the tier shown against the project, then the matching retention and human-review wording from the published Gemini API terms with the date it was read. Do not change the tier.",
+      "evidence": {
+        "record_key": "google_data_retention",
+        "value_description": "The tier shown for the project, plus the retention, training, and human-review wording that tier is bound by, with the date read.",
+        "screenshot": "google-data-retention.png"
+      }
+    },
+    {
+      "id": "google-region",
+      "provider": "google",
+      "title": "Prove where Google processes this project's requests",
+      "url": "https://aistudio.google.com/apikey",
+      "control_label": "Location",
+      "label_unverified": true,
+      "action": "read_setting",
+      "one_action": "Read the processing location or region configured for the project.",
+      "requires_human": false,
+      "estimated_seconds": 90,
+      "agent_instructions": "If no region control is offered for this project, record absent with the page checked, and add the published statement of where requests are processed for this tier with its retrieval date. Do not invent a region.",
+      "evidence": {
+        "record_key": "google_processing_region",
+        "value_description": "The configured region value, or absent plus the published processing-location statement and the date read.",
+        "screenshot": "google-region.png"
+      }
+    },
+    {
+      "id": "google-age-content",
+      "provider": "google",
+      "title": "Prove the Google age and content settings for this account",
+      "url": "https://myaccount.google.com/",
+      "control_label": "Personal info",
+      "label_unverified": true,
+      "action": "read_setting",
+      "one_action": "Read whether the account is age-verified as an adult and record any content or safety restriction that would apply to image generation.",
+      "requires_human": false,
+      "estimated_seconds": 120,
+      "agent_instructions": "Record whether the account is an adult account and any age-based restriction shown. Do not screenshot a date of birth or any other personal identifier; record the adult or restricted conclusion as text only.",
+      "evidence": {
+        "record_key": "google_age_content",
+        "value_description": "Adult account yes or no, plus any age or content restriction that applies. No date of birth.",
+        "screenshot": null
+      }
+    },
+    {
+      "id": "google-billing-state",
+      "provider": "google",
+      "title": "Prove the Google billing state and budget for this project",
+      "url": "https://console.cloud.google.com/billing",
+      "control_label": "Billing",
+      "label_unverified": true,
+      "action": "read_value",
+      "one_action": "Read whether a billing account is linked to the project and what budget or alert is set on it.",
+      "requires_human": false,
+      "estimated_seconds": 120,
+      "agent_instructions": "Record whether billing is linked and active, and the budget amount and alert threshold if one exists. Mask everything except the last four digits of any card number, and never screenshot a full number. Do not create or change a budget.",
+      "evidence": {
+        "record_key": "google_billing_state",
+        "value_description": "Billing account linked yes or no with its state, plus the budget amount and alert threshold, or none where no budget is set.",
+        "screenshot": "google-billing-state.png"
+      }
+    },
+    {
+      "id": "google-commercial-terms",
+      "provider": "google",
+      "title": "Prove which Google terms this project's output falls under",
+      "url": "https://aistudio.google.com/apikey",
+      "control_label": "Terms of Service",
+      "label_unverified": true,
+      "action": "read_value",
+      "one_action": "Record which Gemini API terms this project is on and what they say about commercial use of generated images.",
+      "requires_human": false,
+      "estimated_seconds": 120,
+      "agent_instructions": "Record the terms the project is bound by as named in the account, together with the clause covering commercial use and ownership of generated output, quoted from the published terms with its retrieval date. Do not paraphrase that clause.",
+      "evidence": {
+        "record_key": "google_commercial_terms",
+        "value_description": "The named terms the project is on, plus the quoted commercial-use and ownership clause and the date it was read.",
+        "screenshot": "google-commercial-terms.png"
+      }
+    },
+    {
+      "id": "compile-proof",
+      "provider": "none",
+      "title": "Compile the recorded proof into one file for Tim",
+      "url": null,
+      "control_label": null,
+      "label_unverified": false,
+      "action": "run_command",
+      "one_action": "Run the walkthrough script's compile command to write account-controls-proof.json in the evidence directory.",
+      "requires_human": false,
+      "estimated_seconds": 60,
+      "agent_instructions": "Run: ./run-proof-walkthrough.sh compile --evidence-dir DIR . The command fails if any earlier step is unrecorded. Record the resulting file's path as this step's value. Nothing is posted anywhere; the orchestrator posts the proof.",
+      "evidence": {
+        "record_key": "compiled_proof_path",
+        "value_description": "The absolute path of the written account-controls-proof.json.",
+        "screenshot": null
+      }
+    }
+  ]
+}

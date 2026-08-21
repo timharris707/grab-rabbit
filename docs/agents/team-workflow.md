@@ -3,7 +3,7 @@
 <!-- Seeded by the ClickAI team-workflow pack's setup skill. Re-run setup to refresh
      these bindings idempotently when the repository changes. -->
 
-_Pack version: team-workflow v1.5.2 · Last confirmed: 2026-08-17_
+_Pack version: team-workflow v1.5.2 · Last confirmed: 2026-08-20_
 
 ## Tracker binding
 
@@ -61,8 +61,8 @@ also run `LC_ALL=C scripts/test-verify-english-only.sh`. Documentation and resea
 lanes add the source, link, arithmetic, or secret checks named by their tracker item.
 There is no separate lint target.
 
-The Debug suite passed 94/94 and the unsigned Release build produced an
-`x86_64` + `arm64` executable on 2026-08-16. `CODE_SIGNING_ALLOWED=NO` proves compile
+The Debug suite passed 176/176 and the unsigned Release build produced an
+`x86_64` + `arm64` executable on 2026-08-20 (main `1cb670a`). `CODE_SIGNING_ALLOWED=NO` proves compile
 and packaging health only. Signed, TCC, updater, manual-smoke, notarization, and
 distribution work must use the additional gates in `docs/release/signing.md` and
 the driving tracker item.
@@ -94,10 +94,13 @@ them.
 - Security fixes include a regression check that would catch recurrence.
 - Product and UI changes stay within the accepted issue spec; discoveries outside it
   become new tracker items.
-- Model routing follows the resident approval rule: Codex (`gpt-5.6-sol`) is the
-  default development-lane runner; Claude Fable orchestrates and Opus 5 is approved
-  for user-interface lanes (both recorded 2026-08-17); any further Anthropic use
-  requires Tim's recorded approval.
+- Model routing follows the resident approval rule, updated by Tim's in-session
+  directives of 2026-08-18/19 (recorded on issue #39 and in the orchestrator
+  handoffs): all agent lanes run on Anthropic subagents, never codex, until Tim
+  revokes. Claude Fable orchestrates (2026-08-17 approval); Sonnet is limited to
+  genuinely mechanical build lanes (splices, ports, verbatim transforms); Opus 5
+  (or Fable) runs complex build lanes and all adversarial audits. The trigger for
+  the codex revocation was silent high-effort stream wedges (2026-08-18).
 
 ## Templates
 
@@ -131,10 +134,10 @@ them.
 
 - **Lane launch**: after the frontier and collision gates pass, the primary
   orchestrator posts the claim, provisions and preflights the workspace, then
-  launches the lane with an issue-as-spec brief. Development work uses a headless
-  `codex exec` CLI lane driven from the orchestrator; work Tim wants to watch uses
-  a picker-visible T3 Code Codex session; physical hardware and other human-only
-  gates use a human lane. The `Lane-start` marker and
+  launches the lane with an issue-as-spec brief. Development work uses an
+  Anthropic in-process subagent (Agent tool) driven from the orchestrator; work
+  Tim wants to watch uses a picker-visible Claude Code session; physical hardware
+  and other human-only gates use a human lane. The `Lane-start` marker and
   launch report stamp workspace, branch, runner, model, and effort, using
   `Lane-start: workspace=<name> branch=<branch> (runner=<runner> model=<model> effort=<effort>)`.
   Values are read from the launch surface; a click-launched value that the launcher
@@ -148,21 +151,24 @@ them.
   per-round repeats and close-out cost/announcement lines required by the
   orchestrate skill.
 - **Runner inventory**: a Claude Code orchestrator session (model Claude Fable)
-  owning routing, audit, and integration; development lanes on headless
-  `codex exec` CLI runs (`gpt-5.6-sol`) launched from the orchestrator, or
-  picker-visible T3 Code Codex sessions when Tim wants to watch; human lanes for
+  owning routing, audit, and integration; development lanes on Anthropic
+  in-process subagents (Agent tool) launched from the orchestrator, or
+  picker-visible Claude Code sessions when Tim wants to watch; human lanes for
   steps only Tim or a physical machine can perform. There is no launcher script. This
   orchestration section is the in-repo launch recipe and applies the pack's
   runner-parity chain: eligibility, proved claim, workspace, environment, portable
   brief, and preflight, each gating the next.
 - **Runner policy**: orchestration and integration run on Claude Code (model
-  Claude Fable) under Tim's recorded 2026-08-17 approval; development lanes prefer
-  Codex (`gpt-5.6-sol`). Recorded Anthropic approvals: Fable for orchestration and
-  integration (2026-08-17) and Opus 5 for Grab Rabbit user-interface lanes
-  (2026-08-17); any further Anthropic use requires Tim's recorded approval. Use a
-  human lane only for a genuinely human-held gate. Diagnose and retry a failed
-  launch on the policy runner before any fallback; a fallback is recorded on both
-  the launch report and tracker item as `runner fallback: X→Y, reason`.
+  Claude Fable, Tim's 2026-08-17 approval). All agent lanes run on Anthropic
+  subagents, never codex, until Tim revokes (Tim, 2026-08-18/19, superseding the
+  codex default; recorded on issue #39; trigger: silent codex high-effort
+  stream wedges, 2026-08-18). Sonnet
+  only for genuinely mechanical build lanes (splices, ports, verbatim
+  transforms); Opus 5 (or Fable) for complex build lanes, all adversarial
+  audits, and research lanes. Use a human lane only for a genuinely human-held
+  gate. Diagnose and retry a failed launch on the policy runner before any
+  fallback; a fallback is recorded on both the launch report and tracker item as
+  `runner fallback: X→Y, reason`.
 - **Workspace provisioning**: one linked worktree per lane under
   `.worktrees/<issue>-<slug>`. Implementation branches use
   `codex/<issue>-<slug>`; throwaway prototypes use `prototype/<issue>-<slug>` and
@@ -179,7 +185,10 @@ them.
   reports each command's exit code plus `Skipped checks: none` or every omission;
   the primary integrator may run a small mechanical set inline and always
   spot-checks the load-bearing diff and evidence before merge.
-- **Review-tier policy** (decider-set 2026-08-16):
+- **Review-tier policy** (decider-set 2026-08-16): while the codex revocation
+  above stands, the delegated-model choices below are superseded; delegated
+  review runs on Anthropic per the runner policy (Opus 5 or Fable for
+  adversarial tiers). The effort floors still apply.
   - Mechanical verification re-runs: `gpt-5.6-luna`, low effort when a delegated
     model is needed; exact shell commands may run inline without another model.
     Floor: never use this tier for adversarial judgment, a security/risk waiver, or

@@ -158,6 +158,10 @@ final class RecordingMediaChoiceTests: XCTestCase {
         )
 
         XCTAssertTrue(initVideoSource.contains("remuxAudio && mediaChoice.microphone && mediaChoice.systemAudio"))
+        XCTAssertTrue(
+            initVideoSource.contains("if #available(macOS 13, *), mediaChoice.systemAudio {"),
+            "The system-audio writer input must exist only when system audio is explicitly enabled"
+        )
         XCTAssertTrue(initVideoSource.contains("recordsMicrophone: mediaChoice.microphone"))
         XCTAssertTrue(initVideoSource.contains("if mediaChoice.microphone {"))
         XCTAssertFalse(initVideoSource.contains("recordMic"))

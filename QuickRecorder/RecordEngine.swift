@@ -819,7 +819,7 @@ extension AppDelegate {
         
         if SCContext.vW.canAdd(SCContext.vwInput) { SCContext.vW.add(SCContext.vwInput) }
 
-        if #available(macOS 13, *) {
+        if #available(macOS 13, *), mediaChoice.systemAudio {
             SCContext.awInput = AVAssetWriterInput(mediaType: AVMediaType.audio, outputSettings: SCContext.updateAudioSettings())
             SCContext.awInput.expectsMediaDataInRealTime = true
             if SCContext.vW.canAdd(SCContext.awInput) { SCContext.vW.add(SCContext.awInput) }

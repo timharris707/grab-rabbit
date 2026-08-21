@@ -929,6 +929,35 @@ window_id_is_present() {
     '.windows | any(.windowID == $window_id)' <<<"$LIVE_PROBE_JSON" >/dev/null
 }
 
+select_capturable_window() {
+  while true; do
+    run_live_probe list-sources || return 1
+    WINDOW_SOURCE_JSON="$LIVE_PROBE_JSON"
+    jq -r '.windows[] | "  Window \(.windowID): \(.applicationName) — \(.title) [\(.width)x\(.height)]"' \
+      <<<"$WINDOW_SOURCE_JSON" || return 1
+    ask WINDOW_ID "Paste the exact numeric Window ID for the browser-case window:"
+    note "checking the selected Window ID is a nonzero UInt32"
+    if window_id_is_valid_number; then
+      ok "the selected Window ID is a nonzero UInt32"
+    else
+      bad "the selected Window ID is a nonzero UInt32 — not yet"
+      warn "Enter one of the numeric Window IDs shown above. The list will refresh here."
+      continue
+    fi
+    note "checking the exact selected SCWindow is still capturable"
+    if window_id_is_present; then
+      ok "the exact selected SCWindow is still capturable"
+      WINDOW_SOURCE_JSON="$LIVE_PROBE_JSON"
+      SELECTED_WINDOW_APP=$(jq -er --argjson window_id "$WINDOW_ID" \
+        '.windows[] | select(.windowID == $window_id) | .applicationName' \
+        <<<"$WINDOW_SOURCE_JSON") || return 1
+      return 0
+    fi
+    bad "the exact selected SCWindow is still capturable — not yet"
+    warn "The window inventory changed. It will refresh here without restarting the wizard."
+  done
+}
+
 signed_probe_identity_is_approved() {
   [[ -x "$LIVE_PROBE" ]] || return 1
   run_live_probe list-sources --skip-window-query || return 1
@@ -1837,17 +1866,8 @@ BROWSER_CASE_MAY_BE_OPEN=true
 step "Keep this one browser window open. The Static button makes it fully still; Low change updates once per second; Active animates continuously."
 step "Do not select the desktop, a display, Screen Sharing, Finder, or a different browser window."
 pause "Arrange the real browser window at the size you want to capture, then press Enter."
-run_live_probe list-sources \
-  || fatal_gate "the signed probe could not read the real-window inventory"
-WINDOW_SOURCE_JSON="$LIVE_PROBE_JSON"
-jq -r '.windows[] | "  Window \(.windowID): \(.applicationName) — \(.title) [\(.width)x\(.height)]"' \
-  <<<"$WINDOW_SOURCE_JSON" || fatal_gate "the real-window inventory was not valid JSON"
-ask WINDOW_ID "Paste the exact numeric Window ID for the browser-case window:"
-required_check "the selected Window ID is a nonzero UInt32" window_id_is_valid_number
-required_check "the exact selected SCWindow is still capturable" window_id_is_present
-SELECTED_WINDOW_APP=$(jq -er --argjson window_id "$WINDOW_ID" \
-  '.windows[] | select(.windowID == $window_id) | .applicationName' <<<"$WINDOW_SOURCE_JSON") \
-  || fatal_gate "the selected window application name could not be read"
+select_capturable_window \
+  || fatal_gate "the signed probe could not select a current real browser window"
 required_check "exact camera/window preflight passes and creates no output" exact_preflight_passes_without_output
 ask CASES_READY "Type YES after clicking Static, Low change, and Active once and seeing each behavior:"
 required_check "all three browser cases were visibly prepared" test "$CASES_READY" = "YES"

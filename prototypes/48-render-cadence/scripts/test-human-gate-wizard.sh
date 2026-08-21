@@ -423,6 +423,30 @@ grep -Fq 'Camera: Connected Camera [external]' <<<"$inventory_output" \
 grep -Fq 'Stable ID: stable-camera-id' <<<"$inventory_output" \
   || fail "the refreshed stable ID was not shown"
 
+run_live_probe_definition=$(declare -f run_live_probe)
+WIZARD_TEST_WINDOW_INVENTORY_CALLS=0
+run_live_probe() {
+  WIZARD_TEST_WINDOW_INVENTORY_CALLS=$((WIZARD_TEST_WINDOW_INVENTORY_CALLS + 1))
+  LIVE_PROBE_JSON='{"windows":[{"windowID":3423,"applicationName":"Google Chrome","title":"Grab Rabbit cadence cases","width":985,"height":739}]}'
+}
+WINDOW_ID=""
+WINDOW_SOURCE_JSON=""
+SELECTED_WINDOW_APP=""
+window_selection_output="$test_root/window-selection-output.txt"
+select_capturable_window <<< $'8723\n3423\n' >"$window_selection_output" 2>&1 \
+  || fail "a corrected browser-window selection did not resume at the same step"
+[[ "$WINDOW_ID" == 3423 \
+    && "$SELECTED_WINDOW_APP" == "Google Chrome" \
+    && "$WIZARD_TEST_WINDOW_INVENTORY_CALLS" -ge 3 ]] \
+  || fail "the corrected browser-window selection did not retain the refreshed exact window"
+grep -Fq 'Window 3423: Google Chrome — Grab Rabbit cadence cases [985x739]' \
+    "$window_selection_output" \
+  || fail "a rejected browser-window selection did not refresh the visible inventory"
+grep -Fq 'the exact selected SCWindow is still capturable — not yet' \
+    "$window_selection_output" \
+  || fail "a rejected browser-window selection did not explain why it was being repeated"
+eval "$run_live_probe_definition"
+
 WIZARD_TEST_CUA_PID=12083
 WIZARD_TEST_SCREEN_PID=63772
 WIZARD_TEST_UID=501

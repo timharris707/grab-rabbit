@@ -17,6 +17,9 @@
 		C44000010000000000000001 /* CaptureAutoStop.swift in Sources */ = {isa = PBXBuildFile; fileRef = C44000020000000000000001 /* CaptureAutoStop.swift */; };
 		C44000010000000000000002 /* CaptureAutoStop.swift in Sources */ = {isa = PBXBuildFile; fileRef = C44000020000000000000001 /* CaptureAutoStop.swift */; };
 		C43000010000000000000001 /* QuickTopmostRecordingState.swift in Sources */ = {isa = PBXBuildFile; fileRef = C43000020000000000000001 /* QuickTopmostRecordingState.swift */; };
+		C45000010000000000000001 /* RecordingMediaChoice.swift in Sources */ = {isa = PBXBuildFile; fileRef = C45000020000000000000001 /* RecordingMediaChoice.swift */; };
+		C45000010000000000000002 /* RecordingMediaChoice.swift in Sources */ = {isa = PBXBuildFile; fileRef = C45000020000000000000001 /* RecordingMediaChoice.swift */; };
+		C45000010000000000000003 /* RecordingMediaChoiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C45000020000000000000002 /* RecordingMediaChoiceTests.swift */; };
 		C43000010000000000000002 /* QuickTopmostRecordingState.swift in Sources */ = {isa = PBXBuildFile; fileRef = C43000020000000000000001 /* QuickTopmostRecordingState.swift */; };
 		C43000010000000000000003 /* QuickTopmostSurfaces.swift in Sources */ = {isa = PBXBuildFile; fileRef = C43000020000000000000002 /* QuickTopmostSurfaces.swift */; };
 		C43000010000000000000004 /* QuickTopmostSurfaceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C43000020000000000000003 /* QuickTopmostSurfaceTests.swift */; };
@@ -77,6 +80,8 @@
 		C40000020000000000000002 /* QuickTopmostWindowShortcut.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuickTopmostWindowShortcut.swift; sourceTree = "<group>"; };
 		C44000020000000000000001 /* CaptureAutoStop.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptureAutoStop.swift; sourceTree = "<group>"; };
 		C43000020000000000000001 /* QuickTopmostRecordingState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuickTopmostRecordingState.swift; sourceTree = "<group>"; };
+		C45000020000000000000001 /* RecordingMediaChoice.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingMediaChoice.swift; sourceTree = "<group>"; };
+		C45000020000000000000002 /* RecordingMediaChoiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingMediaChoiceTests.swift; sourceTree = "<group>"; };
 		C43000020000000000000002 /* QuickTopmostSurfaces.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuickTopmostSurfaces.swift; sourceTree = "<group>"; };
 		C43000020000000000000003 /* QuickTopmostSurfaceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuickTopmostSurfaceTests.swift; sourceTree = "<group>"; };
 		A40000020000000000000001 /* RecordingOutputJob.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingOutputJob.swift; sourceTree = "<group>"; };
@@ -195,6 +200,7 @@
 				C44000020000000000000001 /* CaptureAutoStop.swift */,
 				27000000000000000000000C /* ScreenRecordingPermissionCoordinator.swift */,
 				A40000020000000000000001 /* RecordingOutputJob.swift */,
+				C45000020000000000000001 /* RecordingMediaChoice.swift */,
 				B23000020000000000000001 /* WindowCapturePrivacy.swift */,
 				C42000020000000000000001 /* WindowSelectorRefreshAdapter.swift */,
 				C42000020000000000000003 /* WindowSelectorThumbnailProvider.swift */,
@@ -219,6 +225,7 @@
 				270000000000000000000002 /* PermissionFlowSourceTripwireTests.swift */,
 				27000000000000000000000F /* ScreenRecordingPermissionCoordinatorTests.swift */,
 				A40000020000000000000002 /* RecordingOutputIsolationTests.swift */,
+				C45000020000000000000002 /* RecordingMediaChoiceTests.swift */,
 				B23000020000000000000002 /* WindowCapturePrivacyTests.swift */,
 				C42000020000000000000002 /* WindowSelectorRefreshAdapterTests.swift */,
 			);
@@ -404,6 +411,8 @@
 				C40000010000000000000001 /* QuickTopmostWindowShortcutTests.swift in Sources */,
 				C40000010000000000000003 /* QuickTopmostWindowShortcut.swift in Sources */,
 				C43000010000000000000002 /* QuickTopmostRecordingState.swift in Sources */,
+				C45000010000000000000002 /* RecordingMediaChoice.swift in Sources */,
+				C45000010000000000000003 /* RecordingMediaChoiceTests.swift in Sources */,
 				C44000010000000000000002 /* CaptureAutoStop.swift in Sources */,
 				C43000010000000000000004 /* QuickTopmostSurfaceTests.swift in Sources */,
 				270000000000000000000001 /* PermissionFlowSourceTripwireTests.swift in Sources */,
@@ -424,6 +433,7 @@
 			files = (
 				C40000010000000000000002 /* QuickTopmostWindowShortcut.swift in Sources */,
 				C43000010000000000000001 /* QuickTopmostRecordingState.swift in Sources */,
+				C45000010000000000000001 /* RecordingMediaChoice.swift in Sources */,
 				C44000010000000000000001 /* CaptureAutoStop.swift in Sources */,
 				C43000010000000000000003 /* QuickTopmostSurfaces.swift in Sources */,
 				A40000010000000000000001 /* RecordingOutputJob.swift in Sources */,

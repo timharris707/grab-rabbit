@@ -872,6 +872,93 @@ final class WindowCapturePrivacyTests: XCTestCase {
         XCTAssertTrue(appSource.contains("if SCContext.isFinalizing { return 112 }"))
     }
 
+    // The Stop UI must say it is still postprocessing: the finalizing state publishes the exact
+    // "Finishing..." label into the status item and is the only state that sizes it to 112 points.
+    func testFinalizingStatusItemReportsPostprocessingWithTheFinishingLabel() throws {
+        XCTAssertEqual(
+            CaptureFinalizationPresentation.statusText,
+            "Finishing...",
+            "The finalizing label is the localization key the status item renders; changing it silently drops the translation."
+        )
+
+        var isFinalizing = false
+        var publishedStatuses = [String]()
+        CaptureFinalizationPresentation.begin(
+            setFinalizing: { isFinalizing = $0 },
+            publishStatus: { publishedStatuses.append($0) }
+        )
+        XCTAssertTrue(isFinalizing, "Beginning postprocessing must enter the finalizing state.")
+        XCTAssertEqual(
+            publishedStatuses,
+            ["Finishing..."],
+            "Entering postprocessing must publish exactly the Finishing label."
+        )
+        CaptureFinalizationPresentation.complete(setFinalizing: { isFinalizing = $0 })
+        XCTAssertFalse(isFinalizing)
+        XCTAssertEqual(publishedStatuses, ["Finishing..."], "Completion must not republish a status.")
+
+        let statusSource = try projectSource("QuickRecorder/ViewModel/StatusBar.swift")
+        let finalizingBranchStart = try XCTUnwrap(
+            statusSource.range(of: "if SCContext.isFinalizing {")
+        )
+        let finalizingBranchEnd = try XCTUnwrap(
+            statusSource.range(
+                of: "} else if SCContext.streamType != nil {",
+                range: finalizingBranchStart.upperBound..<statusSource.endIndex
+            )
+        )
+        let finalizingBranch = statusSource[
+            finalizingBranchStart.upperBound..<finalizingBranchEnd.lowerBound
+        ]
+        XCTAssertTrue(
+            finalizingBranch.contains("Text(CaptureFinalizationPresentation.statusText.local)"),
+            "The finalizing branch of the status item must render the published Finishing label."
+        )
+        XCTAssertTrue(
+            finalizingBranch.contains("ProgressView()"),
+            "The finalizing branch must show postprocessing is still running."
+        )
+    }
+
+    // isFinalizing <-> the 112-point content width (the rendered item measures 112 + 2px of
+    // macOS status-item padding). getStatusBarWidth lives outside the test target, so the
+    // biconditional is pinned against its source: 112 is the finalizing return and nothing else.
+    func testStatusBarWidthIsTheFinalizingWidthExactlyWhileFinalizing() throws {
+        let appSource = try projectSource("QuickRecorder/QuickRecorderApp.swift")
+        let signature = "func getStatusBarWidth() -> CGFloat {"
+        let start = try XCTUnwrap(appSource.range(of: signature))
+        let end = try XCTUnwrap(
+            appSource.range(of: "\n}", range: start.upperBound..<appSource.endIndex)
+        )
+        let body = String(appSource[start.upperBound..<end.lowerBound])
+
+        let finalizingReturn = "if SCContext.isFinalizing { return 112 }"
+        XCTAssertTrue(
+            body.contains(finalizingReturn),
+            "Finalizing must return the 112-point content width before any other sizing."
+        )
+        let otherBranches = body.replacingOccurrences(of: finalizingReturn, with: "")
+        let otherWidths = Set(
+            otherBranches
+                .components(separatedBy: CharacterSet(charactersIn: "0123456789.").inverted)
+                .compactMap(Double.init)
+        )
+        XCTAssertFalse(otherWidths.isEmpty, "The non-finalizing branches must still size the item.")
+        XCTAssertFalse(
+            otherWidths.contains(112),
+            "Only the finalizing state may produce the 112-point status item; \(otherWidths) must stay clear of it."
+        )
+        let statusSource = try projectSource("QuickRecorder/ViewModel/StatusBar.swift")
+        XCTAssertTrue(
+            statusSource.contains("iconView.frame = NSRect(x: 0, y: 1, width: getStatusBarWidth()"),
+            "The menu-bar item must take its width from getStatusBarWidth()."
+        )
+        XCTAssertTrue(
+            statusSource.contains("button.frame = iconView.frame"),
+            "The measured button must inherit the sized content frame."
+        )
+    }
+
     func testProductionStopEntryHandlesRepeatedUIStopOnceAndKeepsMainResponsive() throws {
         XCTAssertTrue(Thread.isMainThread)
         let directory = FileManager.default.temporaryDirectory

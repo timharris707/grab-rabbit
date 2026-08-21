@@ -134,10 +134,10 @@ them.
 
 - **Lane launch**: after the frontier and collision gates pass, the primary
   orchestrator posts the claim, provisions and preflights the workspace, then
-  launches the lane with an issue-as-spec brief. Development work uses a headless
-  `codex exec` CLI lane driven from the orchestrator; work Tim wants to watch uses
-  a picker-visible T3 Code Codex session; physical hardware and other human-only
-  gates use a human lane. The `Lane-start` marker and
+  launches the lane with an issue-as-spec brief. Development work uses an
+  Anthropic in-process subagent (Agent tool) driven from the orchestrator; work
+  Tim wants to watch uses a picker-visible Claude Code session; physical hardware
+  and other human-only gates use a human lane. The `Lane-start` marker and
   launch report stamp workspace, branch, runner, model, and effort, using
   `Lane-start: workspace=<name> branch=<branch> (runner=<runner> model=<model> effort=<effort>)`.
   Values are read from the launch surface; a click-launched value that the launcher

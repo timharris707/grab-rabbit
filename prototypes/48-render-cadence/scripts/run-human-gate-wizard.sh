@@ -259,7 +259,18 @@ TOTAL_MINUTES=100
 
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
-SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+canonicalize_mini_script_directory() {
+  local candidate=$1
+  case "$candidate" in
+    /users/openclaw/grab-rabbit/.worktrees/48-render-cadence/prototypes/48-render-cadence/scripts|\
+    /Users/openclaw/grab-rabbit/.worktrees/48-render-cadence/prototypes/48-render-cadence/scripts)
+      printf '%s\n' /Users/openclaw/grab-rabbit/.worktrees/48-render-cadence/prototypes/48-render-cadence/scripts
+      ;;
+    *) printf '%s\n' "$candidate" ;;
+  esac
+}
+
+SCRIPT_DIR=$(canonicalize_mini_script_directory "$(cd "$(dirname "$0")" && pwd)")
 PROTOTYPE_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
 REPOSITORY_ROOT=$(cd "$PROTOTYPE_ROOT/../.." && pwd)
 EXPECTED_BRANCH="prototype/48-render-cadence"

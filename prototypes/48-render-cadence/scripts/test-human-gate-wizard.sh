@@ -18,6 +18,13 @@ awk '/^banner "Grab Rabbit render-cadence human gate"/ { exit } { print }' "$wiz
 source "$harness"
 trap 'rm -rf "$test_root"' EXIT
 
+declare -F canonicalize_mini_script_directory >/dev/null \
+  || fail "the wizard cannot canonicalize the Mac mini's case-insensitive Users path"
+lowercase_mini_scripts=/users/openclaw/grab-rabbit/.worktrees/48-render-cadence/prototypes/48-render-cadence/scripts
+expected_mini_scripts=/Users/openclaw/grab-rabbit/.worktrees/48-render-cadence/prototypes/48-render-cadence/scripts
+[[ "$(canonicalize_mini_script_directory "$lowercase_mini_scripts")" == "$expected_mini_scripts" ]] \
+  || fail "a lowercase /users invocation does not bind to the manifest's canonical /Users path"
+
 if rg -n 'sed -n .*\^Authority=.*\| head -1|sed -n .*\^TeamIdentifier=.*\| head -1' \
     "$wizard" "$script_dir/stage-signed-app-to-mini.sh" "$script_dir/build-live-app.sh" \
     >"$test_root/pipefail-signing-detail-races.txt"; then

@@ -959,6 +959,110 @@ final class WindowCapturePrivacyTests: XCTestCase {
         )
     }
 
+    // Every writer-prerequisite failure exit must cancel the writer before it discards outputs,
+    // otherwise a writer that outlived its input-finish closure holds its file handle open.
+    func testWriterPrerequisiteFailuresCancelTheWriterBeforeDiscardingOutputs() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("writer-prerequisite-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        func makeVideoJob(_ stem: String) throws -> RecordingOutputJob {
+            let job = try RecordingOutputJob.reserve(
+                in: directory,
+                preferredStem: stem,
+                layout: .single(fileExtension: "mov")
+            )
+            XCTAssertTrue(FileManager.default.createFile(
+                atPath: job.inputURL.path,
+                contents: Data(stem.utf8)
+            ))
+            return job
+        }
+
+        func makePackageJob(_ stem: String) throws -> RecordingOutputJob {
+            let job = try RecordingOutputJob.reserve(
+                in: directory,
+                preferredStem: stem,
+                layout: .package(
+                    fileExtension: "qma",
+                    requiredMembers: ["info.json"],
+                    automaticallyExports: false
+                )
+            )
+            XCTAssertTrue(FileManager.default.createFile(
+                atPath: job.inputURL.appendingPathComponent("info.json").path,
+                contents: Data("{}".utf8)
+            ))
+            return job
+        }
+
+        // The missing-outputJob guard already cancels; the two writer-unavailable guards must match it.
+        let cases: [(name: String, job: RecordingOutputJob?, isAudioOnly: Bool, writer: DelayedCaptureWriterFinalizer?)] = [
+            ("missing output job", nil, false, DelayedCaptureWriterFinalizer()),
+            ("video writer without its input-finish closure", try makeVideoJob("video"), false, DelayedCaptureWriterFinalizer()),
+            ("audio package without a writer", try makePackageJob("package"), true, nil),
+        ]
+
+        for testCase in cases {
+            var events = [String]()
+            var failures = [RecordingExportError]()
+            var completionCount = 0
+            let resources = CaptureProductionStopResources(
+                outputJob: testCase.job,
+                writerFinalizer: testCase.writer,
+                isAudioOnly: testCase.isAudioOnly,
+                cancelWriter: { events.append("cancelWriter") }
+            )
+            let store = CaptureOutputSessionStore()
+            let session = makeCaptureSession(
+                stream: NSObject(),
+                mode: .transparent,
+                sink: TestVideoDestination(),
+                outputJob: testCase.job,
+                isAudioOnly: testCase.isAudioOnly,
+                writerFinalizer: testCase.writer
+            )
+            let actions = CaptureProductionStopActions(
+                stopActiveStream: { _ in false },
+                reportFailure: { error in
+                    events.append("reportFailure")
+                    failures.append(error)
+                },
+                cleanupTerminal: { acknowledge in
+                    completionCount += 1
+                    acknowledge()
+                }
+            )
+
+            XCTAssertTrue(store.install(session))
+            XCTAssertTrue(store.deactivate(session))
+            XCTAssertEqual(
+                CaptureProductionStopEntry(store: store).stop(
+                    expectedSession: session,
+                    activeStream: nil,
+                    resolveResources: { _ in resources },
+                    actions: actions
+                ),
+                .handled,
+                testCase.name
+            )
+
+            XCTAssertEqual(
+                events,
+                ["cancelWriter", "reportFailure"],
+                "\(testCase.name): the writer must be cancelled before the failure discards outputs."
+            )
+            XCTAssertEqual(failures.count, 1, testCase.name)
+            XCTAssertEqual(testCase.writer?.finishCallCount ?? 0, 0, "\(testCase.name): a refused writer must never be finished.")
+            XCTAssertEqual(completionCount, 1, "\(testCase.name): the Stop flow must still complete.")
+            if let job = testCase.job {
+                XCTAssertEqual(job.lifecycle, .terminal, testCase.name)
+                XCTAssertFalse(FileManager.default.fileExists(atPath: job.reservationURL.path), testCase.name)
+            }
+        }
+    }
+
     func testProductionStopEntryHandlesRepeatedUIStopOnceAndKeepsMainResponsive() throws {
         XCTAssertTrue(Thread.isMainThread)
         let directory = FileManager.default.temporaryDirectory

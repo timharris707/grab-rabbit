@@ -885,6 +885,7 @@ final class CaptureProductionStopEntry {
         if !resources.isAudioOnly {
             guard let writerFinalizer = resources.writerFinalizer,
                   let markVideoInputFinished = resources.markVideoInputFinished else {
+                resources.cancelWriter()
                 let error = finishedJob.discardOutputs(reason: .preparation(
                     stage: .first,
                     message: "The recording writer is unavailable."
@@ -913,6 +914,7 @@ final class CaptureProductionStopEntry {
         switch finishedJob.kind {
         case .package(let automaticallyExports):
             guard let writerFinalizer = resources.writerFinalizer else {
+                resources.cancelWriter()
                 let error = finishedJob.discardOutputs(reason: .preparation(
                     stage: .first,
                     message: "The audio package writer is unavailable."

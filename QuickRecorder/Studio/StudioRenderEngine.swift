@@ -34,6 +34,9 @@ enum StudioRenderOutcome: Equatable {
     case skippedMissingCamera
     case skippedMissingWindow
     case skippedRateGuard
+    // Another render was still in flight. Kept separate from the rate guard so a
+    // later telemetry pass can tell contention apart from ordinary early triggers.
+    case skippedOverlap
     case rejectedTimestamp
     case skippedWriterNotReady
     case stopped(StudioStopReason)
@@ -44,6 +47,8 @@ enum StudioAudioOutcome: Equatable {
     case skippedPaused
     case skippedStopped
     case invalidSample
+    // Another buffer on this same track was still in flight.
+    case skippedOverlap
     case rejectedTimestamp
     case retimeFailed
     case skippedWriterNotReady
@@ -73,6 +78,8 @@ final class StudioRenderEngine {
     private var lastVideoSeconds = -Double.infinity
     private var lastVideoNanoseconds: UInt64?
     private var lastAudioSeconds: [StudioAudioTrack: Double] = [:]
+    private var isVideoRenderInFlight = false
+    private var tracksInFlight = Set<StudioAudioTrack>()
 
     init(
         configuration: StudioRenderConfiguration,
@@ -146,12 +153,16 @@ final class StudioRenderEngine {
 
     /// Composites and writes one frame.
     ///
-    /// Admission, meaning the rate guard and the monotonic timestamp guard, is
-    /// checked and reserved in one locked step before the composite, and rolled back
-    /// under the same lock on any path that does not append. Two overlapping calls
-    /// therefore cannot both pass admission and reach the writer out of order.
-    /// Driving this from one serial queue is still the intended shape, because the
-    /// compositor is not required to be reentrant.
+    /// Drive this from one serial queue. That is the intended shape and the only one
+    /// the compositor is written for, since it is not required to be reentrant.
+    ///
+    /// The in-flight guard is the backstop for when that is not honoured. A render
+    /// holds a reservation from admission until it appends or gives up, and a second
+    /// call arriving in that window is refused with `skippedOverlap` rather than
+    /// being allowed to reserve on top of it. Without that refusal a slow composite
+    /// could be overtaken by a later frame and then roll the guard state back to its
+    /// own stale values on the way out, which would both write frames out of order
+    /// and disarm the rate and monotonic guards for everything after.
     @discardableResult
     func renderOnce() -> StudioRenderOutcome {
         guard stopReason == nil else { return .skippedStopped }
@@ -205,15 +216,19 @@ final class StudioRenderEngine {
         guard writerSurface.appendVideo(outputBuffer, at: presentationTime) else {
             return release(reservation, returning: stopAndReport(.videoAppendFailed))
         }
+        commit(reservation)
         return .appended(presentationTime)
     }
 
-    // The admission guards and the state they advance are one step, so a second
-    // caller cannot slip past the guards while the first is still compositing. The
-    // reservation carries the state to put back if this frame never gets appended.
+    // The admission guards, the state they advance, and the in-flight flag move
+    // together under one lock. The reservation carries both the state to put back if
+    // this frame never gets appended and the values this call wrote, so the rollback
+    // can tell whether it is still the owner of that state.
     private struct StudioVideoReservation {
         let previousSeconds: Double
         let previousNanoseconds: UInt64?
+        let committedSeconds: Double
+        let committedNanoseconds: UInt64
     }
 
     private enum StudioVideoAdmission {
@@ -221,11 +236,17 @@ final class StudioRenderEngine {
         case refused(StudioRenderOutcome)
     }
 
+    private enum StudioAudioAdmission {
+        case reserved(previousSeconds: Double)
+        case refused(StudioAudioOutcome)
+    }
+
     private func reserveVideoAdmission(
         seconds: Double,
         at now: UInt64
     ) -> StudioVideoAdmission {
         stateLock.withLock {
+            guard !isVideoRenderInFlight else { return .refused(.skippedOverlap) }
             if let lastVideoNanoseconds,
                now >= lastVideoNanoseconds,
                Double(now - lastVideoNanoseconds) / 1_000_000_000
@@ -235,19 +256,31 @@ final class StudioRenderEngine {
             guard seconds > lastVideoSeconds else { return .refused(.rejectedTimestamp) }
             let reservation = StudioVideoReservation(
                 previousSeconds: lastVideoSeconds,
-                previousNanoseconds: lastVideoNanoseconds
+                previousNanoseconds: lastVideoNanoseconds,
+                committedSeconds: seconds,
+                committedNanoseconds: now
             )
             lastVideoSeconds = seconds
             lastVideoNanoseconds = now
+            isVideoRenderInFlight = true
             return .reserved(reservation)
         }
     }
 
+    private func commit(_ reservation: StudioVideoReservation) {
+        stateLock.withLock { isVideoRenderInFlight = false }
+    }
+
+    // Defense in depth: only put the old values back if this call's values are still
+    // the ones on record, so a rollback can never undo somebody else's frame.
     private func release(
         _ reservation: StudioVideoReservation,
         returning outcome: StudioRenderOutcome
     ) -> StudioRenderOutcome {
         stateLock.withLock {
+            isVideoRenderInFlight = false
+            guard lastVideoSeconds == reservation.committedSeconds,
+                  lastVideoNanoseconds == reservation.committedNanoseconds else { return }
             lastVideoSeconds = reservation.previousSeconds
             lastVideoNanoseconds = reservation.previousNanoseconds
         }
@@ -262,20 +295,37 @@ final class StudioRenderEngine {
         guard !timeline.isPaused else { return .skippedPaused }
         guard sample.isValid else { return .invalidSample }
 
-        // The per-track guard is reserved the same way the video guard is, so two
-        // callbacks on one track cannot both be admitted at the same instant.
+        // The per-track guard is reserved the same way the video guard is, including
+        // the in-flight refusal. Audio needs it more than video does: there is no
+        // rate guard here, so nothing else would keep two callbacks on one track from
+        // interleaving.
         let seconds = timeline.activeElapsedSeconds(at: timeline.nowNanoseconds)
-        let previousSeconds = stateLock.withLock { () -> Double? in
+        let admission = stateLock.withLock { () -> StudioAudioAdmission in
+            guard !tracksInFlight.contains(track) else { return .refused(.skippedOverlap) }
             let previous = lastAudioSeconds[track] ?? -.infinity
-            guard seconds > previous else { return nil }
+            guard seconds > previous else { return .refused(.rejectedTimestamp) }
             lastAudioSeconds[track] = seconds
-            return previous
+            tracksInFlight.insert(track)
+            return .reserved(previousSeconds: previous)
         }
-        guard let previousSeconds else { return .rejectedTimestamp }
+        let previousSeconds: Double
+        switch admission {
+        case .refused(let outcome): return outcome
+        case .reserved(let previous): previousSeconds = previous
+        }
+
         func release(_ outcome: StudioAudioOutcome) -> StudioAudioOutcome {
-            stateLock.withLock { lastAudioSeconds[track] = previousSeconds }
+            stateLock.withLock {
+                tracksInFlight.remove(track)
+                guard lastAudioSeconds[track] == seconds else { return }
+                lastAudioSeconds[track] = previousSeconds
+            }
             return outcome
         }
+        func commit() {
+            stateLock.withLock { tracksInFlight.remove(track) }
+        }
+
         guard writerSurface.isReady(for: track) else {
             return release(.skippedWriterNotReady)
         }
@@ -285,6 +335,7 @@ final class StudioRenderEngine {
         guard writerSurface.appendAudio(retimed, to: track) else {
             return release(.appendFailed)
         }
+        commit()
         return .appended(retimed.presentationTimeStamp)
     }
 

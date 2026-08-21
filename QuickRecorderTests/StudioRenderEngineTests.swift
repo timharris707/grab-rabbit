@@ -170,6 +170,103 @@ final class StudioRenderEngineTests: XCTestCase {
         XCTAssertNil(harness.engine.stopReason)
     }
 
+    // MARK: - Overlap
+
+    // The overlap the in-flight guard exists for, reproduced without threads: the
+    // compositor re-enters renderOnce while the first render still holds its
+    // reservation, with the clock moved far enough that the rate guard would let the
+    // second call through. Without the in-flight refusal the second call reserves on
+    // top of the first, and the first then rolls the guards back to its own stale
+    // values on the way out.
+    func testAnOverlappingRenderIsRefusedAndLeavesBothGuardsArmed() throws {
+        let harness = makeHarness()
+        try feedCamera(harness)
+        harness.clock.advance(seconds: 1)
+
+        // The re-entry fires once. If the in-flight guard were missing the inner call
+        // would append and re-enter again, and an unbounded recursion would take the
+        // runner down instead of failing an assertion.
+        var innerOutcome: StudioRenderOutcome?
+        var hasReentered = false
+        harness.compositor.duringCompose = {
+            guard !hasReentered else { return }
+            hasReentered = true
+            harness.clock.advance(seconds: harness.frameInterval)
+            innerOutcome = harness.engine.renderOnce()
+        }
+        let outerOutcome = harness.engine.renderOnce()
+        harness.compositor.duringCompose = nil
+
+        XCTAssertEqual(innerOutcome, .skippedOverlap)
+        XCTAssertEqual(outerOutcome, .appended(StudioTimeline.presentationTime(seconds: 1)))
+        XCTAssertEqual(harness.writer.appendedVideoTimes.count, 1)
+        XCTAssertNil(harness.engine.stopReason)
+
+        // The rate guard still holds the instant the appended frame was taken, so a
+        // trigger back at that instant is refused for being early rather than let in.
+        harness.clock.rewind(seconds: harness.frameInterval)
+        XCTAssertEqual(harness.engine.renderOnce(), .skippedRateGuard)
+
+        // And the monotonic guard still holds one second, not negative infinity.
+        harness.clock.rewind(seconds: 0.5)
+        XCTAssertEqual(harness.engine.renderOnce(), .rejectedTimestamp)
+    }
+
+    func testAnOverlappingAudioBufferOnTheSameTrackIsRefused() throws {
+        let harness = makeHarness()
+        harness.clock.advance(seconds: 1)
+
+        let innerSample = try StudioTestBuffers.makeAudioSample(sampleCount: 4, startSeconds: 0)
+        var innerOutcome: StudioAudioOutcome?
+        var hasReentered = false
+        harness.writer.duringAudioAppend = {
+            guard !hasReentered else { return }
+            hasReentered = true
+            harness.clock.advance(seconds: 0.5)
+            innerOutcome = harness.engine.receiveAudio(innerSample, track: .systemAudio)
+        }
+        let outerOutcome = harness.engine.receiveAudio(
+            try StudioTestBuffers.makeAudioSample(sampleCount: 4, startSeconds: 0),
+            track: .systemAudio
+        )
+        harness.writer.duringAudioAppend = nil
+
+        XCTAssertEqual(innerOutcome, .skippedOverlap)
+        XCTAssertEqual(outerOutcome, .appended(StudioTimeline.presentationTime(seconds: 1)))
+        XCTAssertEqual(harness.writer.appendedAudioTimes(for: .systemAudio).count, 1)
+
+        // The track's guard still holds one second, so an earlier buffer is refused.
+        harness.clock.rewind(seconds: 1)
+        XCTAssertEqual(
+            harness.engine.receiveAudio(
+                try StudioTestBuffers.makeAudioSample(sampleCount: 4, startSeconds: 0),
+                track: .systemAudio
+            ),
+            .rejectedTimestamp
+        )
+    }
+
+    func testAnOverlapOnOneAudioTrackDoesNotBlockTheOtherTrack() throws {
+        let harness = makeHarness()
+        harness.clock.advance(seconds: 1)
+
+        let innerSample = try StudioTestBuffers.makeAudioSample(sampleCount: 4, startSeconds: 0)
+        var innerOutcome: StudioAudioOutcome?
+        var hasReentered = false
+        harness.writer.duringAudioAppend = {
+            guard !hasReentered else { return }
+            hasReentered = true
+            innerOutcome = harness.engine.receiveAudio(innerSample, track: .microphone)
+        }
+        harness.engine.receiveAudio(
+            try StudioTestBuffers.makeAudioSample(sampleCount: 4, startSeconds: 0),
+            track: .systemAudio
+        )
+        harness.writer.duringAudioAppend = nil
+
+        XCTAssertEqual(innerOutcome, .appended(StudioTimeline.presentationTime(seconds: 1)))
+    }
+
     // Admission is reserved before the composite, so a frame that never reaches the
     // writer has to put the guard state back or the next trigger would be rejected
     // against a timestamp that was never written.

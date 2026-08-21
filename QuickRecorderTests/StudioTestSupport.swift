@@ -61,12 +61,17 @@ final class StudioStubCompositor: StudioCompositing {
     // When set, the compositor stamps the privacy marker into the output so the
     // post-composite fail-closed scan has something to catch.
     var writesPrivacyMarker = false
+    // Runs inside compose, which is the window a second render would land in if the
+    // engine were driven from more than one queue. Point it at renderOnce and the
+    // overlap is reproduced exactly, with no threads and no timing.
+    var duringCompose: (() -> Void)?
     private(set) var composeCount = 0
     private(set) var lastWindowWasPresent = false
 
     func compose(camera: CVPixelBuffer, window: CVPixelBuffer?, into output: CVPixelBuffer) {
         composeCount += 1
         lastWindowWasPresent = window != nil
+        duringCompose?()
         StudioTestBuffers.fill(output, withPixel: 0xff_20_20_20)
         if writesPrivacyMarker {
             StudioTestBuffers.setPixel(
@@ -85,6 +90,9 @@ final class StudioRecordingWriterSurface: StudioWriterSurface {
     var readyTracks: Set<StudioAudioTrack> = Set(StudioAudioTrack.allCases)
     var videoAppendSucceeds = true
     var poolIsUnavailable = false
+    // The audio counterpart of the compositor's re-entry hook: runs inside
+    // appendAudio, while this track's reservation is still held.
+    var duringAudioAppend: (() -> Void)?
     private(set) var appendedVideoTimes = [CMTime]()
     private(set) var appendedVideoBuffers = [CVPixelBuffer]()
     private(set) var appendedAudio = [(track: StudioAudioTrack, sample: CMSampleBuffer)]()
@@ -110,6 +118,7 @@ final class StudioRecordingWriterSurface: StudioWriterSurface {
     }
 
     func appendAudio(_ sample: CMSampleBuffer, to track: StudioAudioTrack) -> Bool {
+        duringAudioAppend?()
         appendedAudio.append((track, sample))
         return true
     }

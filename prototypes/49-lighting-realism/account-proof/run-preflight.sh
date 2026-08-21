@@ -81,17 +81,22 @@ fi
 # the packet the gate was written against.
 packet_dir="$(cd "$ap_dir/.." && pwd)"
 packet_mismatch=""
+packet_verified=0
 if [[ -f "$AP_PACKET_SHA_FILE" ]]; then
     while read -r expected name; do
         [[ -n "$name" ]] || continue
         actual="$(ap_sha256 "$packet_dir/$name" 2>/dev/null || true)"
-        [[ "$actual" == "$expected" ]] || packet_mismatch="$packet_mismatch $name"
+        if [[ "$actual" == "$expected" ]]; then
+            packet_verified=$((packet_verified + 1))
+        else
+            packet_mismatch="$packet_mismatch $name"
+        fi
     done < "$AP_PACKET_SHA_FILE"
 else
     packet_mismatch=" the checksum file itself is missing"
 fi
 if [[ -z "$packet_mismatch" ]]; then
-    record_check 'the zero-call packet matches its recorded checksums' pass "5 files verified against $AP_PACKET_SHA_FILE"
+    record_check 'the zero-call packet matches its recorded checksums' pass "$packet_verified files verified against $AP_PACKET_SHA_FILE"
 else
     record_check 'the zero-call packet matches its recorded checksums' fail "changed since aceda5c:$packet_mismatch"
 fi
@@ -110,15 +115,56 @@ else
         "$([[ "$open_browser" == true ]] && echo 'open resolved on PATH' || echo 'browser opening was not requested')"
 fi
 
-# Stage the evidence directory. An existing directory is preserved unless
-# --force, so an interrupted run never loses recorded steps.
+# Stage the evidence directory. Work already recorded there is preserved, but
+# only after it is checked: a stale or hand-written state at the default path
+# must never be blessed and re-dated as though this run had produced it.
 staged=fresh
+adopt_detail=""
 if [[ -e "$evidence_dir" && "$force" == false ]]; then
-    if [[ -f "$evidence_dir/$AP_STATE_FILE" ]]; then
-        staged=preserved
+    if [[ -f "$evidence_dir/$AP_STATE_FILE" && ! -L "$evidence_dir/$AP_STATE_FILE" ]]; then
+        adopt_detail="$(
+            set -o pipefail
+            jq -e . "$evidence_dir/$AP_STATE_FILE" >/dev/null 2>&1 \
+                || { echo 'the existing state file is not valid JSON'; exit 0; }
+            if [[ -z "$(jq -r '.run_token // ""' "$evidence_dir/$AP_STATE_FILE")" ]]; then
+                echo 'the existing state file carries no run token'; exit 0
+            fi
+            manifest_ids="$(jq -c '[.steps[].id]' "$AP_STEPS_FILE")"
+            state_ids="$(jq -c '[.steps[].id]' "$evidence_dir/$AP_STATE_FILE")"
+            if [[ "$manifest_ids" != "$state_ids" ]]; then
+                echo 'the existing state describes different steps than the current manifest'; exit 0
+            fi
+            ap_records_are_coherent "$evidence_dir" 2>/dev/null \
+                || { echo 'the existing state and its record files do not agree'; exit 0; }
+        )"
+        if [[ -z "$adopt_detail" ]]; then
+            staged=preserved
+        else
+            record_check 'the evidence directory can be adopted' fail \
+                "$adopt_detail — pass --force to restage $evidence_dir from scratch"
+        fi
+    elif [[ -d "$evidence_dir" && -z "$(find "$evidence_dir" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]]; then
+        # An empty directory the caller made themselves is nothing to preserve.
+        staged=fresh
+    elif [[ -f "$evidence_dir/$AP_PREFLIGHT_FILE" ]]; then
+        # A red run leaves its result file and nothing else. Adopting that
+        # leftover is what lets a retry simply work instead of demanding --force.
+        staged=restaged-after-red
     else
-        record_check 'the evidence directory is usable' fail \
-            "$evidence_dir already exists without a walkthrough state file; pass --force to restage it"
+        record_check 'the evidence directory can be adopted' fail \
+            "$evidence_dir already exists and holds neither a walkthrough state nor a phase 1 result; pass --force to restage it"
+    fi
+fi
+
+# --force deletes a directory, so it only ever deletes one this wizard could
+# plausibly own: an empty one, or one holding a phase 1 result.
+if [[ "$force" == true && -e "$evidence_dir" ]]; then
+    if [[ -f "$evidence_dir/$AP_PREFLIGHT_FILE" ]] \
+        || [[ -d "$evidence_dir" && -z "$(find "$evidence_dir" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]]; then
+        :
+    else
+        record_check 'the evidence directory is safe to restage' fail \
+            "$evidence_dir holds no phase 1 result, so --force refuses to delete it; choose another --evidence-dir"
     fi
 fi
 
@@ -126,7 +172,7 @@ run_token=""
 if [[ "$overall" == green ]]; then
     if [[ "$staged" == preserved ]]; then
         run_token="$(jq -r '.run_token' "$evidence_dir/$AP_STATE_FILE")"
-        ap_note "keeping the recorded steps already in $evidence_dir"
+        ap_note "keeping the $(jq '[.steps[] | select(.status == "done")] | length' "$evidence_dir/$AP_STATE_FILE") recorded step(s) already in $evidence_dir"
     else
         rm -rf "$evidence_dir"
         mkdir -p "$evidence_dir/records" "$evidence_dir/screenshots"
@@ -179,6 +225,7 @@ jq -n \
     --arg evidence_dir "$evidence_dir" \
     --arg identity "$identity" \
     --arg head_sha "$head_sha" \
+    --arg steps_sha256 "$(ap_steps_sha)" \
     --arg finished_at "$(ap_now)" \
     --arg staged "$staged" \
     --argjson checks "$checks_json" \
@@ -190,6 +237,7 @@ jq -n \
       evidence_dir: $evidence_dir,
       evidence_dir_identity: $identity,
       head_sha: $head_sha,
+      steps_sha256: $steps_sha256,
       staging: $staged,
       finished_at: $finished_at,
       provider_calls_made: 0,

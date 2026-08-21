@@ -17,7 +17,11 @@
 #   brief STEP_ID             one step in plain sentences, for reading to Tim
 #   open STEP_ID              hand that step's URL to the default browser
 #   record STEP_ID --value V [--screenshot FILE] [--actual-label L] [--note N]
-#                             record one step's proven value and mark it done
+#                             record one step's proven value and mark it done.
+#                             The two sign-in steps take only the literal words
+#                             signed-in or not-signed-in, so no credential has a
+#                             field to be typed into. A screenshot must be a
+#                             plain filename already saved in DIR/screenshots.
 #   redo STEP_ID              reopen exactly that step, leaving every other step
 #   compile                   write account-controls-proof.json once all steps are done
 
@@ -80,9 +84,32 @@ status)
 
 next)
     next_id="$(next_step_id)"
-    [[ -n "$next_id" ]] || { jq -n '{done: true, message: "every step is recorded; run compile"}'; exit 0; }
-    step_json "$next_id" | jq --argjson index "$((done_steps + 1))" --argjson total "$total_steps" \
-        '. + {step_number: $index, step_total: $total}'
+    if [[ -z "$next_id" ]]; then
+        jq -n --arg dir "$evidence_dir" --arg script "$ap_dir/run-proof-walkthrough.sh" \
+            '{done: true,
+              message: "every step is recorded",
+              compile_command: ($script + " compile --evidence-dir " + $dir)}'
+        exit 0
+    fi
+    # The payload carries the absolute paths the driver needs, so a driver
+    # working from `next` alone never has to guess where to save a capture.
+    step_json "$next_id" | jq \
+        --argjson index "$((done_steps + 1))" \
+        --argjson total "$total_steps" \
+        --arg dir "$evidence_dir" \
+        --arg script "$ap_dir/run-proof-walkthrough.sh" \
+        '. + {step_number: $index,
+              step_total: $total,
+              evidence_dir: $dir,
+              screenshots_dir: ($dir + "/screenshots"),
+              screenshot_save_to: (if .evidence.screenshot == null then null
+                                   else $dir + "/screenshots/" + .evidence.screenshot end),
+              record_command: ($script + " record " + .id + " --value \"...\" "
+                               + (if .evidence.screenshot == null then ""
+                                  else "--screenshot " + .evidence.screenshot + " " end)
+                               + "--evidence-dir " + $dir),
+              compile_command: (if .id == "walkthrough-complete"
+                                then $script + " compile --evidence-dir " + $dir else null end)}'
     ;;
 
 show)
@@ -137,8 +164,23 @@ record)
     if [[ -n "$expected_next" && "$expected_next" != "$step_id" && "$(step_status "$step_id")" != "done" ]]; then
         ap_die "steps run in order: $expected_next is next. Use redo to reopen a recorded step." 65
     fi
+    # A credential must not be able to reach a record. The two sign-in steps
+    # take one of a fixed pair of words and nothing else, so there is no field
+    # on those steps a password or a one-time code could be typed into.
+    if [[ "$(printf '%s' "$step" | jq -r '.evidence.allowed_values // empty')" != "" ]]; then
+        printf '%s' "$step" | jq -e --arg v "$value" '.evidence.allowed_values | index($v)' >/dev/null \
+            || ap_die "step $step_id accepts only: $(printf '%s' "$step" | jq -r '.evidence.allowed_values | join(", ")'). Never pass a password, a code, or free text here." 64
+    fi
+    if [[ "$(printf '%s' "$step" | jq -r '.requires_human')" == true ]]; then
+        [[ ! "$value" =~ [0-9]{4,} ]] \
+            || ap_die "step $step_id refuses a value containing a run of digits; that shape is a one-time code" 64
+    fi
     if [[ -n "$screenshot" ]]; then
-        [[ -f "$evidence_dir/screenshots/$screenshot" ]] \
+        # The filename is a bare name under the staged screenshots directory,
+        # never a path that could climb out of it.
+        [[ "$screenshot" != */* && "$screenshot" != .* ]] \
+            || ap_die "the screenshot must be a plain filename saved in $evidence_dir/screenshots" 66
+        [[ -f "$evidence_dir/screenshots/$screenshot" && ! -L "$evidence_dir/screenshots/$screenshot" ]] \
             || ap_die "the screenshot $screenshot is not in $evidence_dir/screenshots — save it there first" 66
     fi
     record_key="$(printf '%s' "$step" | jq -r '.evidence.record_key')"
@@ -177,34 +219,65 @@ record)
 redo)
     step_id="${1:?redo needs a step id}"
     step_json "$step_id" >/dev/null || ap_die "no step with id $step_id" 64
-    rm -f "$evidence_dir/records/$step_id.json"
+    # State first, record second. The reverse order leaves a window where an
+    # interruption yields a step marked done with no record behind it — exactly
+    # the shape a proof must never be built from.
     write_state '.steps |= map(if .id == $id then .status = "pending" | .recorded_at = null else . end)' \
         --arg id "$step_id"
+    rm -f "$evidence_dir/records/$step_id.json"
     ap_ok "reopened $step_id; every other recorded step is untouched"
     ;;
 
 compile)
     missing="$(jq -r '[.steps[] | select(.status != "done") | .id] | join(", ")' "$state_file")"
     [[ -z "$missing" ]] || ap_die "these steps are not recorded yet: $missing" 65
+    # The state file says a step is done; only a readable record file proves
+    # somebody actually looked. A proof assembled from a glob would quietly drop
+    # a missing record and then read as fully confirmed, so every record is
+    # named explicitly from the manifest and a gap is fatal.
+    ap_records_are_coherent "$evidence_dir" \
+        || ap_die 'the recorded steps and their record files do not agree, so no proof was written' 65
+    record_files=()
+    while read -r step_id; do
+        record_file="$evidence_dir/records/$step_id.json"
+        [[ -f "$record_file" && ! -L "$record_file" ]] \
+            || ap_die "the record for $step_id is missing, so no proof was written" 65
+        record_files+=("$record_file")
+    done < <(jq -r '.steps[].id' "$AP_STEPS_FILE")
+    [[ "${#record_files[@]}" -eq "$total_steps" ]] \
+        || ap_die "found ${#record_files[@]} records for $total_steps steps, so no proof was written" 65
+
+    preflight_json="$(ap_read_preflight "$evidence_dir")"
+    records_json="$(jq -s '.' "${record_files[@]}")"
     proof="$evidence_dir/account-controls-proof.json"
+    # Records are read in manifest order, so the proof reads in the order the
+    # controls were proven rather than in whatever order the shell globbed.
     jq -n \
         --slurpfile manifest "$AP_STEPS_FILE" \
         --slurpfile state "$state_file" \
+        --argjson preflight "$preflight_json" \
         --arg compiled_at "$(ap_now)" \
         --arg evidence_dir "$evidence_dir" \
-        --slurpfile records <(cat "$evidence_dir"/records/*.json) \
+        --argjson records "$records_json" \
         '{schema_version: 1,
           gate: $manifest[0].gate,
           run_token: $state[0].run_token,
-          evidence_dir: $evidence_dir,
+          head_sha: $preflight.head_sha,
+          steps_sha256: $preflight.steps_sha256,
+          walkthrough_started_at: $state[0].started_at,
           compiled_at: $compiled_at,
+          evidence_dir: $evidence_dir,
           provider_calls_made: 0,
           image_calls_made: 0,
-          image_calls_still_unauthorized: 8,
-          image_output_subtotal_usd_before_text: "0.38772",
+          image_calls_still_unauthorized: $manifest[0].gate_constants.image_calls_still_unauthorized,
+          image_output_subtotal_usd_before_text: $manifest[0].gate_constants.image_output_subtotal_usd_before_text,
+          controls_recorded: ($records | length),
+          steps_in_manifest: ($manifest[0].steps | length),
           labels_still_unverified: [$records[] | select(.label_was_unverified and .label_seen_on_screen == null) | .step_id],
-          controls: [$records[] | {step_id, record_key, proven_value, screenshot, label_seen_on_screen, note}]}' \
+          controls: [$records[] | {step_id, record_key, proven_value, screenshot, label_seen_on_screen, note, recorded_at}]}' \
         > "$proof"
+    [[ "$(jq -r '.controls | length' "$proof")" == "$total_steps" ]] \
+        || ap_die "the written proof does not hold one control per step; treat $proof as void" 65
     ap_ok "wrote $proof"
     unconfirmed="$(jq -r '.labels_still_unverified | join(", ")' "$proof")"
     [[ -z "$unconfirmed" ]] || ap_warn "these steps recorded no on-screen label, so their labels stay unconfirmed: $unconfirmed"

@@ -26,6 +26,13 @@ failure in the middle of the walkthrough.
 ./run-preflight.sh --evidence-dir DIR --force        # restage from scratch, discarding records
 ```
 
+Re-running phase 1 over a directory that already holds recorded work adopts that work only after
+checking it: the state must be valid JSON with a run token, its step ids must match the current
+manifest, and every step it calls done must have a readable record. Anything else is red, with
+`--force` named as the way out. `--force` deletes a directory, so it refuses any directory that is
+neither empty nor holding a phase 1 result — it will not delete somebody else's `/tmp` path. A
+re-run after a red result adopts its own leftover, so a retry never needs `--force`.
+
 **Phase 2 — the proof walkthrough.** A driving agent with desktop or remote-computer control runs
 `run-proof-walkthrough.sh` one command at a time. Tim is pulled in only where a password or
 two-factor code must be typed. Sixteen steps, about 27 minutes end to end, of which Tim's own part
@@ -45,6 +52,20 @@ is the two sign-ins.
 Each step is recorded before the next is offered, so an interruption or a wrong entry resumes at
 that step. Nothing restarts the run from the top — that was the defect in the old #48 wizard.
 `redo` reopens exactly one step and leaves every other recorded step alone.
+
+The `next` payload is everything the driver needs for that step: the absolute evidence directory,
+the absolute file to save a capture to (`screenshot_save_to`), and a ready-to-run `record_command`.
+A driver working from `next` alone never has to guess a path.
+
+`compile` names every record file from the manifest rather than globbing a directory. A record that
+is missing or unreadable is fatal, so a proof can never come out complete-looking with a hole in it,
+and it lists controls in walkthrough order.
+
+**What may be passed to `--value`.** Anything the step's `value_description` asks for, except on the
+two sign-in steps: those accept only the literal words `signed-in` or `not-signed-in`, and reject a
+run of four or more digits. There is no field on a credential step that a password or a one-time
+code could be typed into. The account address is recorded on the identity steps instead. A
+`--screenshot` must be a plain filename already saved in `DIR/screenshots`.
 
 ## The step manifest
 
@@ -74,7 +95,15 @@ DIR/account-controls-proof.json    the compiled proof, written by `compile`
 ```
 
 The compiled proof is one file the orchestrator can post on #49 and Tim can read in one look. It
-restates that zero calls were made and that eight image calls remain unauthorized.
+restates that zero calls were made and that eight image calls remain unauthorized, and it carries
+its own provenance: the commit it was proven against, the pinned manifest checksum, when the
+walkthrough started, when it was compiled, and when each individual control was observed. The
+eight-call count and the `$0.38772` subtotal are read from the manifest, not written into the
+compiler.
+
+The manifest is pinned across the phase boundary: phase 1 records `steps.json`'s checksum and phase
+2 refuses to run if it no longer matches, so a manifest edited between the phases cannot leave a
+half-recorded run describing steps that no longer exist.
 
 ## Self test
 
@@ -82,9 +111,11 @@ restates that zero calls were made and that eight image calls remain unauthorize
 ./selftest.sh
 ```
 
-A dry run in a temporary directory with no browser and no account. It proves the phase-1 gate, step
-ordering, resume after an interruption, single-step redo, refusal of a red or foreign phase-1
-result, and that the run produces no image file.
+A dry run in a temporary directory with no browser and no account: 58 assertions. It proves the
+phase-1 gate, step ordering, resume after an interruption, single-step redo, refusal to compile a
+proof with a missing record, refusal of a red, foreign, or manifest-stale phase-1 result, refusal to
+adopt an incoherent evidence directory, the credential and path guards, that `--force` will not
+delete an unrelated directory, and that the run generates no image of its own.
 
 ## What was adopted from the #48 lane
 

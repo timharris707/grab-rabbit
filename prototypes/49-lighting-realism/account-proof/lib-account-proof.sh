@@ -62,14 +62,25 @@ ap_sha256() {
 
 # ap_resolve_evidence_dir "$@" — read --evidence-dir from an argument list,
 # falling back to the shared default. Echoes the chosen path.
+#
+# Values belonging to the other options are skipped, so a recorded value that
+# happens to read `--evidence-dir` cannot redirect the run.
 ap_resolve_evidence_dir() {
-    local previous="" argument result="$AP_DEFAULT_EVIDENCE_DIR"
-    for argument in "$@"; do
-        [[ "$previous" == "--evidence-dir" ]] && result="$argument"
-        previous="$argument"
+    local result="$AP_DEFAULT_EVIDENCE_DIR"
+    while (( $# )); do
+        case "$1" in
+            --evidence-dir) result="${2:-$result}"; shift 2 || break ;;
+            --value|--screenshot|--actual-label|--note) shift 2 || break ;;
+            *) shift ;;
+        esac
     done
     printf '%s' "$result"
 }
+
+# ap_steps_sha — the checksum of the step manifest, pinned by phase 1 into its
+# result and re-checked by phase 2. A manifest edited between the phases would
+# otherwise leave a recorded run describing steps that no longer exist.
+ap_steps_sha() { ap_sha256 "$AP_STEPS_FILE"; }
 
 # ap_read_preflight DIR — echo the preflight result JSON, failing when the file
 # is missing, unreadable, or a symlink. Phase 2 never proceeds without it.
@@ -85,6 +96,7 @@ ap_read_preflight() {
 # preflight staged. Any mismatch is a refusal, not a warning.
 ap_assert_green() {
     local dir="$1" preflight state status token state_token recorded_identity live_identity
+    local pinned_steps_sha live_steps_sha
     preflight="$(ap_read_preflight "$dir")" \
         || ap_die "phase 1 has not run in $dir — run ./run-preflight.sh first" 78
     status="$(printf '%s' "$preflight" | jq -r '.status')"
@@ -103,6 +115,41 @@ ap_assert_green() {
     live_identity="$(ap_dir_identity "$dir")"
     [[ -n "$live_identity" && "$recorded_identity" == "$live_identity" ]] \
         || ap_die 'the evidence directory is not the directory phase 1 staged; re-run phase 1' 78
+    pinned_steps_sha="$(printf '%s' "$preflight" | jq -r '.steps_sha256 // ""')"
+    live_steps_sha="$(ap_steps_sha)"
+    [[ -n "$pinned_steps_sha" && "$pinned_steps_sha" == "$live_steps_sha" ]] \
+        || ap_die 'steps.json has changed since phase 1 pinned it; re-run phase 1 to restage against the current manifest' 78
+}
+
+# ap_records_are_coherent DIR — every step the state calls done has a readable
+# record, and no record exists for a step the state does not know. Both phases
+# check this: phase 1 before adopting an existing directory, phase 2 before
+# compiling. A record file that quietly disappeared must never read as a
+# control somebody proved.
+ap_records_are_coherent() {
+    local dir="$1" step_id status record missing="" orphan="" file
+    while IFS=$'\t' read -r step_id status; do
+        [[ -n "$step_id" ]] || continue
+        record="$dir/records/$step_id.json"
+        if [[ "$status" == "done" ]]; then
+            if [[ ! -f "$record" || -L "$record" ]] || ! jq -e . "$record" >/dev/null 2>&1; then
+                missing="$missing $step_id"
+            fi
+        elif [[ -e "$record" ]]; then
+            orphan="$orphan $step_id"
+        fi
+    done < <(jq -r '.steps[] | [.id, .status] | @tsv' "$dir/$AP_STATE_FILE")
+    for file in "$dir"/records/*.json; do
+        [[ -e "$file" ]] || continue
+        step_id="$(basename "$file" .json)"
+        jq -e --arg id "$step_id" '[.steps[].id] | index($id)' "$dir/$AP_STATE_FILE" >/dev/null 2>&1 \
+            || orphan="$orphan $step_id"
+    done
+    if [[ -n "$missing" || -n "$orphan" ]]; then
+        [[ -z "$missing" ]] || printf 'steps recorded as done with no readable record:%s\n' "$missing" >&2
+        [[ -z "$orphan" ]] || printf 'record files with no matching recorded step:%s\n' "$orphan" >&2
+        return 1
+    fi
 }
 
 # ap_no_network_self_check — proves this directory holds no client for any
@@ -110,7 +157,7 @@ ap_assert_green() {
 ap_no_network_self_check() {
     local hit file pattern
     # Built from parts so this check cannot match its own source line.
-    pattern="\\b(cu""rl|wg""et|api\\.openai\\.com|generativelanguage\\.googleapis\\.com)\\b"
+    pattern="\\b(cu""rl|wg""et|n""c|nca""t|ss""h|sc""p|rsy""nc|ft""p|telne""t|api\\.openai\\.com|generativelanguage\\.googleapis\\.com)\\b|/dev/tc""p|urlli""b|reques""ts\\.(get|post)|http\\.clien""t"
     for file in "$ap_dir"/*.sh; do
         [[ "${file##*/}" == "lib-account-proof.sh" ]] && continue
         hit="$(grep -nE "$pattern" "$file" || true)"

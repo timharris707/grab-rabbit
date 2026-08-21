@@ -4,6 +4,10 @@
   "purpose": "Prove and record the exact OpenAI and Google account controls (data retention, processing region, age and content settings, billing state, commercial-use terms) that gate the eight text-only image-generation calls with the 0.38772 USD image-output subtotal. This manifest authorizes no generation call.",
   "provider_calls_authorized": 0,
   "image_calls_authorized": 0,
+  "gate_constants": {
+    "image_calls_still_unauthorized": 8,
+    "image_output_subtotal_usd_before_text": "0.38772"
+  },
   "driver": {
     "model": "agent-driven",
     "description": "A driving agent with desktop or remote-computer control performs every step. Tim is pulled in only on steps with requires_human true, which are credential entry and nothing else.",
@@ -35,7 +39,8 @@
       },
       "evidence": {
         "record_key": "openai_signed_in",
-        "value_description": "yes once the signed-in dashboard is on screen; no otherwise. Never any part of a credential.",
+        "value_description": "Exactly signed-in once the signed-in dashboard is on screen, or not-signed-in. No other value is accepted, so no credential can reach the record. The account address is recorded at openai-org-identity instead.",
+        "allowed_values": ["signed-in", "not-signed-in"],
         "screenshot": null
       }
     },
@@ -183,7 +188,8 @@
       },
       "evidence": {
         "record_key": "google_signed_in",
-        "value_description": "yes once AI Studio has loaded signed in; no otherwise. Never any part of a credential.",
+        "value_description": "Exactly signed-in once AI Studio has loaded signed in, or not-signed-in. No other value is accepted, so no credential can reach the record. The account address is recorded at google-project-identity instead.",
+        "allowed_values": ["signed-in", "not-signed-in"],
         "screenshot": null
       }
     },
@@ -296,20 +302,20 @@
       }
     },
     {
-      "id": "compile-proof",
+      "id": "walkthrough-complete",
       "provider": "none",
-      "title": "Compile the recorded proof into one file for Tim",
+      "title": "Close the walkthrough with a one-line summary",
       "url": null,
       "control_label": null,
       "label_unverified": false,
-      "action": "run_command",
-      "one_action": "Run the walkthrough script's compile command to write account-controls-proof.json in the evidence directory.",
+      "action": "summarize",
+      "one_action": "Record one sentence saying whether every control above was observed first-hand and naming anything that could not be proven.",
       "requires_human": false,
       "estimated_seconds": 60,
-      "agent_instructions": "Run: ./run-proof-walkthrough.sh compile --evidence-dir DIR . The command fails if any earlier step is unrecorded. Record the resulting file's path as this step's value. Nothing is posted anywhere; the orchestrator posts the proof.",
+      "agent_instructions": "This is a recorded step like any other; it runs no command. Say plainly whether all fourteen provider controls were read on screen, and name any that were absent, unreadable, or answered from published terms rather than the dashboard. After recording it, run the compile command printed by this step's payload; compile writes account-controls-proof.json and posts nothing anywhere.",
       "evidence": {
-        "record_key": "compiled_proof_path",
-        "value_description": "The absolute path of the written account-controls-proof.json.",
+        "record_key": "walkthrough_completion",
+        "value_description": "One sentence on whether every control was observed first-hand, naming any that were not.",
         "screenshot": null
       }
     }

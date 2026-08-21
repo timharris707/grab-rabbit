@@ -611,12 +611,517 @@ final class CaptureSessionFinalizationCoordinator {
         self.store = store
     }
 
-    func finalize<Result>(
+    @discardableResult
+    func finalize(
         _ session: CaptureOutputSession,
-        _ body: () throws -> Result
-    ) rethrows -> Result {
-        defer { store.release(session) }
-        return try body()
+        _ body: (@escaping () -> Void) -> Void
+    ) -> Bool {
+        guard store.beginFinalization(session) else { return false }
+        let release = OneShotAction { [store] in
+            store.release(session)
+        }
+        body { release.run() }
+        return true
+    }
+}
+
+enum CaptureStopDisposition: Equatable {
+    case handled
+    case fallback
+}
+
+enum CaptureStopRequestOrigin: Equatable {
+    case userControl
+    case applicationTermination
+}
+
+final class CaptureSessionStopPipeline {
+    typealias Finalization = (
+        _ session: CaptureOutputSession,
+        _ releaseSession: @escaping () -> Void
+    ) -> Void
+
+    private let store: CaptureOutputSessionStore
+    private let finalizer: CaptureSessionFinalizationCoordinator
+
+    init(store: CaptureOutputSessionStore) {
+        self.store = store
+        finalizer = CaptureSessionFinalizationCoordinator(store: store)
+    }
+
+    func stop(
+        expectedSession: CaptureOutputSession?,
+        activeStream: AnyObject?,
+        stopActiveStream: (AnyObject) -> Bool,
+        finalization: @escaping Finalization
+    ) -> CaptureStopDisposition {
+        if let expectedSession {
+            _ = finalizer.finalize(expectedSession) { releaseSession in
+                finalization(expectedSession, releaseSession)
+            }
+            return .handled
+        }
+        if let activeStream, stopActiveStream(activeStream) {
+            return .handled
+        }
+        return store.hasManagedCapture ? .handled : .fallback
+    }
+
+    @discardableResult
+    func stop(
+        _ session: CaptureOutputSession,
+        finalization: (@escaping () -> Void) -> Void
+    ) -> Bool {
+        finalizer.finalize(session, finalization)
+    }
+}
+
+struct CaptureProductionStopResources {
+    let outputJob: RecordingOutputJob?
+    let writerFinalizer: (any CaptureWriterFinalizing)?
+    let isAudioOnly: Bool
+    let markVideoInputFinished: (() -> Void)?
+    let markSystemAudioInputFinished: (() -> Void)?
+    let markMicrophoneInputFinished: (() -> Void)?
+    let cancelWriter: () -> Void
+    let stopOwnedResources: () -> Void
+    let clearSharedResources: () -> Void
+
+    init(
+        outputJob: RecordingOutputJob?,
+        writerFinalizer: (any CaptureWriterFinalizing)?,
+        isAudioOnly: Bool,
+        markVideoInputFinished: (() -> Void)? = nil,
+        markSystemAudioInputFinished: (() -> Void)? = nil,
+        markMicrophoneInputFinished: (() -> Void)? = nil,
+        cancelWriter: @escaping () -> Void = {},
+        stopOwnedResources: @escaping () -> Void = {},
+        clearSharedResources: @escaping () -> Void = {}
+    ) {
+        self.outputJob = outputJob
+        self.writerFinalizer = writerFinalizer
+        self.isAudioOnly = isAudioOnly
+        self.markVideoInputFinished = markVideoInputFinished
+        self.markSystemAudioInputFinished = markSystemAudioInputFinished
+        self.markMicrophoneInputFinished = markMicrophoneInputFinished
+        self.cancelWriter = cancelWriter
+        self.stopOwnedResources = stopOwnedResources
+        self.clearSharedResources = clearSharedResources
+    }
+}
+
+struct CaptureProductionStopActions {
+    typealias ResultCompletion = (Result<URL, RecordingExportError>) -> Void
+    typealias ScheduledAction = (@escaping () -> Void) -> Void
+    typealias OutputOperation = (RecordingOutputJob, @escaping ResultCompletion) -> Void
+    typealias PackageCompletion = (
+        _ fileURL: URL,
+        _ automaticallyExports: Bool,
+        _ audioQualityKbps: Int?,
+        _ completion: @escaping () -> Void
+    ) -> Void
+
+    let stopActiveStream: (AnyObject) -> Bool
+    let setFinalizing: (Bool) -> Void
+    let publishStatus: (String) -> Void
+    let prepareForFinalization: (CaptureOutputSession?, CaptureProductionStopResources) -> Void
+    let releaseSleepAssertion: () -> Void
+    let scheduleTerminal: ScheduledAction
+    let reportFailure: (RecordingExportError) -> Void
+    let presentVideoResult: (Result<URL, RecordingExportError>, Bool) -> Void
+    let presentAudioResult: ResultCompletion
+    let remuxVideo: OutputOperation
+    let convertAudio: OutputOperation
+    let finishAudioPackage: PackageCompletion
+    let cleanupTerminal: (_ acknowledgeStopControlDismissal: @escaping () -> Void) -> Void
+
+    init(
+        stopActiveStream: @escaping (AnyObject) -> Bool,
+        setFinalizing: @escaping (Bool) -> Void = { _ in },
+        publishStatus: @escaping (String) -> Void = { _ in },
+        prepareForFinalization: @escaping (
+            CaptureOutputSession?,
+            CaptureProductionStopResources
+        ) -> Void = { _, _ in },
+        releaseSleepAssertion: @escaping () -> Void = {},
+        scheduleTerminal: @escaping ScheduledAction = { $0() },
+        reportFailure: @escaping (RecordingExportError) -> Void = { _ in },
+        presentVideoResult: @escaping (Result<URL, RecordingExportError>, Bool) -> Void = { _, _ in },
+        presentAudioResult: @escaping ResultCompletion = { _ in },
+        remuxVideo: @escaping OutputOperation = { _, completion in
+            completion(.failure(.preparation(stage: .second, message: "Video remux is unavailable.")))
+        },
+        convertAudio: @escaping OutputOperation = { _, completion in
+            completion(.failure(.preparation(stage: .conversion, message: "Audio conversion is unavailable.")))
+        },
+        finishAudioPackage: @escaping PackageCompletion = { _, _, _, completion in completion() },
+        cleanupTerminal: @escaping (
+            _ acknowledgeStopControlDismissal: @escaping () -> Void
+        ) -> Void = { acknowledge in acknowledge() }
+    ) {
+        self.stopActiveStream = stopActiveStream
+        self.setFinalizing = setFinalizing
+        self.publishStatus = publishStatus
+        self.prepareForFinalization = prepareForFinalization
+        self.releaseSleepAssertion = releaseSleepAssertion
+        self.scheduleTerminal = scheduleTerminal
+        self.reportFailure = reportFailure
+        self.presentVideoResult = presentVideoResult
+        self.presentAudioResult = presentAudioResult
+        self.remuxVideo = remuxVideo
+        self.convertAudio = convertAudio
+        self.finishAudioPackage = finishAudioPackage
+        self.cleanupTerminal = cleanupTerminal
+    }
+}
+
+final class CaptureProductionStopEntry {
+    typealias ResourceResolver = (CaptureOutputSession?) -> CaptureProductionStopResources
+
+    private let store: CaptureOutputSessionStore
+    private let finalizer: CaptureSessionFinalizationCoordinator
+
+    init(store: CaptureOutputSessionStore) {
+        self.store = store
+        finalizer = CaptureSessionFinalizationCoordinator(store: store)
+    }
+
+    @discardableResult
+    func stop(
+        expectedSession: CaptureOutputSession?,
+        origin: CaptureStopRequestOrigin = .userControl,
+        activeStream: AnyObject?,
+        resolveResources: ResourceResolver,
+        actions: CaptureProductionStopActions
+    ) -> CaptureStopDisposition {
+        if let expectedSession {
+            _ = finalizer.finalize(expectedSession) { [self] releaseSession in
+                finalize(
+                    session: expectedSession,
+                    resources: resolveResources(expectedSession),
+                    actions: actions,
+                    releaseSession: releaseSession
+                )
+            }
+            return .handled
+        }
+        if origin == .userControl, store.hasPendingStopControlDismissal {
+            return .handled
+        }
+        if let activeStream, actions.stopActiveStream(activeStream) {
+            return .handled
+        }
+        if store.shouldSuppressUnownedStop {
+            return .handled
+        }
+        finalize(
+            session: nil,
+            resources: resolveResources(nil),
+            actions: actions,
+            releaseSession: {}
+        )
+        return .fallback
+    }
+
+    private func finalize(
+        session: CaptureOutputSession?,
+        resources: CaptureProductionStopResources,
+        actions: CaptureProductionStopActions,
+        releaseSession: @escaping () -> Void
+    ) {
+        let acknowledgeStopControlDismissal = OneShotAction { [store] in
+            store.acknowledgeStopControlDismissal()
+        }
+        let completeStop = OneShotAction {
+            resources.clearSharedResources()
+            CaptureFinalizationPresentation.complete(setFinalizing: actions.setFinalizing)
+            actions.cleanupTerminal {
+                acknowledgeStopControlDismissal.run()
+            }
+            releaseSession()
+        }
+        let finishVideo: (Result<URL, RecordingExportError>, Bool) -> Void = { result, remuxed in
+            actions.presentVideoResult(result, remuxed)
+            completeStop.run()
+        }
+        let finishAudio: CaptureProductionStopActions.ResultCompletion = { result in
+            actions.presentAudioResult(result)
+            completeStop.run()
+        }
+        let scheduleVideo: (Result<URL, RecordingExportError>, Bool) -> Void = { result, remuxed in
+            actions.scheduleTerminal { finishVideo(result, remuxed) }
+        }
+        let scheduleAudio: CaptureProductionStopActions.ResultCompletion = { result in
+            actions.scheduleTerminal { finishAudio(result) }
+        }
+
+        CaptureFinalizationPresentation.begin(
+            setFinalizing: actions.setFinalizing,
+            publishStatus: actions.publishStatus
+        )
+        session?.releaseSleepAssertionIfOwned(actions.releaseSleepAssertion)
+        actions.prepareForFinalization(session, resources)
+        resources.markMicrophoneInputFinished?()
+        resources.stopOwnedResources()
+
+        guard let finishedJob = resources.outputJob else {
+            resources.cancelWriter()
+            actions.reportFailure(.preparation(
+                stage: .first,
+                message: "The recording output job is unavailable."
+            ))
+            completeStop.run()
+            return
+        }
+        guard finishedJob.beginPostprocessing() else {
+            actions.reportFailure(.preparation(
+                stage: .first,
+                message: "The recording output job is already terminal."
+            ))
+            completeStop.run()
+            return
+        }
+
+        if !resources.isAudioOnly {
+            guard let writerFinalizer = resources.writerFinalizer,
+                  let markVideoInputFinished = resources.markVideoInputFinished else {
+                resources.cancelWriter()
+                let error = finishedJob.discardOutputs(reason: .preparation(
+                    stage: .first,
+                    message: "The recording writer is unavailable."
+                ))
+                actions.reportFailure(error)
+                completeStop.run()
+                return
+            }
+            markVideoInputFinished()
+            resources.markSystemAudioInputFinished?()
+            writerFinalizer.finish { writerResult in
+                switch writerResult {
+                case .failure(let error):
+                    scheduleVideo(.failure(finishedJob.discardOutputs(reason: error)), false)
+                case .success:
+                    if finishedJob.kind == .videoRemux {
+                        actions.remuxVideo(finishedJob) { result in scheduleVideo(result, true) }
+                    } else {
+                        scheduleVideo(finishedJob.finishSingleOutput(), false)
+                    }
+                }
+            }
+            return
+        }
+
+        switch finishedJob.kind {
+        case .package(let automaticallyExports):
+            guard let writerFinalizer = resources.writerFinalizer else {
+                resources.cancelWriter()
+                let error = finishedJob.discardOutputs(reason: .preparation(
+                    stage: .first,
+                    message: "The audio package writer is unavailable."
+                ))
+                actions.reportFailure(error)
+                completeStop.run()
+                return
+            }
+            writerFinalizer.finish { writerResult in
+                _ = finishedJob.finishPackageAfterWriter(writerResult) { result in
+                    actions.scheduleTerminal {
+                        switch result {
+                        case .success(let fileURL):
+                            actions.finishAudioPackage(
+                                fileURL,
+                                automaticallyExports,
+                                finishedJob.audioQualityKbps
+                            ) {
+                                actions.scheduleTerminal { completeStop.run() }
+                            }
+                        case .failure(let error):
+                            actions.reportFailure(error)
+                            completeStop.run()
+                        }
+                    }
+                }
+            }
+        case .conversion:
+            actions.convertAudio(finishedJob, scheduleAudio)
+        case .single:
+            finishAudio(finishedJob.finishSingleOutput())
+        case .videoRemux:
+            let error = finishedJob.discardOutputs(reason: .preparation(
+                stage: .first,
+                message: "A video-remux job reached audio-only finalization."
+            ))
+            actions.reportFailure(error)
+            completeStop.run()
+        }
+    }
+}
+
+enum CaptureFinalizationPresentation {
+    static let statusText = "Finishing..."
+
+    static func begin(
+        setFinalizing: (Bool) -> Void,
+        publishStatus: (String) -> Void
+    ) {
+        setFinalizing(true)
+        publishStatus(statusText)
+    }
+
+    static func complete(setFinalizing: (Bool) -> Void) {
+        setFinalizing(false)
+    }
+}
+
+enum CaptureStatusBarUpdateScheduler {
+    private static let generationLock = NSLock()
+    private static var finalizationGeneration: UInt = 0
+
+    static func schedule(
+        isFinalizing: Bool,
+        completion: @escaping () -> Void = {},
+        action: @escaping () -> Void
+    ) {
+        let scheduledGeneration = generationLock.withLock {
+            if isFinalizing {
+                finalizationGeneration &+= 1
+            }
+            return finalizationGeneration
+        }
+        let perform = {
+            defer { completion() }
+            guard generationLock.withLock({
+                scheduledGeneration == finalizationGeneration
+            }) else { return }
+            action()
+        }
+        guard isFinalizing else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: perform)
+            return
+        }
+        if Thread.isMainThread {
+            perform()
+        } else {
+            DispatchQueue.main.async(execute: perform)
+        }
+    }
+}
+
+struct CapturePostStartResourceActivation {
+    private let store: CaptureOutputSessionStore
+
+    init(store: CaptureOutputSessionStore) {
+        self.store = store
+    }
+
+    func activate(
+        session: CaptureOutputSession,
+        stream: AnyObject,
+        registerMouseMonitor: () -> Void,
+        acquireSleepAssertion: () -> Bool
+    ) -> Bool {
+        store.activatePostStartResources(for: session, stream: stream) {
+            registerMouseMonitor()
+            if acquireSleepAssertion() {
+                session.recordSleepAssertionAcquired()
+            }
+        }
+    }
+}
+
+private final class OneShotAction {
+    private let lock = NSLock()
+    private var action: (() -> Void)?
+
+    init(_ action: @escaping () -> Void) {
+        self.action = action
+    }
+
+    func run() {
+        let action = lock.withLock { () -> (() -> Void)? in
+            defer { self.action = nil }
+            return self.action
+        }
+        action?()
+    }
+}
+
+protocol CaptureWriterFinalizing: AnyObject {
+    func finish(_ completion: @escaping (Result<Void, RecordingExportError>) -> Void)
+}
+
+final class AssetWriterFinalizer: CaptureWriterFinalizing {
+    private let writer: AVAssetWriter
+
+    init(writer: AVAssetWriter) {
+        self.writer = writer
+    }
+
+    func finish(_ completion: @escaping (Result<Void, RecordingExportError>) -> Void) {
+        writer.finishWriting { [writer] in
+            switch writer.status {
+            case .completed:
+                completion(.success(()))
+            case .cancelled:
+                completion(.failure(.cancelled(stage: .first)))
+            default:
+                completion(.failure(.failed(
+                    stage: .first,
+                    message: writer.error?.localizedDescription
+                        ?? "The recording writer ended with status \(writer.status.rawValue)."
+                )))
+            }
+        }
+    }
+}
+
+final class CaptureApplicationTerminationCoordinator {
+    typealias ReplyScheduler = (@escaping () -> Void) -> Void
+
+    private let store: CaptureOutputSessionStore
+    private let scheduleReply: ReplyScheduler
+    private let lock = NSLock()
+    private var isWaiting = false
+
+    init(
+        store: CaptureOutputSessionStore,
+        scheduleReply: @escaping ReplyScheduler = { reply in
+            DispatchQueue.main.async(execute: reply)
+        }
+    ) {
+        self.store = store
+        self.scheduleReply = scheduleReply
+    }
+
+    func prepareForTermination(
+        stopActiveCapture: () -> Void,
+        replyWhenFinished: @escaping () -> Void
+    ) -> Bool {
+        let shouldRegister = lock.withLock { () -> Bool in
+            guard !isWaiting else { return false }
+            isWaiting = true
+            return true
+        }
+        guard shouldRegister else { return true }
+        let idleHandler = { [weak self, store, scheduleReply] in
+            scheduleReply {
+                defer {
+                    store.completeApplicationTerminationApproval()
+                    self?.lock.withLock { self?.isWaiting = false }
+                }
+                replyWhenFinished()
+            }
+        }
+        switch store.prepareForApplicationTermination(idleHandler) {
+        case .idle:
+            lock.withLock { isWaiting = false }
+            return false
+        case .stopActiveCapture:
+            stopActiveCapture()
+        case .waitForIdle:
+            break
+        }
+        return true
     }
 }
 
@@ -789,6 +1294,7 @@ final class CaptureOutputSession {
     let id: UUID
     let outputJob: RecordingOutputJob?
     let writer: AVAssetWriter?
+    let writerFinalizer: (any CaptureWriterFinalizing)?
     let videoInput: (any CaptureVideoSampleDestination)?
     let systemAudioInput: (any CaptureVideoSampleDestination)?
     let microphoneInput: (any CaptureVideoSampleDestination)?
@@ -798,6 +1304,7 @@ final class CaptureOutputSession {
 
     private let streamIdentifier: ObjectIdentifier
     private let lifecycleLock = NSLock()
+    private let resourceOwnershipLock = NSLock()
     private let callbackLock = NSLock()
     private var isAcceptingCallbacks = true
     private var inFlightCallbacks = 0
@@ -824,12 +1331,14 @@ final class CaptureOutputSession {
     private let firstFrameHandler: ((CMSampleBuffer) -> Void)?
     private let diagnostics: CaptureDiagnostics
     private var microphoneStopHandler: (() -> Void)?
+    private var ownsSleepAssertion = false
 
     init(
         id: UUID = UUID(),
         stream: AnyObject,
         outputJob: RecordingOutputJob?,
         writer: AVAssetWriter?,
+        writerFinalizer: (any CaptureWriterFinalizing)? = nil,
         videoInput: (any CaptureVideoSampleDestination)?,
         systemAudioInput: (any CaptureVideoSampleDestination)?,
         microphoneInput: (any CaptureVideoSampleDestination)? = nil,
@@ -848,6 +1357,7 @@ final class CaptureOutputSession {
         streamIdentifier = ObjectIdentifier(stream)
         self.outputJob = outputJob
         self.writer = writer
+        self.writerFinalizer = writerFinalizer ?? writer.map(AssetWriterFinalizer.init(writer:))
         self.videoInput = videoInput
         self.systemAudioInput = systemAudioInput
         self.microphoneInput = microphoneInput
@@ -866,6 +1376,19 @@ final class CaptureOutputSession {
 
     func owns(stream: AnyObject) -> Bool {
         streamIdentifier == ObjectIdentifier(stream)
+    }
+
+    func recordSleepAssertionAcquired() {
+        resourceOwnershipLock.withLock { ownsSleepAssertion = true }
+    }
+
+    func releaseSleepAssertionIfOwned(_ release: () -> Void) {
+        let shouldRelease = resourceOwnershipLock.withLock { () -> Bool in
+            guard ownsSleepAssertion else { return false }
+            ownsSleepAssertion = false
+            return true
+        }
+        if shouldRelease { release() }
     }
 
     fileprivate func acquire() -> CaptureSessionLease? {
@@ -1190,10 +1713,22 @@ final class CaptureOutputSessionStore {
         case unmatched
     }
 
+    enum TerminationPreparation {
+        case idle
+        case stopActiveCapture
+        case waitForIdle
+    }
+
     private let lock = NSLock()
     private var currentSession: CaptureOutputSession?
     private var retiredSessions = [UUID: CaptureOutputSession]()
     private var pendingSessionID: UUID?
+    private var finalizingSessionIDs = Set<UUID>()
+    private var terminationRequestedSessionID: UUID?
+    private var idleHandlers = [() -> Void]()
+    private var terminationApprovalPending = false
+    private var scheduledTerminationApprovalCount = 0
+    private var pendingStopControlDismissalCount = 0
 
     var isIdle: Bool {
         lock.withLock {
@@ -1204,7 +1739,11 @@ final class CaptureOutputSessionStore {
     @discardableResult
     func reserve(_ sessionID: UUID) -> Bool {
         lock.withLock {
-            guard currentSession == nil, retiredSessions.isEmpty, pendingSessionID == nil else {
+            guard !terminationApprovalPending,
+                  pendingStopControlDismissalCount == 0,
+                  currentSession == nil,
+                  retiredSessions.isEmpty,
+                  pendingSessionID == nil else {
                 return false
             }
             pendingSessionID = sessionID
@@ -1213,15 +1752,23 @@ final class CaptureOutputSessionStore {
     }
 
     func cancelReservation(_ sessionID: UUID) {
-        lock.withLock {
-            if pendingSessionID == sessionID { pendingSessionID = nil }
+        let handlers = lock.withLock { () -> [() -> Void] in
+            if pendingSessionID == sessionID {
+                pendingSessionID = nil
+                if terminationRequestedSessionID == sessionID {
+                    terminationRequestedSessionID = nil
+                }
+            }
+            return takeIdleHandlersIfNeeded()
         }
+        handlers.forEach { $0() }
     }
 
     @discardableResult
     func install(_ session: CaptureOutputSession) -> Bool {
         lock.withLock {
             guard currentSession == nil, retiredSessions.isEmpty else { return false }
+            if terminationApprovalPending, pendingSessionID != session.id { return false }
             if let pendingSessionID, pendingSessionID != session.id { return false }
             pendingSessionID = nil
             currentSession = session
@@ -1303,8 +1850,116 @@ final class CaptureOutputSessionStore {
         return true
     }
 
-    func release(_ session: CaptureOutputSession) {
-        lock.withLock { retiredSessions[session.id] = nil }
+    func beginFinalization(_ session: CaptureOutputSession) -> Bool {
+        lock.withLock {
+            guard retiredSessions[session.id] === session,
+                  finalizingSessionIDs.insert(session.id).inserted else {
+                return false
+            }
+            pendingStopControlDismissalCount += 1
+            return true
+        }
+    }
+
+    @discardableResult
+    func release(_ session: CaptureOutputSession) -> Bool {
+        var didRelease = false
+        let handlers = lock.withLock { () -> [() -> Void] in
+            guard retiredSessions[session.id] === session else { return [] }
+            retiredSessions[session.id] = nil
+            finalizingSessionIDs.remove(session.id)
+            didRelease = true
+            return takeIdleHandlersIfNeeded()
+        }
+        handlers.forEach { $0() }
+        return didRelease
+    }
+
+    func prepareForApplicationTermination(
+        _ handler: @escaping () -> Void
+    ) -> TerminationPreparation {
+        lock.withLock {
+            guard !isIdleAssumingLock else { return .idle }
+            terminationApprovalPending = true
+            idleHandlers.append(handler)
+            if let pendingSessionID {
+                terminationRequestedSessionID = pendingSessionID
+                return .waitForIdle
+            }
+            guard let currentSession else { return .waitForIdle }
+            terminationRequestedSessionID = currentSession.id
+            return .stopActiveCapture
+        }
+    }
+
+    func consumeTerminationRequest(for session: CaptureOutputSession) -> Bool {
+        lock.withLock {
+            guard terminationRequestedSessionID == session.id else {
+                return false
+            }
+            terminationRequestedSessionID = nil
+            return true
+        }
+    }
+
+    func completeApplicationTerminationApproval() {
+        lock.withLock {
+            guard scheduledTerminationApprovalCount > 0 else { return }
+            scheduledTerminationApprovalCount -= 1
+            if scheduledTerminationApprovalCount == 0, idleHandlers.isEmpty {
+                terminationApprovalPending = false
+            }
+        }
+    }
+
+    var hasManagedCapture: Bool {
+        lock.withLock {
+            !isIdleAssumingLock || terminationApprovalPending || pendingStopControlDismissalCount > 0
+        }
+    }
+
+    var hasPendingStopControlDismissal: Bool {
+        lock.withLock { pendingStopControlDismissalCount > 0 }
+    }
+
+    var shouldSuppressUnownedStop: Bool {
+        lock.withLock {
+            !isIdleAssumingLock || terminationApprovalPending || pendingStopControlDismissalCount > 0
+        }
+    }
+
+    func acknowledgeStopControlDismissal() {
+        lock.withLock {
+            guard pendingStopControlDismissalCount > 0 else { return }
+            pendingStopControlDismissalCount -= 1
+        }
+    }
+
+    func activatePostStartResources(
+        for session: CaptureOutputSession,
+        stream: AnyObject,
+        _ activate: () -> Void
+    ) -> Bool {
+        lock.withLock {
+            guard currentSession === session, session.owns(stream: stream) else {
+                return false
+            }
+            activate()
+            return true
+        }
+    }
+
+    // Callers must already hold `lock`; the public `isIdle` takes it and would deadlock here.
+    private var isIdleAssumingLock: Bool {
+        currentSession == nil && retiredSessions.isEmpty && pendingSessionID == nil
+    }
+
+    private func takeIdleHandlersIfNeeded() -> [() -> Void] {
+        guard isIdleAssumingLock else { return [] }
+        terminationRequestedSessionID = nil
+        scheduledTerminationApprovalCount += idleHandlers.count
+        defer { idleHandlers.removeAll() }
+        return idleHandlers
     }
 }
 

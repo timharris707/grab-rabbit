@@ -28,7 +28,22 @@ struct StatusBarItem: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            if quickTopmost.isRecording {
+            if SCContext.isFinalizing {
+                ZStack {
+                    Rectangle()
+                        .fill(Color.mypurple)
+                        .shadow(color: .black.opacity(0.3), radius: 4)
+                        .cornerRadius(4)
+                    HStack(spacing: 6) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text(CaptureFinalizationPresentation.statusText.local)
+                            .foregroundStyle(.white)
+                    }
+                    .padding(.horizontal, 8)
+                }
+                .padding([.leading, .trailing], 4)
+            } else if quickTopmost.isRecording {
                 QuickTopmostIndicatorView()
                     .padding([.leading, .trailing], 4)
                     .onReceive(updateTimer) { _ in recordingTick() }
@@ -234,12 +249,16 @@ func recordingTick() {
     }
 }
 
-func updateStatusBar() {
-    DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-        // While Quick Topmost records, the indicator is present even when the app
-        // launched without a menu bar item.
-        if !QuickTopmostRecordingState.shared.isRecording
-            && SCContext.streamType == nil && !ud.bool(forKey: "showMenubar") {
+
+func updateStatusBar(completion: (() -> Void)? = nil) {
+    CaptureStatusBarUpdateScheduler.schedule(
+        isFinalizing: SCContext.isFinalizing,
+        completion: { completion?() }
+    ) {
+        // While Quick Topmost records or a recording is finalizing, the indicator is
+        // present even when the app launched without a menu bar item.
+        if !SCContext.isFinalizing && SCContext.streamType == nil
+            && !QuickTopmostRecordingState.shared.isRecording && !ud.bool(forKey: "showMenubar") {
             statusBarItem.isVisible = false
             return
         }

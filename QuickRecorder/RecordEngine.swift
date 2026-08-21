@@ -509,8 +509,25 @@ extension AppDelegate {
             }
             sessionInstalled = true
             SCContext.stream = stream
+            if captureOutputSessions.consumeTerminationRequest(for: session) {
+                throw RecordingExportError.cancelled(stage: .first)
+            }
             if recordMic { try startMicRecording(session: session) }
             try await stream.startCapture()
+            guard CapturePostStartResourceActivation(store: captureOutputSessions).activate(
+                session: session,
+                stream: stream,
+                registerMouseMonitor: {
+                    if !audioOnly { registerGlobalMouseMonitor() }
+                },
+                acquireSleepAssertion: {
+                    preventSleep
+                        ? SleepPreventer.shared.preventSleep(reason: "Screen recording in progress")
+                        : false
+                }
+            ) else {
+                return
+            }
         } catch {
             let recordingError = (error as? RecordingExportError)
                 ?? .preparation(stage: .first, message: error.localizedDescription)
@@ -557,12 +574,10 @@ extension AppDelegate {
             }
             return
         }
-        if !audioOnly { registerGlobalMouseMonitor() }
         DispatchQueue.main.async {
             if let quickTopmost { QuickTopmostPresence.shared.activate(quickTopmost) }
             updateStatusBar()
         }
-        if preventSleep { SleepPreventer.shared.preventSleep(reason: "Screen recording in progress") }
     }
 
     private func discardCaptureAfterFailedStart(

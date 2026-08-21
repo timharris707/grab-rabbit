@@ -25,6 +25,7 @@ class SCContext {
     static var frameCache: CMSampleBuffer?
     static var filter: SCContentFilter?
     static var isMagnifierEnabled = false
+    static var isFinalizing = false
     static var isPaused = false
     static var isResume = false
     static var isSkipFrame = false
@@ -451,214 +452,113 @@ class SCContext {
         }
     }
 
-    static func stopRecording(session expectedSession: CaptureOutputSession? = nil) {
+    static func stopRecording(
+        session expectedSession: CaptureOutputSession? = nil,
+        origin: CaptureStopRequestOrigin = .userControl
+    ) {
         let sessions = AppDelegate.shared.captureOutputSessions
-        if expectedSession == nil, let activeStream = stream {
-            if AppDelegate.shared.captureStreamCallbackAdapter.handleStop(from: activeStream) {
-                return
+        let reportFailure: (RecordingExportError) -> Void = { error in
+            showNotification(
+                title: "Failed to save file".local,
+                body: error.localizedDescription,
+                id: "quickrecorder.error.\(UUID().uuidString)"
+            )
+        }
+        let presentVideoResult: (Result<URL, RecordingExportError>, Bool) -> Void = { result, remuxed in
+            switch result {
+            case .success(let outputURL):
+                if !ud.bool(forKey: "showPreview") {
+                    showNotification(
+                        title: "Recording Completed".local,
+                        body: String(format: "File saved to: %@".local, outputURL.path),
+                        id: "quickrecorder.completed.\(UUID().uuidString)"
+                    )
+                } else if !remuxed || !ud.bool(forKey: "trimAfterRecord") {
+                    showPreview(path: outputURL.path)
+                }
+                if ud.bool(forKey: "trimAfterRecord") {
+                    AppDelegate.shared.createNewWindow(
+                        view: VideoTrimmerView(videoURL: outputURL),
+                        title: outputURL.lastPathComponent,
+                        only: false
+                    )
+                }
+            case .failure(let error):
+                reportFailure(error)
             }
         }
-
-        let stopBody: () -> Void = {
-        let finishedJob = expectedSession?.outputJob ?? outputJob
-        let finalWriter = expectedSession?.writer ?? vW
-        let finalVideoInput = (expectedSession?.videoInput as? AVAssetWriterInput) ?? vwInput
-        let finalSystemAudioInput = (expectedSession?.systemAudioInput as? AVAssetWriterInput) ?? awInput
-        let finalMicrophoneInput = (expectedSession?.microphoneInput as? AVAssetWriterInput) ?? micInput
-        let finalizesAudioOnly = expectedSession?.isAudioOnly ?? (streamType == .systemaudio)
-        if let expectedSession { firstFrame = expectedSession.capturedFirstFrame() }
-        let recordsMicrophone = finishedJob?.recordsMicrophone ?? ud.bool(forKey: "recordMic")
-        let shouldRemuxVideo = finishedJob?.kind == .videoRemux
-        var directVideoResult: Result<URL, RecordingExportError>?
-        if ud.bool(forKey: "preventSleep") { SleepPreventer.shared.allowSleep() }
-        autoStop = 0
-        lastPTS = nil
-        recordCam = ""
-        recordDevice = ""
-        isMagnifierEnabled = false
-        mousePointer.orderOut(nil)
-        screenMagnifier.orderOut(nil)
-        QuickTopmostPresence.shared.dismiss()
-        AppDelegate.shared.stopGlobalMouseMonitor()
-
-        if let w = NSApp.windows.first(where:  { $0.title == "Area Overlayer".local }) { w.close() }
-        
-        if let activeStream = stream {
-            activeStream.stopCapture()
-        }
-        stream = nil
-        if recordsMicrophone {
-            finalMicrophoneInput?.markAsFinished()
-            if let expectedSession {
-                expectedSession.stopMicrophoneCapture()
-            } else {
-                AudioRecorder.shared.stop()
-                audioEngine.inputNode.removeTap(onBus: 0)
-                audioEngine.stop()
-                if ud.bool(forKey: "enableAEC") { try? AECEngine.stopAudioUnit() }
-            }
-        }
-        audioFile = nil // close audio file
-        audioFile2 = nil // close audio file2
-        if !finalizesAudioOnly {
-            guard let finalWriter, let finalVideoInput else {
-                CaptureMissingWriterFinalizer.discard(
-                    finishedJob,
-                    currentJob: &outputJob,
-                    firstFrame: &firstFrame
-                )
-                streamType = nil
-                return
-            }
-            let dispatchGroup = DispatchGroup()
-            dispatchGroup.enter()
-            finalVideoInput.markAsFinished()
-            if #available(macOS 13, *) { finalSystemAudioInput?.markAsFinished() }
-            finalWriter.finishWriting {
-                if finalWriter.status != .completed {
-                    print("Video writing failed with status: \(finalWriter.status), error: \(String(describing: finalWriter.error))")
-                    let err = finalWriter.error?.localizedDescription ?? "Unknow Error"
-                    if let finishedJob {
-                        let cleanupError = finishedJob.discardOutputs(reason: .failed(stage: .first, message: err))
-                        directVideoResult = .failure(cleanupError)
-                    }
-                    showNotification(title: "Failed to save file".local, body: "\(err)", id: "quickrecorder.error.\(UUID().uuidString)")
+        let presentAudioResult: CaptureProductionStopActions.ResultCompletion = { result in
+            switch result {
+            case .success(let outputURL):
+                if !ud.bool(forKey: "showPreview") {
+                    showNotification(
+                        title: "Recording Completed".local,
+                        body: String(format: "File saved to: %@".local, outputURL.path),
+                        id: "quickrecorder.completed.\(UUID().uuidString)"
+                    )
                 } else {
-                    if shouldRemuxVideo, let finishedJob {
-                        mixAudioTracks(job: finishedJob) { result in
-                            switch result {
-                            case .success(let url):
-                                print("Exported video to \(String(describing: url.path))")
-                                if !ud.bool(forKey: "showPreview") {
-                                    showNotification(title: "Recording Completed".local, body: String(format: "File saved to: %@".local, url.path), id: "quickrecorder.completed.\(UUID().uuidString)")
-                                }
-                                DispatchQueue.main.async {
-                                    if ud.bool(forKey: "trimAfterRecord") {
-                                        AppDelegate.shared.createNewWindow(view: VideoTrimmerView(videoURL: url), title: url.lastPathComponent, only: false)
-                                    } else {
-                                        showPreview(path: url.path)
-                                    }
-                                }
-                            case .failure(let error):
-                                print("Failed to export video: \(error.localizedDescription)")
-                                showNotification(
-                                    title: "Failed to save file".local,
-                                    body: error.localizedDescription,
-                                    id: "quickrecorder.error.\(UUID().uuidString)"
-                                )
-                            }
-                        }
-                    } else if let finishedJob {
-                        directVideoResult = finishedJob.finishSingleOutput()
-                        if case .failure(let error) = directVideoResult {
-                            showNotification(
-                                title: "Failed to save file".local,
-                                body: error.localizedDescription,
-                                id: "quickrecorder.error.\(UUID().uuidString)"
-                            )
-                        }
-                    }
+                    let image = outputURL.pathExtension == "qma"
+                        ? NSImage(named: "qmaIcon")
+                        : NSImage(named: "audioIcon")
+                    showPreview(path: outputURL.path, image: image)
                 }
-                dispatchGroup.leave()
-            }
-            dispatchGroup.wait()
-        } else if recordsMicrophone {
-            if let finishedJob,
-               case .package(let automaticallyExports) = finishedJob.kind,
-               let packageWriter = finalWriter {
-                _ = finishedJob.beginPostprocessing()
-                packageWriter.finishWriting {
-                    let writerResult: Result<Void, RecordingExportError>
-                    switch packageWriter.status {
-                    case .completed:
-                        writerResult = .success(())
-                    case .cancelled:
-                        writerResult = .failure(.cancelled(stage: .first))
-                    default:
-                        writerResult = .failure(.failed(
-                            stage: .first,
-                            message: packageWriter.error?.localizedDescription
-                                ?? "Audio package writer ended with status \(packageWriter.status.rawValue)."
-                        ))
-                    }
-                    _ = finishedJob.finishPackageAfterWriter(writerResult) { result in
-                        switch result {
-                        case .success(let fileURL):
-                            DispatchQueue.main.async {
-                                finishCompletedAudioPackage(
-                                    fileURL,
-                                    automaticallyExports: automaticallyExports,
-                                    audioQualityKbps: finishedJob.audioQualityKbps
-                                )
-                            }
-                        case .failure(let error):
-                            showNotification(
-                                title: "Failed to save file".local,
-                                body: error.localizedDescription,
-                                id: "quickrecorder.error.\(UUID().uuidString)"
-                            )
-                        }
-                    }
-                }
-            } else if let finishedJob, case .package = finishedJob.kind {
-                let error = finishedJob.discardOutputs(reason: .preparation(
-                    stage: .first,
-                    message: "The audio package writer is unavailable."
-                ))
-                showNotification(
-                    title: "Failed to save file".local,
-                    body: error.localizedDescription,
-                    id: "quickrecorder.error.\(UUID().uuidString)"
-                )
-            } else {
-                finalWriter?.finishWriting {}
+            case .failure(let error):
+                reportFailure(error)
             }
         }
-        
-        DispatchQueue.main.async {
-            controlPanel.close()
-            if isCameraRunning() {
-                if camWindow.isVisible { camWindow.close() }
-                if deviceWindow.isVisible { deviceWindow.close() }
-                if let preview = previewSession { preview.stopRunning() }
-                if let capture = captureSession { capture.stopRunning() }
-            }
-        }
-        
-        if finalizesAudioOnly {
-            guard let finishedJob else {
-                showNotification(
-                    title: "Failed to save file".local,
-                    body: "The recording output job is unavailable.",
-                    id: "quickrecorder.error.\(UUID().uuidString)"
-                )
+        let actions = CaptureProductionStopActions(
+            stopActiveStream: { activeStream in
+                AppDelegate.shared.captureStreamCallbackAdapter.handleStop(from: activeStream)
+            },
+            setFinalizing: { isFinalizing = $0 },
+            publishStatus: { _ in updateStatusBar() },
+            prepareForFinalization: { session, _ in
+                if let session { firstFrame = session.capturedFirstFrame() }
+                autoStop = 0
+                lastPTS = nil
+                recordCam = ""
+                recordDevice = ""
+                isMagnifierEnabled = false
                 streamType = nil
-                return
-            }
-            switch finishedJob.kind {
-            case .conversion:
-                _ = finishedJob.beginPostprocessing()
-                Task { [finishedJob] in
+                mousePointer.orderOut(nil)
+                screenMagnifier.orderOut(nil)
+                QuickTopmostPresence.shared.dismiss()
+                AppDelegate.shared.stopGlobalMouseMonitor()
+                showNotification(
+                    title: "Still Processing".local,
+                    body: "Finalizing recording...".local,
+                    id: "quickrecorder.processing.\(UUID().uuidString)"
+                )
+                if let window = NSApp.windows.first(where: { $0.title == "Area Overlayer".local }) {
+                    window.close()
+                }
+            },
+            releaseSleepAssertion: {
+                SleepPreventer.shared.allowSleep()
+            },
+            scheduleTerminal: { action in
+                if Thread.isMainThread {
+                    action()
+                } else {
+                    DispatchQueue.main.async(execute: action)
+                }
+            },
+            reportFailure: reportFailure,
+            presentVideoResult: presentVideoResult,
+            presentAudioResult: presentAudioResult,
+            remuxVideo: { job, completion in
+                mixAudioTracks(job: job, completion: completion)
+            },
+            convertAudio: { job, completion in
+                Task {
+                    let result: Result<URL, RecordingExportError>
                     do {
                         try await m4a2mp3(
-                            inputUrl: finishedJob.inputURL,
-                            outputUrl: finishedJob.stagedOutputURL,
-                            qualityKbps: finishedJob.audioQualityKbps
+                            inputUrl: job.inputURL,
+                            outputUrl: job.stagedOutputURL,
+                            qualityKbps: job.audioQualityKbps
                         )
-                        let result = finishedJob.finishExport(.success(()))
-                        guard case .success(let outPutUrl) = result else {
-                            if case .failure(let error) = result { throw error }
-                            return
-                        }
-                        if !ud.bool(forKey: "showPreview") {
-                            let title = "Recording Completed".local
-                            let decodedPath = outPutUrl.path.removingPercentEncoding ?? outPutUrl.path
-                            let body = String(format: "File saved to: %@".local, decodedPath)
-                            let id = "quickrecorder.completed.\(UUID().uuidString)"
-                            showNotification(title: title, body: body, id: id)
-                        } else {
-                            DispatchQueue.main.async { showPreview(path: outPutUrl.path, image: NSImage(named: "audioIcon")) }
-                        }
+                        result = job.finishExport(.success(()))
                     } catch {
                         let exportError: RecordingExportError
                         if let typedError = error as? RecordingExportError {
@@ -666,78 +566,123 @@ class SCContext {
                         } else if error is CancellationError {
                             exportError = .cancelled(stage: .conversion)
                         } else {
-                            exportError = .failed(stage: .conversion, message: error.localizedDescription)
+                            exportError = .failed(
+                                stage: .conversion,
+                                message: error.localizedDescription
+                            )
                         }
-                        let cleanupError = finishedJob.discardOutputs(reason: exportError)
-                        showNotification(title: "Failed to save file".local, body: cleanupError.localizedDescription, id: "quickrecorder.error.\(UUID().uuidString)")
+                        result = .failure(job.discardOutputs(reason: exportError))
                     }
+                    completion(result)
                 }
-            case .package:
-                break // The package writer callback owns terminalization and any automatic export.
-            case .single:
-                switch finishedJob.finishSingleOutput() {
-                case .success(let outputURL):
-                    if !ud.bool(forKey: "showPreview") {
-                        let title = "Recording Completed".local
-                        let body = String(format: "File saved to: %@".local, outputURL.path)
-                        let id = "quickrecorder.completed.\(UUID().uuidString)"
-                        showNotification(title: title, body: body, id: id)
-                    } else {
-                        showPreview(path: outputURL.path, image: NSImage(named: "qmaIcon"))
-                    }
-                case .failure(let error):
-                    showNotification(title: "Failed to save file".local, body: error.localizedDescription, id: "quickrecorder.error.\(UUID().uuidString)")
-                }
-            case .videoRemux:
-                let error = finishedJob.discardOutputs(reason: .preparation(
-                    stage: .first,
-                    message: "A video-remux job reached audio-only finalization."
-                ))
-                showNotification(title: "Failed to save file".local, body: error.localizedDescription, id: "quickrecorder.error.\(UUID().uuidString)")
-            }
-        }
-        
-        isPaused = false
-        hideMousePointer = false
-        window = nil
-        screen = nil
-        startTime = nil
-        updateStatusBar()
-        
-        if !shouldRemuxVideo && !finalizesAudioOnly {
-            guard case .success(let outputURL) = directVideoResult else {
+            },
+            finishAudioPackage: { fileURL, automaticallyExports, audioQualityKbps, completion in
+                finishCompletedAudioPackage(
+                    fileURL,
+                    automaticallyExports: automaticallyExports,
+                    audioQualityKbps: audioQualityKbps,
+                    completion: completion
+                )
+            },
+            cleanupTerminal: { acknowledgeStopControlDismissal in
+                isPaused = false
+                hideMousePointer = false
+                window = nil
+                screen = nil
+                startTime = nil
                 streamType = nil
-                if let finishedJob, outputJob === finishedJob { outputJob = nil }
-                return
+                controlPanel.close()
+                updateStatusBar(completion: acknowledgeStopControlDismissal)
             }
-            if !ud.bool(forKey: "showPreview") {
-                let title = "Recording Completed".local
-                let body = String(format: "File saved to: %@".local, outputURL.path)
-                let id = "quickrecorder.completed.\(UUID().uuidString)"
-                showNotification(title: title, body: body, id: id)
-            } else {
-                showPreview(path: outputURL.path)
-            }
-            trimVideo()
-        }
-        
-        streamType = nil
-        firstFrame = nil
-        if let finishedJob, outputJob === finishedJob { outputJob = nil }
-        }
+        )
 
-        if let expectedSession {
-            let finalizer = CaptureSessionFinalizationCoordinator(store: sessions)
-            finalizer.finalize(expectedSession) { stopBody() }
-        } else {
-            stopBody()
-        }
+        _ = CaptureProductionStopEntry(store: sessions).stop(
+            expectedSession: expectedSession,
+            origin: origin,
+            activeStream: stream,
+            resolveResources: { session in
+                let finishedJob = session?.outputJob ?? outputJob
+                let finalWriter = session?.writer ?? vW
+                let writerFinalizer = session?.writerFinalizer
+                    ?? finalWriter.map(AssetWriterFinalizer.init(writer:))
+                let finalVideoInput = (session?.videoInput as? AVAssetWriterInput) ?? vwInput
+                let finalSystemAudioInput = (session?.systemAudioInput as? AVAssetWriterInput) ?? awInput
+                let finalMicrophoneInput = (session?.microphoneInput as? AVAssetWriterInput) ?? micInput
+                let finalizesAudioOnly = session?.isAudioOnly ?? (streamType == .systemaudio)
+                let recordsMicrophone = finishedJob?.recordsMicrophone
+                    ?? ud.bool(forKey: "recordMic")
+                let capturedStream = stream
+                let markSystemAudioInputFinished: (() -> Void)? = {
+                    if #available(macOS 13, *), let finalSystemAudioInput {
+                        return { finalSystemAudioInput.markAsFinished() }
+                    }
+                    return nil
+                }()
+
+                return CaptureProductionStopResources(
+                    outputJob: finishedJob,
+                    writerFinalizer: writerFinalizer,
+                    isAudioOnly: finalizesAudioOnly,
+                    markVideoInputFinished: finalVideoInput.map { input in
+                        { input.markAsFinished() }
+                    },
+                    markSystemAudioInputFinished: markSystemAudioInputFinished,
+                    markMicrophoneInputFinished: recordsMicrophone
+                        ? { finalMicrophoneInput?.markAsFinished() }
+                        : nil,
+                    cancelWriter: {
+                        finalWriter?.cancelWriting()
+                    },
+                    stopOwnedResources: {
+                        if let capturedStream {
+                            capturedStream.stopCapture()
+                            if stream === capturedStream { stream = nil }
+                        }
+                        if recordsMicrophone {
+                            if let session {
+                                session.stopMicrophoneCapture()
+                            } else {
+                                AudioRecorder.shared.stop()
+                                audioEngine.inputNode.removeTap(onBus: 0)
+                                audioEngine.stop()
+                                if ud.bool(forKey: "enableAEC") {
+                                    try? AECEngine.stopAudioUnit()
+                                }
+                            }
+                        }
+                        audioFile = nil
+                        audioFile2 = nil
+                        if isCameraRunning() {
+                            if camWindow.isVisible { camWindow.close() }
+                            if deviceWindow.isVisible { deviceWindow.close() }
+                            previewSession?.stopRunning()
+                            captureSession?.stopRunning()
+                        }
+                    },
+                    clearSharedResources: {
+                        firstFrame = nil
+                        if let finishedJob, outputJob === finishedJob { outputJob = nil }
+                        if let finalWriter, vW === finalWriter { vW = nil }
+                        if let finalVideoInput, vwInput === finalVideoInput { vwInput = nil }
+                        if let finalSystemAudioInput, awInput === finalSystemAudioInput {
+                            awInput = nil
+                        }
+                        if let finalMicrophoneInput, micInput === finalMicrophoneInput {
+                            micInput = nil
+                        }
+                    }
+                )
+            },
+            actions: actions
+        )
     }
+
 
     private static func finishCompletedAudioPackage(
         _ fileURL: URL,
         automaticallyExports: Bool,
-        audioQualityKbps: Int?
+        audioQualityKbps: Int?,
+        completion: @escaping () -> Void
     ) {
         if automaticallyExports {
             let document = try? qmaPackageHandle.load(from: fileURL)
@@ -747,6 +692,7 @@ class SCContext {
                     body: "The recorded audio package could not be opened.",
                     id: "quickrecorder.error.\(UUID().uuidString)"
                 )
+                completion()
                 return
             }
             let audioPlayerManager = AudioPlayerManager()
@@ -778,7 +724,8 @@ class SCContext {
                 audioPlayerManager.saveFile(
                     exportJob.finalURL,
                     saveAsMP3: exportMP3,
-                    recordingJob: exportJob
+                    recordingJob: exportJob,
+                    completion: { _ in completion() }
                 )
             } catch {
                 showNotification(
@@ -786,14 +733,17 @@ class SCContext {
                     body: error.localizedDescription,
                     id: "quickrecorder.error.\(UUID().uuidString)"
                 )
+                completion()
             }
         } else if !ud.bool(forKey: "showPreview") {
             let title = "Recording Completed".local
             let body = String(format: "File saved to: %@".local, fileURL.path)
             let id = "quickrecorder.completed.\(UUID().uuidString)"
             showNotification(title: title, body: body, id: id)
+            completion()
         } else {
             showPreview(path: fileURL.path, image: NSImage(named: "qmaIcon"))
+            completion()
         }
     }
     
@@ -1033,7 +983,6 @@ class SCContext {
     }
     
     static func mixAudioTracks(job: RecordingOutputJob, completion: @escaping (Result<URL, RecordingExportError>) -> Void) {
-        showNotification(title: "Still Processing".local, body: "Mixing audio track...".local, id: "quickrecorder.processing.\(UUID().uuidString)")
         guard job.beginPostprocessing() else {
             _ = job.finishExport(
                 .failure(.preparation(stage: .first, message: "The recording job is already terminal.")),

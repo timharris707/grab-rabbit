@@ -313,7 +313,17 @@ budget, output resolution/fps envelope, and regression strategy for static brows
 
 **Ticket.** [#48 — STUDIO PROTOTYPE: Prove render cadence, privacy, and A/V sync](https://github.com/timharris707/grab-rabbit/issues/48)
 
-### E. Production image-generation and privacy route
+**Verdict.** Fixed render clock. Ruled by Tim on 2026-08-20 on quantified evidence from the
+28-recording Mac mini human gate (complete at `fd93f84`, all privacy, A/V-sync, signing, and
+pause/resume families green in both modes): camera-driven dropped a frame in every single
+recording (54 events across 14 recordings, worst gap 78.3 ms), while fixed-clock dropped one
+frame in the whole corpus (a single 65 ms gap in the power run; interval stdev as low as
+0.25 ms at the same 30 fps target). The earlier visual lean toward camera-driven was an
+artifact of a low-movement comparison clip and inverted once quantified. No wizard rerun; the
+gate evidence plus the frame-timing analysis on
+[#48](https://github.com/timharris707/grab-rabbit/issues/48) are the acceptance record.
+Production implementation follows the map-close gate below: compositor slices are filed as
+ordinary tracked work only after this map closes.
 
 **Question.** Which production-capable provider/model and credential/service boundary can turn
 the user scene direction plus textual lighting profile into a background while honoring Q4 and

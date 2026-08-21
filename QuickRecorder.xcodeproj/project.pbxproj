@@ -29,6 +29,24 @@
 		C42000010000000000000001 /* WindowSelectorRefreshAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = C42000020000000000000001 /* WindowSelectorRefreshAdapter.swift */; };
 		C42000010000000000000002 /* WindowSelectorRefreshAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = C42000020000000000000001 /* WindowSelectorRefreshAdapter.swift */; };
 		C42000010000000000000003 /* WindowSelectorRefreshAdapterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C42000020000000000000002 /* WindowSelectorRefreshAdapterTests.swift */; };
+		D65000010000000000000001 /* StudioClock.swift in Sources */ = {isa = PBXBuildFile; fileRef = D65000020000000000000001 /* StudioClock.swift */; };
+		D65000010000000000000002 /* StudioFixedClock.swift in Sources */ = {isa = PBXBuildFile; fileRef = D65000020000000000000002 /* StudioFixedClock.swift */; };
+		D65000010000000000000003 /* StudioPrivacySentinel.swift in Sources */ = {isa = PBXBuildFile; fileRef = D65000020000000000000003 /* StudioPrivacySentinel.swift */; };
+		D65000010000000000000004 /* StudioFrameCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = D65000020000000000000004 /* StudioFrameCache.swift */; };
+		D65000010000000000000005 /* StudioCompositor.swift in Sources */ = {isa = PBXBuildFile; fileRef = D65000020000000000000005 /* StudioCompositor.swift */; };
+		D65000010000000000000006 /* StudioWriterSurface.swift in Sources */ = {isa = PBXBuildFile; fileRef = D65000020000000000000006 /* StudioWriterSurface.swift */; };
+		D65000010000000000000007 /* StudioRenderEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = D65000020000000000000007 /* StudioRenderEngine.swift */; };
+		D65000030000000000000001 /* StudioClock.swift in Sources */ = {isa = PBXBuildFile; fileRef = D65000020000000000000001 /* StudioClock.swift */; };
+		D65000030000000000000002 /* StudioFixedClock.swift in Sources */ = {isa = PBXBuildFile; fileRef = D65000020000000000000002 /* StudioFixedClock.swift */; };
+		D65000030000000000000003 /* StudioPrivacySentinel.swift in Sources */ = {isa = PBXBuildFile; fileRef = D65000020000000000000003 /* StudioPrivacySentinel.swift */; };
+		D65000030000000000000004 /* StudioFrameCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = D65000020000000000000004 /* StudioFrameCache.swift */; };
+		D65000030000000000000005 /* StudioCompositor.swift in Sources */ = {isa = PBXBuildFile; fileRef = D65000020000000000000005 /* StudioCompositor.swift */; };
+		D65000030000000000000006 /* StudioWriterSurface.swift in Sources */ = {isa = PBXBuildFile; fileRef = D65000020000000000000006 /* StudioWriterSurface.swift */; };
+		D65000030000000000000007 /* StudioRenderEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = D65000020000000000000007 /* StudioRenderEngine.swift */; };
+		D65000030000000000000008 /* StudioTimelineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D65000020000000000000008 /* StudioTimelineTests.swift */; };
+		D65000030000000000000009 /* StudioPrivacyIngressTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D65000020000000000000009 /* StudioPrivacyIngressTests.swift */; };
+		D6500003000000000000000A /* StudioRenderEngineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D6500002000000000000000A /* StudioRenderEngineTests.swift */; };
+		D6500003000000000000000B /* StudioTestSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = D6500002000000000000000B /* StudioTestSupport.swift */; };
 		C42000010000000000000004 /* WindowSelectorThumbnailProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = C42000020000000000000003 /* WindowSelectorThumbnailProvider.swift */; };
 		181724052BE3BEA600F5F539 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 181724042BE3BEA600F5F539 /* Sparkle */; };
 		1821F2E82CF4B226004A2EC0 /* ContentViewNew.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1821F2E72CF4B226004A2EC0 /* ContentViewNew.swift */; };
@@ -83,6 +101,17 @@
 		A40000020000000000000002 /* RecordingOutputIsolationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingOutputIsolationTests.swift; sourceTree = "<group>"; };
 		B23000020000000000000001 /* WindowCapturePrivacy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowCapturePrivacy.swift; sourceTree = "<group>"; };
 		B23000020000000000000002 /* WindowCapturePrivacyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowCapturePrivacyTests.swift; sourceTree = "<group>"; };
+		D65000020000000000000001 /* StudioClock.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudioClock.swift; sourceTree = "<group>"; };
+		D65000020000000000000002 /* StudioFixedClock.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudioFixedClock.swift; sourceTree = "<group>"; };
+		D65000020000000000000003 /* StudioPrivacySentinel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudioPrivacySentinel.swift; sourceTree = "<group>"; };
+		D65000020000000000000004 /* StudioFrameCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudioFrameCache.swift; sourceTree = "<group>"; };
+		D65000020000000000000005 /* StudioCompositor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudioCompositor.swift; sourceTree = "<group>"; };
+		D65000020000000000000006 /* StudioWriterSurface.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudioWriterSurface.swift; sourceTree = "<group>"; };
+		D65000020000000000000007 /* StudioRenderEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudioRenderEngine.swift; sourceTree = "<group>"; };
+		D65000020000000000000008 /* StudioTimelineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudioTimelineTests.swift; sourceTree = "<group>"; };
+		D65000020000000000000009 /* StudioPrivacyIngressTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudioPrivacyIngressTests.swift; sourceTree = "<group>"; };
+		D6500002000000000000000A /* StudioRenderEngineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudioRenderEngineTests.swift; sourceTree = "<group>"; };
+		D6500002000000000000000B /* StudioTestSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudioTestSupport.swift; sourceTree = "<group>"; };
 		C42000020000000000000001 /* WindowSelectorRefreshAdapter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowSelectorRefreshAdapter.swift; sourceTree = "<group>"; };
 		C42000020000000000000002 /* WindowSelectorRefreshAdapterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowSelectorRefreshAdapterTests.swift; sourceTree = "<group>"; };
 		C42000020000000000000003 /* WindowSelectorThumbnailProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowSelectorThumbnailProvider.swift; sourceTree = "<group>"; };
@@ -198,6 +227,7 @@
 				B23000020000000000000001 /* WindowCapturePrivacy.swift */,
 				C42000020000000000000001 /* WindowSelectorRefreshAdapter.swift */,
 				C42000020000000000000003 /* WindowSelectorThumbnailProvider.swift */,
+				D65000040000000000000001 /* Studio */,
 				18FEBDA92BCF8200003F09BC /* RecordEngine.swift */,
 				18D3BE032BCEC847006CFFC0 /* SCContext.swift */,
 				184CAEC62BDCCC2300D61D57 /* AVContext.swift */,
@@ -221,8 +251,26 @@
 				A40000020000000000000002 /* RecordingOutputIsolationTests.swift */,
 				B23000020000000000000002 /* WindowCapturePrivacyTests.swift */,
 				C42000020000000000000002 /* WindowSelectorRefreshAdapterTests.swift */,
+				D65000020000000000000008 /* StudioTimelineTests.swift */,
+				D65000020000000000000009 /* StudioPrivacyIngressTests.swift */,
+				D6500002000000000000000A /* StudioRenderEngineTests.swift */,
+				D6500002000000000000000B /* StudioTestSupport.swift */,
 			);
 			path = QuickRecorderTests;
+			sourceTree = "<group>";
+		};
+		D65000040000000000000001 /* Studio */ = {
+			isa = PBXGroup;
+			children = (
+				D65000020000000000000001 /* StudioClock.swift */,
+				D65000020000000000000002 /* StudioFixedClock.swift */,
+				D65000020000000000000003 /* StudioPrivacySentinel.swift */,
+				D65000020000000000000004 /* StudioFrameCache.swift */,
+				D65000020000000000000005 /* StudioCompositor.swift */,
+				D65000020000000000000006 /* StudioWriterSurface.swift */,
+				D65000020000000000000007 /* StudioRenderEngine.swift */,
+			);
+			path = Studio;
 			sourceTree = "<group>";
 		};
 		18D3BDF02BCE5DC2006CFFC0 /* Preview Content */ = {
@@ -415,6 +463,17 @@
 				B23000010000000000000003 /* WindowCapturePrivacyTests.swift in Sources */,
 				C42000010000000000000002 /* WindowSelectorRefreshAdapter.swift in Sources */,
 				C42000010000000000000003 /* WindowSelectorRefreshAdapterTests.swift in Sources */,
+				D65000030000000000000001 /* StudioClock.swift in Sources */,
+				D65000030000000000000002 /* StudioFixedClock.swift in Sources */,
+				D65000030000000000000003 /* StudioPrivacySentinel.swift in Sources */,
+				D65000030000000000000004 /* StudioFrameCache.swift in Sources */,
+				D65000030000000000000005 /* StudioCompositor.swift in Sources */,
+				D65000030000000000000006 /* StudioWriterSurface.swift in Sources */,
+				D65000030000000000000007 /* StudioRenderEngine.swift in Sources */,
+				D65000030000000000000008 /* StudioTimelineTests.swift in Sources */,
+				D65000030000000000000009 /* StudioPrivacyIngressTests.swift in Sources */,
+				D6500003000000000000000A /* StudioRenderEngineTests.swift in Sources */,
+				D6500003000000000000000B /* StudioTestSupport.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -430,6 +489,13 @@
 				B23000010000000000000001 /* WindowCapturePrivacy.swift in Sources */,
 				C42000010000000000000001 /* WindowSelectorRefreshAdapter.swift in Sources */,
 				C42000010000000000000004 /* WindowSelectorThumbnailProvider.swift in Sources */,
+				D65000010000000000000001 /* StudioClock.swift in Sources */,
+				D65000010000000000000002 /* StudioFixedClock.swift in Sources */,
+				D65000010000000000000003 /* StudioPrivacySentinel.swift in Sources */,
+				D65000010000000000000004 /* StudioFrameCache.swift in Sources */,
+				D65000010000000000000005 /* StudioCompositor.swift in Sources */,
+				D65000010000000000000006 /* StudioWriterSurface.swift in Sources */,
+				D65000010000000000000007 /* StudioRenderEngine.swift in Sources */,
 				18FEBDAE2BD10ED1003F09BC /* ScreenSelector.swift in Sources */,
 				189BD5ED2BDE971B0056D06C /* VideoEditor.swift in Sources */,
 				189BD5F52BDF8A800056D06C /* CameraOverlayer.swift in Sources */,

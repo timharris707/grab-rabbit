@@ -226,10 +226,16 @@ extension AppDelegate {
             return
         }
         reservationTransferred = true
+        let mediaChoice = RecordingMediaChoice.resolve(
+            systemAudioEnabled: recordWinSound,
+            microphoneEnabled: recordMic,
+            fastStart: fastStart
+        )
         Task {
             await record(
                 filter: filter,
                 fastStart: fastStart,
+                mediaChoice: mediaChoice,
                 windowCaptureMode: sessionWindowCaptureMode,
                 sessionID: sessionID,
                 quickTopmost: quickTopmost
@@ -240,6 +246,7 @@ extension AppDelegate {
     func record(
         filter: SCContentFilter,
         fastStart: Bool = true,
+        mediaChoice: RecordingMediaChoice,
         windowCaptureMode: WindowCaptureMode? = nil,
         sessionID: UUID,
         quickTopmost: QuickTopmostPillTarget? = nil
@@ -341,7 +348,7 @@ extension AppDelegate {
         }
         
         if #available(macOS 13, *) {
-            conf.capturesAudio = recordWinSound || fastStart || audioOnly
+            conf.capturesAudio = mediaChoice.capturesSystemAudio(audioOnly: audioOnly)
             conf.sampleRate = 48000
             conf.channelCount = 2
         }
@@ -430,7 +437,7 @@ extension AppDelegate {
         do {
             if audioOnly {
                 do {
-                    try prepareAudioRecording()
+                    try prepareAudioRecording(mediaChoice: mediaChoice)
                 } catch {
                     let recordingError = (error as? RecordingExportError)
                         ?? .preparation(stage: .first, message: error.localizedDescription)
@@ -451,7 +458,7 @@ extension AppDelegate {
                 }
             }
             if !audioOnly {
-                try initVideo(conf: conf, windowCaptureMode: windowCaptureMode)
+                try initVideo(conf: conf, windowCaptureMode: windowCaptureMode, mediaChoice: mediaChoice)
             }
             let videoInput: AVAssetWriterInput? = audioOnly ? nil : SCContext.vwInput
             let systemAudioInput: AVAssetWriterInput?
@@ -461,7 +468,7 @@ extension AppDelegate {
                 systemAudioInput = nil
             }
             let microphoneStopHandler: (() -> Void)? = {
-                guard recordMic else { return nil }
+                guard mediaChoice.microphone else { return nil }
                 let usesDefaultDevice = micDevice == "default"
                 let usesAEC = enableAEC
                 return {
@@ -482,7 +489,7 @@ extension AppDelegate {
                 writer: SCContext.vW,
                 videoInput: videoInput,
                 systemAudioInput: systemAudioInput,
-                microphoneInput: recordMic ? SCContext.micInput : nil,
+                microphoneInput: mediaChoice.microphone ? SCContext.micInput : nil,
                 standaloneAudioFile: audioOnly ? SCContext.audioFile : nil,
                 configurationOwner: configurationOwner,
                 sampleQueue: sampleQueue,
@@ -512,7 +519,7 @@ extension AppDelegate {
             if captureOutputSessions.consumeTerminationRequest(for: session) {
                 throw RecordingExportError.cancelled(stage: .first)
             }
-            if recordMic { try startMicRecording(session: session) }
+            if mediaChoice.microphone { try startMicRecording(session: session) }
             try await stream.startCapture()
             guard CapturePostStartResourceActivation(store: captureOutputSessions).activate(
                 session: session,
@@ -632,7 +639,7 @@ extension AppDelegate {
         )
     }
 
-    func prepareAudioRecording() throws {
+    func prepareAudioRecording(mediaChoice: RecordingMediaChoice) throws {
         var fileEnding = audioFormat.rawValue
         let encorder = fileEnding == AudioFormat.mp3.rawValue ? "aac" : fileEnding
         let fileType: AVFileType
@@ -648,7 +655,7 @@ extension AppDelegate {
                     message: "Unsupported audio format: \(fileEnding)"
                 )
         }
-        if recordMic && SCContext.streamType == .systemaudio {
+        if mediaChoice.microphone && SCContext.streamType == .systemaudio {
             let job = try SCContext.reserveOutputJob(
                 layout: .package(
                     fileExtension: "qma",
@@ -723,7 +730,8 @@ extension SCDisplay {
 extension AppDelegate {
     func initVideo(
         conf: SCStreamConfiguration,
-        windowCaptureMode: WindowCaptureMode? = nil
+        windowCaptureMode: WindowCaptureMode? = nil,
+        mediaChoice: RecordingMediaChoice
     ) throws {
         SCContext.startTime = nil
 
@@ -750,9 +758,9 @@ extension AppDelegate {
         let videoCodec = windowProfile?.codec
             ?? ((encoder == .h265 || recordHDR) ? ((withAlpha && !recordHDR) ? .hevcWithAlpha : .hevc) : .h264)
 
-        let layout: RecordingOutputJob.Layout = remuxAudio && recordMic && recordWinSound
+        let layout: RecordingOutputJob.Layout = remuxAudio && mediaChoice.microphone && mediaChoice.systemAudio
             ? .videoRemux(fileExtension: fileEnding)
-            : .single(fileExtension: fileEnding, recordsMicrophone: recordMic)
+            : .single(fileExtension: fileEnding, recordsMicrophone: mediaChoice.microphone)
         let job = try SCContext.reserveOutputJob(layout: layout)
         SCContext.outputJob = job
         SCContext.filePath = job.finalURL.path
@@ -817,7 +825,7 @@ extension AppDelegate {
             if SCContext.vW.canAdd(SCContext.awInput) { SCContext.vW.add(SCContext.awInput) }
         }
 
-        if recordMic {
+        if mediaChoice.microphone {
             let sampleRate = SCContext.getSampleRate() ?? 48000
             let settings = SCContext.updateAudioSettings(rate: sampleRate)
             

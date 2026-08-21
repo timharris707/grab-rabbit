@@ -616,7 +616,7 @@ final class RecordingOutputIsolationTests: XCTestCase {
 
         XCTAssertTrue(appSource.contains("\"remuxAudio\": isMacOS12 ? false : true"))
         XCTAssertTrue(settingsSource.contains("SToggle(\"Record Microphone to Main Track\", isOn: $remuxAudio)"))
-        XCTAssertTrue(engineSource.contains("remuxAudio && recordMic && recordWinSound"))
+        XCTAssertTrue(engineSource.contains("remuxAudio && mediaChoice.microphone && mediaChoice.systemAudio"))
         XCTAssertTrue(engineSource.contains("? .videoRemux(fileExtension: fileEnding)"))
         XCTAssertTrue(engineSource.contains("SCContext.vW.add(SCContext.awInput)"))
         XCTAssertTrue(engineSource.contains("SCContext.vW.add(SCContext.micInput)"))

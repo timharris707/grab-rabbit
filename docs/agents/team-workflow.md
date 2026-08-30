@@ -124,10 +124,14 @@ them.
 
 ## Orchestration
 
-- **CodeRabbit configuration**: `grab-rabbit` and `modeldeck-private` both use
-  organization settings, with English (US), early access disabled, and no
-  repository-specific inheritance override. Organization settings are
-  authoritative; do not add `.coderabbit.yaml` or `.coderabbit.yml`.
+- **CodeRabbit configuration**: `grab-rabbit` uses organization settings, with
+  English (US), early access disabled, and no repository-specific inheritance
+  override. Organization settings are authoritative for grab-rabbit; do not add
+  `.coderabbit.yaml` or `.coderabbit.yml` here. `modeldeck-private` no longer
+  follows this rule: Tim ruled 2026-08-30 (CodeRabbit cost work, recorded on
+  timharris707/insight-chat#574) that it carries its own repo
+  `.coderabbit.yaml` (merged as modeldeck-private#611), which overrides the org
+  settings there — versioned config was preferred over dashboard state.
 
 - **Lane launch**: after the frontier and collision gates pass, the primary
   orchestrator posts the claim, provisions and preflights the workspace, then
